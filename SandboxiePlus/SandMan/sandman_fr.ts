@@ -208,8 +208,9 @@
     </message>
     <message>
         <location filename="Wizards/TemplateWizard.cpp" line="518"/>
-        <source>Configure your Web Browsers profile directories.</source>
-        <translation>Configure le répertoire des profils de votre navigateur web.</translation>
+        <source>Configure your Web Browser&apos;s profile directories.</source>
+        <oldsource>Configure your Web Browsers profile directories.</oldsource>
+        <translation type="unfinished">Configure le répertoire des profils de votre navigateur web.</translation>
     </message>
     <message>
         <location filename="Wizards/TemplateWizard.cpp" line="526"/>
@@ -243,10 +244,13 @@
     </message>
     <message>
         <location filename="Wizards/TemplateWizard.cpp" line="796"/>
-        <source>No suitable fodlers have been found.
+        <source>No suitable folders have been found.
 Note: you need to run the browser unsandboxed for them to get created.
 Please browse to the correct user profile directory.</source>
-        <translation>Aucun dossier approprié n&apos;a été trouvé.
+        <oldsource>No suitable fodlers have been found.
+Note: you need to run the browser unsandboxed for them to get created.
+Please browse to the correct user profile directory.</oldsource>
+        <translation type="unfinished">Aucun dossier approprié n&apos;a été trouvé.
 Remarque : vous devez exécuter le navigateur en dehors d&apos;un bac à sable pour qu&apos;il puisse être créé.
 Veuillez naviguer vers la répertoire correct des profils d&apos;utilisateurs.</translation>
     </message>
@@ -318,8 +322,9 @@ Veuillez naviguer vers la répertoire correct des profils d&apos;utilisateurs.</
     </message>
     <message>
         <location filename="Wizards/TemplateWizard.cpp" line="504"/>
-        <source>This browser name is already in use, please chooe an other one.</source>
-        <translation>Ce nom de navigateur est déjà utilisé, veuillez en choisir un autre.</translation>
+        <source>This browser name is already in use, please choose an other one.</source>
+        <oldsource>This browser name is already in use, please chooe an other one.</oldsource>
+        <translation type="unfinished">Ce nom de navigateur est déjà utilisé, veuillez en choisir un autre.</translation>
     </message>
 </context>
 <context>
@@ -539,9 +544,11 @@ Vous pouvez utiliser « %USER% » pour enregistrer le bac de chaque utilisateur 
     </message>
     <message>
         <location filename="Wizards/TemplateWizard.cpp" line="966"/>
-        <source>Browser Type: Gecko (Mozilla firefox)
+        <source>Browser Type: Gecko (Mozilla Firefox)
 </source>
-        <translation>Genre de navigateur : Gecko (Mozilla Firefox)
+        <oldsource>Browser Type: Gecko (Mozilla firefox)
+</oldsource>
+        <translation type="unfinished">Genre de navigateur : Gecko (Mozilla Firefox)
 </translation>
     </message>
     <message>
