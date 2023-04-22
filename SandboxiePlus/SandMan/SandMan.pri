@@ -29,11 +29,12 @@ HEADERS += ./stdafx.h \
     ./Windows/SettingsWindow.h \
     ./Windows/OptionsWindow.h \
     ./Windows/SelectBoxWindow.h \
-    ./Windows/SupportDialog.h\
+    ./Windows/SupportDialog.h \
     ./OnlineUpdater.h \
-    ./Wizards/NewBoxWizard.h \
     ./Wizards/TemplateWizard.h \
-    ./Wizards/SetupWizard.h
+    ./Wizards/NewBoxWizard.h \
+    ./Wizards/SetupWizard.h \
+    ../MiscHelpers/Common/Finder.h
 
 SOURCES += ./main.cpp \
     ./stdafx.cpp \
@@ -63,11 +64,12 @@ SOURCES += ./main.cpp \
     ./Windows/SettingsWindow.cpp \
     ./Windows/SnapshotsWindow.cpp \
     ./Windows/SelectBoxWindow.cpp \
-    ./Windows/SupportDialog.cpp\
+    ./Windows/SupportDialog.cpp \
     ./OnlineUpdater.cpp \
     ./Wizards/NewBoxWizard.cpp \
     ./Wizards/TemplateWizard.cpp \
-    ./Wizards/SetupWizard.cpp
+    ./Wizards/SetupWizard.cpp \
+    ../MiscHelpers/Common/Finder.cpp
 
 FORMS += ./Forms/NewBoxWindow.ui \
     ./Forms/OptionsWindow.ui \
@@ -77,7 +79,8 @@ FORMS += ./Forms/NewBoxWindow.ui \
     ./Forms/SnapshotsWindow.ui \
     ./Forms/SelectBoxWindow.ui
 
-TRANSLATIONS += sandman_de.ts \
+TRANSLATIONS += sandman_cs.ts \
+    sandman_de.ts \
     sandman_en.ts \
     sandman_es.ts \
     sandman_fr.ts \
