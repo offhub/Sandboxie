@@ -517,6 +517,39 @@ You can use %USER% to save each users sandbox to an own fodler.</oldsource>
     </message>
 </context>
 <context>
+    <name>CFinder</name>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="40"/>
+        <source>Case Sensitive</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="49"/>
+        <source>RegExp</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="70"/>
+        <source>Highlight</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="82"/>
+        <source>Close</source>
+        <translation type="unfinished">Fechar</translation>
+    </message>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="100"/>
+        <source>&amp;Find ...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../MiscHelpers/Common/Finder.cpp" line="146"/>
+        <source>All columns</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>CFinishPage</name>
     <message>
         <location filename="Wizards/SetupWizard.cpp" line="487"/>
