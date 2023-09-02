@@ -1967,9 +1967,9 @@ void CSandMan::OnBoxAdded(const CSandBoxPtr& pBox)
 
 void CSandMan::EnumBoxLinks(QMap<QString, QMap<QString,SBoxLink> > &BoxLinks, const QString& Prefix, const QString& Folder, bool bWithSubDirs)
 {
-	QRegularExpression exp("/\\[[0-9Sa-zA-Z_]+\\] ");
+	QRegularExpression exp("(^|/)\\[[0-9Sa-zA-Z_]+\\] ");
 
-	QStringList	Files = ListDir(Folder, QStringList() << "*.lnk" << "*.url" << "*.pif", bWithSubDirs);
+	QStringList	Files = ListDir(Folder, QStringList() << "*.lnk" << "*.url", bWithSubDirs);
 	foreach(QString File, Files)
 	{
 		auto result = exp.match(File);
@@ -2050,8 +2050,9 @@ void CSandMan::SyncStartMenu()
 {
 	m_StartMenuUpdatePending = false;
 
-	int Mode = theConf->GetInt("Options/IntegrateStartMenu", 0);
-	if (Mode == 0)
+	int MenuMode = theConf->GetInt("Options/IntegrateStartMenu", 0);
+	int DeskMode = theConf->GetInt("Options/IntegrateDesktop", 0);
+	if (MenuMode == 0 && DeskMode == 0)
 		return;
 
 	QMap<QString, QMap<QString, SBoxLink> > BoxLinks;
@@ -2070,6 +2071,15 @@ void CSandMan::SyncStartMenu()
 			QString Location;
 			QString Prefix;
 			StrPair LocPath = Split2(Link.Folder, "/");
+
+			int Mode = 0;
+			if (LocPath.first == "Programs")
+				Mode = MenuMode;
+			else if (LocPath.first == "Desktop")
+				Mode = DeskMode;
+			if (!Mode)
+				continue;
+
 			if (Mode == 2) // deep integration
 			{
 				if (LocPath.first == "Programs")
@@ -3995,9 +4005,9 @@ void CSandMan::OnAbout()
 			painter.setPen(CSettingsWindow::GetCertColor());
 
 			QString Type = CSettingsWindow::GetCertType();
-			//QSize TypeSize = QFontMetrics(painter.font()).size(Qt::TextSingleLine, Type);
+			QSize TypeSize = QFontMetrics(painter.font()).size(Qt::TextSingleLine, Type);
 			//painter.drawText((128 - TypeSize.width()) / 2, 128, TypeSize.width(), TypeSize.height(), 0, Type);
-			painter.drawText(0, 128 - 8, 128, 16, Qt::AlignHCenter, Type);
+			painter.drawText(0, 128 - 8, 128, TypeSize.height(), Qt::AlignHCenter, Type);
 
 			if (g_CertInfo.level != eCertMaxLevel && g_CertInfo.level != eCertStandard) {
 
@@ -4006,7 +4016,7 @@ void CSandMan::OnAbout()
 				painter.setPen(Qt::black);
 
 				QString Level = CSettingsWindow::GetCertLevel();
-				painter.drawText(0, 128 + 8, 120, 16, Qt::AlignRight, Level);
+				painter.drawText(0, 128 + 8, 120, TypeSize.height(), Qt::AlignRight, Level);
 			}
 		}
 
