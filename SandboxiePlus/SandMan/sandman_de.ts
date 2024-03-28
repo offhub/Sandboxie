@@ -7228,13 +7228,6 @@ Dies wird gemacht um bösartige Prozesse in einer Sandbox daran zu hindern, eine
         <translation>Stoppoptionen</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2080"/>
-        <location filename="Forms/OptionsWindow.ui" line="2263"/>
-        <source>Stop Behaviour</source>
-        <oldsource>Stop Behavioure</oldsource>
-        <translation type="unfinished">Stoppverhalten</translation>
-    </message>
-    <message>
         <location filename="Forms/OptionsWindow.ui" line="2270"/>
         <source>Use Linger Leniency</source>
         <translation>Verwende nachsichtiges Verweilen</translation>
