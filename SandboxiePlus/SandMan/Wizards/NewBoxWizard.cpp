@@ -775,15 +775,20 @@ CAdvancedPage::CAdvancedPage(QWidget *parent)
         "\nTo disable this template for a sandbox, simply uncheck it in the template list."));
     layout->addWidget(pSharedTemplateLbl, row, 1);
 
+	QString SharedTemplateTip0 = tr("This option does not add any settings to the box configuration and does not remove the default box settings based on the removal settings within the template.");
+	QString SharedTemplateTip1 = tr("This option adds the shared template to the box configuration as a local template and may also remove the default box settings based on the removal settings within the template.");
+	QString SharedTemplateTip2 = tr("This opiton adds the settings from the shared template to the box configuration and may also remove the default box settings based on the removal settings within the template.");
+	QString SharedTemplateTip3 = tr("This option does not add any settings to the box configuration, but may remove the default box settings based on the removal settings within the template.");
+
     QComboBox* pSharedTemplate = new QComboBox();
 	pSharedTemplate->addItem(tr("Disabled"));
-	pSharedTemplate->setItemData(0, "This option does not add any settings to the box configuration and does not remove the default box settings based on the removal settings within the template.", Qt::ToolTipRole);
+	pSharedTemplate->setItemData(0, SharedTemplateTip0, Qt::ToolTipRole);
 	pSharedTemplate->addItem(tr("Use as a template"));
-	pSharedTemplate->setItemData(1, "This option adds the shared template to the box configuration as a local template and may also remove the default box settings based on the removal settings within the template.", Qt::ToolTipRole);
+	pSharedTemplate->setItemData(1, SharedTemplateTip1, Qt::ToolTipRole);
     pSharedTemplate->addItem(tr("Append to the configuration"));
-	pSharedTemplate->setItemData(2, "This opiton adds the settings from the shared template to the box configuration and may also remove the default box settings based on the removal settings within the template.", Qt::ToolTipRole);
+	pSharedTemplate->setItemData(2, SharedTemplateTip2, Qt::ToolTipRole);
 	pSharedTemplate->addItem(tr("Remove defaults if set"));
-	pSharedTemplate->setItemData(3, "This option does not add any settings to the box configuration, but may remove the default box settings based on the removal settings within the template.", Qt::ToolTipRole);
+	pSharedTemplate->setItemData(3, SharedTemplateTip3, Qt::ToolTipRole);
     layout->addWidget(pSharedTemplate, row++, 2);
     pSharedTemplate->setCurrentIndex(theConf->GetInt("BoxDefaults/SharedTemplate", 0));
     layout->addItem(new QSpacerItem(40, 20, QSizePolicy::Expanding, QSizePolicy::Minimum), 0, 4, 1, 1);
