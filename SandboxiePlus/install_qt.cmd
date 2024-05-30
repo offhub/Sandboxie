@@ -1,6 +1,7 @@
 set "qt_version=%qt_version%"
 set "ghUser=offhub"
 set "ghRepo=qt-sbie-builds"
+
 if %1 == Win32 (
     if exist %~dp0..\..\Qt\%qt_version%\msvc2019\bin\qmake.exe goto done
 
