@@ -3,14 +3,14 @@ REM @ECHO OFF
 IF %1 == x86 (
   set archPath=Win32
   call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
-  set qtPath=%~dp0..\..\Qt\5.15.13\msvc2019
+  set qtPath=%~dp0..\..\Qt\5.15.14\msvc2019
   set instPath=%~dp0\SbiePlus_x86
 )
 IF %1 == x64 (
   set archPath=x64
   call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 REM  set qtPath=%~dp0..\..\Qt\6.3.1\msvc2019_64
-  set qtPath=%~dp0..\..\Qt\5.15.13\msvc2019_64
+  set qtPath=%~dp0..\..\Qt\5.15.14\msvc2019_64
   set instPath=%~dp0\SbiePlus_x64
 )
 IF %1 == ARM64 (
@@ -72,12 +72,12 @@ copy %qtPath%\plugins\tls\qopensslbackend.dll %instPath%\tls\
 
 ECHO Copying OpenSSL libraries
 IF %archPath% == Win32 (
-  copy /y %~dp0OpenSSL\Win_x86\bin\libssl-1_1.dll %instPath%\
-  copy /y %~dp0OpenSSL\Win_x86\bin\libcrypto-1_1.dll %instPath%\
+  copy /y %~dp0OpenSSL\Win_x86\bin\libssl-3.dll %instPath%\
+  copy /y %~dp0OpenSSL\Win_x86\bin\libcrypto-3.dll %instPath%\
 )
 IF NOT %archPath% == Win32 (
-  copy /y %~dp0OpenSSL\Win_%archPath%\bin\libssl-1_1-%archPath%.dll %instPath%\
-  copy /y %~dp0OpenSSL\Win_%archPath%\bin\libcrypto-1_1-%archPath%.dll %instPath%\
+  copy /y %~dp0OpenSSL\Win_%archPath%\bin\libssl-3-%archPath%.dll %instPath%\
+  copy /y %~dp0OpenSSL\Win_%archPath%\bin\libcrypto-3-%archPath%.dll %instPath%\
 )
 
 
