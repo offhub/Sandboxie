@@ -1,7 +1,7 @@
 REM @ECHO OFF
 
 echo %*
-IF "%~4" == "" ( set "openssl_version=3.3.0" ) ELSE ( set "openssl_version=%~4" )
+IF "%~4" == "" ( set "openssl_version=1.1.1w" ) ELSE ( set "openssl_version=%~4" )
 IF "%~3" == "" ( set "qt6_version=6.3.1" ) ELSE ( set "qt6_version=%~3" )
 IF "%~2" == "" ( set "qt_version=5.15.14" ) ELSE ( set "qt_version=%~2" )
 
