@@ -70,7 +70,7 @@ on:
 
 env:
   #qt_version: 5.15.16
-  qt6_version: 6.3.1
+  qt6_version: 6.8.0
   #openssl_version: 3.4.0
   #ghSsl_user: xanasoft
   #ghSsl_repo: openssl-builds
