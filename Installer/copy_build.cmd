@@ -52,21 +52,21 @@ copy "%redistPath%\*" %instPath%\
 
 ECHO Copying Qt libraries
 
-IF NOT %archPath% == ARM64 (
+REM IF NOT %archPath% == ARM64 (
 REM IF %archPath% == Win32 (
-	copy %qtPath%\bin\Qt5Core.dll %instPath%\
-	copy %qtPath%\bin\Qt5Gui.dll %instPath%\
-	copy %qtPath%\bin\Qt5Network.dll %instPath%\
-	copy %qtPath%\bin\Qt5Widgets.dll %instPath%\
-	copy %qtPath%\bin\Qt5WinExtras.dll %instPath%\
-	copy %qtPath%\bin\Qt5Qml.dll %instPath%\
-) ELSE (
+REM	copy %qtPath%\bin\Qt5Core.dll %instPath%\
+REM	copy %qtPath%\bin\Qt5Gui.dll %instPath%\
+REM	copy %qtPath%\bin\Qt5Network.dll %instPath%\
+REM	copy %qtPath%\bin\Qt5Widgets.dll %instPath%\
+REM	copy %qtPath%\bin\Qt5WinExtras.dll %instPath%\
+REM	copy %qtPath%\bin\Qt5Qml.dll %instPath%\
+REM ) ELSE (
 	copy %qtPath%\bin\Qt6Core.dll %instPath%\
 	copy %qtPath%\bin\Qt6Gui.dll %instPath%\
 	copy %qtPath%\bin\Qt6Network.dll %instPath%\
 	copy %qtPath%\bin\Qt6Widgets.dll %instPath%\
 	copy %qtPath%\bin\Qt6Qml.dll %instPath%\
-)
+REM )
 
 
 mkdir %instPath%\platforms
