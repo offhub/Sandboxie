@@ -1,3 +1,4 @@
+@echo on
 call "%~dp0..\Installer\buildVariables.cmd"
 
 REM echo %*
