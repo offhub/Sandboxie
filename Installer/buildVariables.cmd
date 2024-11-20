@@ -1,7 +1,7 @@
 @echo on
 
 set "qt_version=6.7.3"
-set "qt6_version=6.3.1"
+set "qt6_version=6.8.0"
 set "openssl_version=3.4.0"
 set "ghSsl_user=xanasoft"
 set "ghSsl_repo=openssl-builds"
