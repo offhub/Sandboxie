@@ -184,7 +184,7 @@ jobs:
 
 
   Build_ARM64:
-    runs-on: windows-2019
+    runs-on: windows-2022
     timeout-minutes: 45
 
     steps:
@@ -229,7 +229,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2019_arm64'
+          arch:  'win64_msvc2022_arm64'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           cache: true
 
