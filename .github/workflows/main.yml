@@ -122,7 +122,7 @@ jobs:
           echo "qt6_version=%qt6_version%" >> $env:GITHUB_ENV
           echo "${{ env.qt6_version }}"
           echo "%GITHUB_ENV%"
-          set
+          type "%GITHUB_ENV%"
 
       - name: Setup msbuild
         uses: microsoft/setup-msbuild@v2
