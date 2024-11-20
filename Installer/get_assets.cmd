@@ -1,4 +1,4 @@
-rem @echo off
+@echo on
 
 mkdir %~dp0\Assets
 
