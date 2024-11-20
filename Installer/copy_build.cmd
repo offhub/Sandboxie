@@ -52,7 +52,7 @@ copy "%redistPath%\*" %instPath%\
 
 ECHO Copying Qt libraries
 
-REM Define the common library names
+REM Define the common library names for both Qt5 and Qt6
 set qt_version_files=(
     Core.dll
     Gui.dll
@@ -66,13 +66,22 @@ set qt5_specific_files=(
     WinExtras.dll
 )
 
-REM Determine which Qt version is being used
+REM Determine which Qt version to use based on the version and architecture
 if "%qt_version:~0,1%" == "5" (
+    REM For Qt5
     set qt_version_folder=Qt5
     set qt_version_prefix=Qt5
     set qt_version_files=%qt_version_files% %qt5_specific_files%
 )
+
 if "%qt_version:~0,1%" == "6" (
+    REM For Qt6 (default for non-Qt5 version)
+    set qt_version_folder=Qt6
+    set qt_version_prefix=Qt6
+)
+
+if "%archPath%" == "ARM64" (
+    REM If ARM64, use Qt6
     set qt_version_folder=Qt6
     set qt_version_prefix=Qt6
 )
