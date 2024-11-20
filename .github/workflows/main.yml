@@ -118,8 +118,8 @@ jobs:
         run: |
           @echo on
           call "${{ github.workspace }}\Installer\buildVariables.cmd"
-          echo "%qt6_version%"
-          echo "qt6_version=%qt6_version%"
+          echo "qt6_version=%qt6_version%" >> $GITHUB_ENV
+          echo "${{ env.qt6_version }}"
 
       - name: Setup msbuild
         uses: microsoft/setup-msbuild@v2
