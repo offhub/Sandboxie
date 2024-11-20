@@ -1,3 +1,4 @@
+@echo on
 if exist %~dp0..\..\Qt\Tools\QtCreator\bin\jom.exe goto done
 
 curl -LsSO --output-dir %~dp0..\..\ https://download.qt.io/official_releases/jom/jom.zip
