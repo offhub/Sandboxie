@@ -70,7 +70,7 @@ on:
 
 env:
   #qt_version: 5.15.16
-  qt6_version: 6.3.2
+  qt6_version: 6.4.3
   #openssl_version: 3.4.0
   #ghSsl_user: xanasoft
   #ghSsl_repo: openssl-builds
@@ -184,7 +184,7 @@ jobs:
 
 
   Build_ARM64:
-    runs-on: windows-2022
+    runs-on: windows-2019
     timeout-minutes: 45
 
     steps:
@@ -229,7 +229,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2022_arm64'
+          arch:  'win64_msvc2019_arm64'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           cache: true
 
