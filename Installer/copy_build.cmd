@@ -52,22 +52,45 @@ copy "%redistPath%\*" %instPath%\
 
 ECHO Copying Qt libraries
 
-REM IF NOT %archPath% == ARM64 (
-REM IF %archPath% == Win32 (
-REM	copy %qtPath%\bin\Qt5Core.dll %instPath%\
-REM	copy %qtPath%\bin\Qt5Gui.dll %instPath%\
-REM	copy %qtPath%\bin\Qt5Network.dll %instPath%\
-REM	copy %qtPath%\bin\Qt5Widgets.dll %instPath%\
-REM	copy %qtPath%\bin\Qt5WinExtras.dll %instPath%\
-REM	copy %qtPath%\bin\Qt5Qml.dll %instPath%\
-REM ) ELSE (
-	copy %qtPath%\bin\Qt6Core.dll %instPath%\
-	copy %qtPath%\bin\Qt6Gui.dll %instPath%\
-	copy %qtPath%\bin\Qt6Network.dll %instPath%\
-	copy %qtPath%\bin\Qt6Widgets.dll %instPath%\
-	copy %qtPath%\bin\Qt6Qml.dll %instPath%\
-REM )
+REM Define the common library names
+set qt_version_files=(
+    Core.dll
+    Gui.dll
+    Network.dll
+    Widgets.dll
+    Qml.dll
+)
 
+REM Add Qt5-specific library for WinExtras
+set qt5_specific_files=(
+    WinExtras.dll
+)
+
+REM Determine which Qt version is being used
+if "%qt_version:~0,1%" == "5" (
+    set qt_version_folder=Qt5
+    set qt_version_prefix=Qt5
+    set qt_version_files=%qt_version_files% %qt5_specific_files%
+)
+if "%qt_version:~0,1%" == "6" (
+    set qt_version_folder=Qt6
+    set qt_version_prefix=Qt6
+)
+
+echo Copying %qt_version_folder% libraries...
+
+REM Loop through all the libraries and copy them with version-specific filenames
+for %%f in %qt_version_files% do (
+    REM Construct the source and destination paths
+    set srcFile=%qtPath%\bin\%qt_version_prefix%%%f
+    set destFile=%instPath%\%%f
+
+    REM Copy the DLL file
+    echo Copying %%f...
+    copy "%srcFile%" "%destFile%"
+)
+
+echo Done copying %qt_version_folder% libraries.
 
 mkdir %instPath%\platforms
 copy %qtPath%\plugins\platforms\qdirect2d.dll %instPath%\platforms\
