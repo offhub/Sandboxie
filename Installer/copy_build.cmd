@@ -52,54 +52,51 @@ copy "%redistPath%\*" %instPath%\
 
 ECHO Copying Qt libraries
 
-REM Define the common library names for both Qt5 and Qt6
-set qt_version_files=(
-    Core.dll
-    Gui.dll
-    Network.dll
-    Widgets.dll
-    Qml.dll
-)
-
-REM Add Qt5-specific library for WinExtras
-set qt5_specific_files=(
-    WinExtras.dll
-)
-
-REM Determine which Qt version to use based on the version and architecture
 if "%qt_version:~0,1%" == "5" (
-    REM For Qt5
-    set qt_version_folder=Qt5
-    set qt_version_prefix=Qt5
-    set qt_version_files=%qt_version_files% %qt5_specific_files%
+    echo Copying Qt5 libraries...
+    IF NOT %archPath% == ARM64 (
+        REM If not ARM64 (e.g., x86 or x64)
+        echo Copying Qt5Core.dll
+        copy %qtPath%\bin\Qt5Core.dll %instPath%\
+        echo Copying Qt5Gui.dll
+        copy %qtPath%\bin\Qt5Gui.dll %instPath%\
+        echo Copying Qt5Network.dll
+        copy %qtPath%\bin\Qt5Network.dll %instPath%\
+        echo Copying Qt5Widgets.dll
+        copy %qtPath%\bin\Qt5Widgets.dll %instPath%\
+        echo Copying Qt5WinExtras.dll
+        copy %qtPath%\bin\Qt5WinExtras.dll %instPath%\
+        echo Copying Qt5Qml.dll
+        copy %qtPath%\bin\Qt5Qml.dll %instPath%\
+    ) ELSE (
+        REM If ARM64, using Qt6
+        echo Copying Qt6Core.dll
+        copy %qtPath%\bin\Qt6Core.dll %instPath%\
+        echo Copying Qt6Gui.dll
+        copy %qtPath%\bin\Qt6Gui.dll %instPath%\
+        echo Copying Qt6Network.dll
+        copy %qtPath%\bin\Qt6Network.dll %instPath%\
+        echo Copying Qt6Widgets.dll
+        copy %qtPath%\bin\Qt6Widgets.dll %instPath%\
+        echo Copying Qt6Qml.dll
+        copy %qtPath%\bin\Qt6Qml.dll %instPath%\
+    )
+) else (
+    REM If not Qt5, assuming Qt6
+    echo Copying Qt6 libraries...
+    echo Copying Qt6Core.dll
+    copy %qtPath%\bin\Qt6Core.dll %instPath%\
+    echo Copying Qt6Gui.dll
+    copy %qtPath%\bin\Qt6Gui.dll %instPath%\
+    echo Copying Qt6Network.dll
+    copy %qtPath%\bin\Qt6Network.dll %instPath%\
+    echo Copying Qt6Widgets.dll
+    copy %qtPath%\bin\Qt6Widgets.dll %instPath%\
+    echo Copying Qt6Qml.dll
+    copy %qtPath%\bin\Qt6Qml.dll %instPath%\
 )
 
-if "%qt_version:~0,1%" == "6" (
-    REM For Qt6 (default for non-Qt5 version)
-    set qt_version_folder=Qt6
-    set qt_version_prefix=Qt6
-)
-
-if "%archPath%" == "ARM64" (
-    REM If ARM64, use Qt6
-    set qt_version_folder=Qt6
-    set qt_version_prefix=Qt6
-)
-
-echo Copying %qt_version_folder% libraries...
-
-REM Loop through all the libraries and copy them with version-specific filenames
-for %%f in %qt_version_files% do (
-    REM Construct the source and destination paths
-    set srcFile=%qtPath%\bin\%qt_version_prefix%%%f
-    set destFile=%instPath%\%%f
-
-    REM Copy the DLL file
-    echo Copying %%f...
-    copy "%srcFile%" "%destFile%"
-)
-
-echo Done copying %qt_version_folder% libraries.
+echo Done copying libraries.
 
 mkdir %instPath%\platforms
 copy %qtPath%\plugins\platforms\qdirect2d.dll %instPath%\platforms\
