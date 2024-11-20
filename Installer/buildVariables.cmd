@@ -1,11 +1,11 @@
 @echo on
 
-set "qt_version=5.15.16"
+set "qt_version=6.7.3"
 set "qt6_version=6.3.1"
 set "openssl_version=3.4.0"
 set "ghSsl_user=xanasoft"
 set "ghSsl_repo=openssl-builds"
-set "ghQtBuilds_user=xanasoft"
-set "ghQtBuilds_repo=qt-builds"
-set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705"
-set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
+set "ghQtBuilds_user=offhub"
+set "ghQtBuilds_repo=qt-sbie-builds"
+set "ghQtBuilds_hash_x86=7EAD559A9003EEEEC512F4A05537AE36001C7C238E0BF638FDA24420E0FA0C36"
+set "ghQtBuilds_hash_x64=8C49D16D17672C12A57A3EF6EAC69E3C151E307D4C361702671E3C3389E74487"
