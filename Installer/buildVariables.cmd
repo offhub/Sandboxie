@@ -9,3 +9,9 @@ set "ghQtBuilds_user=xanasoft"
 set "ghQtBuilds_repo=qt-builds"
 set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705"
 set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
+
+if "%~1" == "build_qt6" (
+    set "qt_version=%qt6_version%"
+) else (
+    set "qt_version=%qt_version%"
+)
