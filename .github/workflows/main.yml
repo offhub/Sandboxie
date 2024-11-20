@@ -16,11 +16,7 @@ jobs:
         shell: cmd
         run: |
           @echo on
-          dir
-          dir "${{ github.workspace }}"
-          dir "${{ github.workspace }}\.."
-          dir "${{ github.workspace }}\..\Installer"
-          call "${{ github.workspace }}\..\Installer\buildVariables.cmd"
+          call "${{ github.workspace }}\Installer\buildVariables.cmd"
           echo "%qt6_version%"
           echo "qt6_version=%qt6_version%"
 
