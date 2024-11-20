@@ -91,6 +91,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4.1.7
 
+      - name: Load Variables from buildVariables.cmd
+        shell: cmd
+        run: |
+          @echo on
+          call "${{ github.workspace }}\Installer\buildVariables.cmd"
+          echo qt6_version=%qt6_version% >> %GITHUB_ENV%
+
       - name: Setup msbuild
         uses: microsoft/setup-msbuild@v2
 
@@ -108,19 +115,27 @@ jobs:
     # Prepare Qt Framework
     #
 
-#      - name: Install Qt6 x64
-#        uses: jurplel/install-qt-action@v4.1.1
-#        with:
-#      #    version: '6.2.4'
-#          version: '6.3.1'
-#      #    dir: ..
-#      #    arch:  ${{ matrix.qt-target }}
-#          arch:  'win64_msvc2019_64'
-#      #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
-#          cache: true
+      - name: Install Qt6 x64
+        uses: jurplel/install-qt-action@v4.1.1
+        with:
+      #    version: '6.2.4'
+          version: '${{ env.qt6_version }}'
+      #    dir: ..
+      #    arch:  ${{ matrix.qt-target }}
+          arch:  'win64_msvc2019_64'
+      #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
+          cache: true
 
-      - name: Install Qt5 x64
-        run: SandboxiePlus\install_qt.cmd x64
+      - name: Install Qt6 x64
+        uses: jurplel/install-qt-action@v4.1.1
+        with:
+      #    version: '6.2.4'
+          version: '${{ env.qt6_version }}'
+      #    dir: ..
+      #    arch:  ${{ matrix.qt-target }}
+          arch:  'win64_msvc2019_arm64'
+      #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
+          cache: true
 
       - name: Installing Jom
       #  if: steps.cache-qt.outputs.cache-hit != 'true'
@@ -146,12 +161,6 @@ jobs:
     #
     # Merge everything together
     #
-
-#      - name: Add Windows 7 compatible Qt6 DLLs
-#        run: Installer\fix_qt6_win7.cmd
-
-      - name: Add missing languages for Qt5 (issue 1528)
-        run: Installer\fix_qt5_languages.cmd x64
 
       - name: Get openssl binaries
         run: Installer\get_openssl.cmd
@@ -182,7 +191,6 @@ jobs:
           path: |
             Installer/SbiePlus_x64/*
           retention-days: 60
-
 
   Build_ARM64:
     runs-on: windows-2019
@@ -284,7 +292,6 @@ jobs:
             Installer/SbiePlus_a64/*
           retention-days: 60
 
-
   Build_x86:
     runs-on: windows-2019
     timeout-minutes: 45
@@ -292,6 +299,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4.1.7
+
+      - name: Load Variables from buildVariables.cmd
+        shell: cmd
+        run: |
+          @echo on
+          call "${{ github.workspace }}\Installer\buildVariables.cmd"
+          echo qt6_version=%qt6_version% >> %GITHUB_ENV%
 
       - name: Setup msbuild
         uses: microsoft/setup-msbuild@v2
@@ -307,8 +321,16 @@ jobs:
     # Prepare Qt Framework
     #
 
-      - name: Install Qt5 x86
-        run: SandboxiePlus\install_qt.cmd Win32
+      - name: Install Qt6 x64
+        uses: jurplel/install-qt-action@v4.1.1
+        with:
+      #    version: '6.2.4'
+          version: '${{ env.qt6_version }}'
+      #    dir: ..
+      #    arch:  ${{ matrix.qt-target }}
+          arch:  'win64_msvc2019_64'
+      #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
+          cache: true
 
       - name: Installing Jom
       #  if: steps.cache-qt.outputs.cache-hit != 'true'
@@ -331,9 +353,6 @@ jobs:
     #
     # Merge everything together
     #
-
-      - name: Add missing languages for Qt5 (issue 1528)
-        run: Installer\fix_qt5_languages.cmd Win32
 
       - name: Get openssl binaries
         run: Installer\get_openssl.cmd
