@@ -119,12 +119,12 @@ jobs:
           @echo on
           call "${{ github.workspace }}\Installer\buildVariables.cmd"
           dir
-          echo "qt6_version=%qt6_version%" >> %GITHUB_ENV%
-          echo "${{ env.qt6_version }}"
-          type "%GITHUB_ENV%" | find /i "qt6_version"
-          echo "%GITHUB_ENV%"
-          type "%GITHUB_ENV%"
-          for /f "tokens=2 delims==" %%a in ('find /i "qt6_version" %GITHUB_ENV%') do (set qt6_version=%%a & set qt6_version=%qt6_version:"=%)
+          echo qt6_version=%qt6_version% >> %GITHUB_ENV%
+          rem echo "${{ env.qt6_version }}"
+          rem type "%GITHUB_ENV%" | find /i "qt6_version"
+          rem echo "%GITHUB_ENV%"
+          rem type "%GITHUB_ENV%"
+          rem for /f "tokens=2 delims==" %%a in ('find /i "qt6_version" %GITHUB_ENV%') do (set qt6_version=%%a & set qt6_version=%qt6_version:"=%)
 
       - name: Setup msbuild
         uses: microsoft/setup-msbuild@v2
