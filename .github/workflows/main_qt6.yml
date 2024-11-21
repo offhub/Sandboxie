@@ -1,4 +1,4 @@
-name: CI (Qt6)
+name: CI (Qt 6)
 
 on:
   workflow_dispatch:
