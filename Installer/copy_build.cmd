@@ -1,4 +1,4 @@
-call "%~dp0..\Installer\buildVariables.cmd"
+call "%~dp0..\Installer\buildVariables.cmd" %*
 
 REM @ECHO OFF
 
