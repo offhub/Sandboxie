@@ -228,7 +228,6 @@ jobs:
       - name: Install Qt6 x64
         uses: jurplel/install-qt-action@v4.1.1
         with:
-          aqtversion: '==3.1.*'
       #    version: '6.2.4'
           version: '${{ env.qt6_version }}'
       #    dir: ..
@@ -241,7 +240,6 @@ jobs:
       - name: Install Qt6 ARM64
         uses: jurplel/install-qt-action@v4.1.1
         with:
-          aqtversion: '==3.1.*'
       #    version: '6.2.4'
           version: '${{ env.qt6_version }}'
       #    dir: ..
@@ -401,7 +399,6 @@ jobs:
       - name: Install Qt6 x64
         uses: jurplel/install-qt-action@v4.1.1
         with:
-          aqtversion: '==3.1.*'
       #    version: '6.2.4'
           version: '${{ env.qt6_version }}'
       #    dir: ..
@@ -474,3 +471,4 @@ jobs:
           path: |
             Installer/SbiePlus_x64/*
           retention-days: 60
+
