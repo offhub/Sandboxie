@@ -9,7 +9,7 @@
 class C7zFileEngineIterator : public QAbstractFileEngineIterator
 {
 public:
-#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
     C7zFileEngineIterator(QDir::Filters filters, const QStringList& filterNames, 
         const QStringList& allEntries)
         : QAbstractFileEngineIterator(filters, filterNames), entries(allEntries), index(0) {}
@@ -187,7 +187,7 @@ QAbstractFileEngine::Iterator *C7zFileEngine::beginEntryList(QDir::Filters filte
             allEntries.append(Path);
     }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
     return new C7zFileEngineIterator(filters, filterNames, allEntries);
 #else
     return new C7zFileEngineIterator("", filters, filterNames, allEntries);
@@ -220,7 +220,7 @@ QString C7zFileEngine::fileName(FileName file) const
 	return _filename;
 }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
 QDateTime C7zFileEngine::fileTime(FileTime time) const
 #else
 QDateTime C7zFileEngine::fileTime(QFile::FileTime time) const
@@ -228,7 +228,7 @@ QDateTime C7zFileEngine::fileTime(QFile::FileTime time) const
 {
     switch (time)
     {
-#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
     case QAbstractFileEngine::ModificationTime:
 #else
     case QFile::FileModificationTime:
@@ -343,7 +343,7 @@ void C7zFileEngineHandler::Close()
     m_pArchive = NULL;
 }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION < QT_VERSION_CHECK(6, 7, 0)
 QAbstractFileEngine* C7zFileEngineHandler::create(const QString& filename) const
 {
     if (m_pArchive && filename.startsWith(m_Scheme))
