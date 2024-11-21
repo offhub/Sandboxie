@@ -115,7 +115,7 @@ if NOT EXIST %~dp0\bin\%build_arch%\Release\QSbieAPI.dll goto :error
 mkdir %~dp0\Build_SandMan_%build_arch%
 cd %~dp0\Build_SandMan_%build_arch%
 
-%qt_path%\bin\qmake.exe %~dp0\SandMan\SandMan.qc.pro %qt_params% QT += winextras
+%qt_path%\bin\qmake.exe "QT -= winextras" %~dp0\SandMan\SandMan.qc.pro %qt_params%
 %~dp0..\..\Qt\Tools\QtCreator\bin\jom.exe -f Makefile.Release -j 8
 IF %ERRORLEVEL% NEQ 0 goto :error
 if NOT EXIST %~dp0\bin\%build_arch%\Release\SandMan.exe goto :error
