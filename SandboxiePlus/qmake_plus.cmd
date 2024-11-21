@@ -1,4 +1,4 @@
-call "%~dp0..\Installer\buildVariables.cmd" "%~2"
+call "%~dp0..\Installer\buildVariables.cmd" %*
 
 REM @echo off
 REM echo Current dir: %cd%
