@@ -116,10 +116,10 @@ mkdir %~dp0\Build_SandMan_%build_arch%
 cd %~dp0\Build_SandMan_%build_arch%
 
 if "%qt_version:~0,1%" == "5" ( 
-    %qt_path%\bin\qmake.exe "QT += winextras" %~dp0\SandMan\SandMan.qc.pro %qt_params%
+    %qt_path%\bin\qmake.exe %~dp0\SandMan\SandMan.qc.pro %qt_params%
 )
 if "%qt_version:~0,1%" == "6" ( 
-    %qt_path%\bin\qmake.exe %~dp0\SandMan\SandMan.qc.pro "QT -= winextras" %qt_params%
+    %qt_path%\bin\qmake.exe %~dp0\SandMan\SandMan-Qt6.qc.pro %qt_params%
 )
 %~dp0..\..\Qt\Tools\QtCreator\bin\jom.exe -f Makefile.Release -j 8
 IF %ERRORLEVEL% NEQ 0 goto :error
