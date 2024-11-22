@@ -30,8 +30,8 @@ IF %1 == ARM64 (
   set "sslMajorVersion=1_1"
 )
 
-REM set redistPath=%VCToolsRedistDir%\%1\Microsoft.VC142.CRT
-set redistPath=C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\%VCToolsVersion%\%1\Microsoft.VC142.CRT
+REM set redistPath=%VCToolsRedistDir%\%1\Microsoft.VC143.CRT
+set redistPath=C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\%VCToolsVersion%\%1\Microsoft.VC143.CRT
 
 @echo on
 
