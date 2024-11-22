@@ -1,14 +1,14 @@
 @echo on
 
 set "qt_version=5.15.16"
-set "qt6_version=6.7.3"
+set "qt6_version=6.8.0"
 set "openssl_version=3.4.0"
 set "ghSsl_user=xanasoft"
 set "ghSsl_repo=openssl-builds"
-set "ghQtBuilds_user=xanasoft"
-set "ghQtBuilds_repo=qt-builds"
-set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705"
-set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
+set "ghQtBuilds_user=offhub"
+set "ghQtBuilds_repo=qt-sbie-builds"
+set "ghQtBuilds_hash_x86=E9084586DDE248E7D367A365A9DBB860303C31255DC0E63940213D3E3C008D45"
+set "ghQtBuilds_hash_x64=98E3AD2B678C83BC6622CBD10697A6FAA4052B4EF45FA72E90770B7EE54A1CC7"
 
 REM catch build_qt6
 set "allArgs=%*"
