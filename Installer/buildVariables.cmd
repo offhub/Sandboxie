@@ -1,4 +1,4 @@
-@echo on
+@echo off
 
 set "qt_version=5.15.16"
 set "qt6_version=6.7.3"
@@ -10,10 +10,15 @@ set "ghQtBuilds_repo=qt-builds"
 set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705"
 set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
 
+echo 1qt_version=%qt_version%
+echo 1qt6_version=%qt6_version%
+
 REM catch build_qt6
+set "allArgs=%*"
+echo set "allArgs=%*"
+set "allArgsCatch=%allArgs:build_qt6=%"
+echo set "allArgsCatch=%allArgs:build_qt6=%"
 if not "%~1" == "" (
-    set "allArgs=%*"
-    set "allArgsCatch=%allArgs:build_qt6=%"
     if not "%allArgs%" == "%allArgsCatch%" (
         set "qt_version=%qt6_version%"
     ) else (
@@ -21,5 +26,5 @@ if not "%~1" == "" (
     )
 )
 
-echo qt_version=%qt_version%
-echo qt6_version=%qt6_version%
+echo 2qt_version=%qt_version%
+echo 2qt6_version=%qt6_version%
