@@ -11,7 +11,7 @@ set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5
 set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
 
 REM catch build_qt6
-if not "%~1"=="" (
+if not "%~1" == "" (
     set "allArgs=%*"
     set "allArgsCatch=%allArgs:build_qt6=%"
     if not "%allArgs%" == "%allArgsCatch%" (
@@ -20,3 +20,6 @@ if not "%~1"=="" (
         set "qt_version=%qt_version%"
     )
 )
+
+echo qt_version=%qt_version%
+echo qt6_version=%qt6_version%
