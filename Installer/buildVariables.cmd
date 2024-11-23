@@ -1,4 +1,4 @@
-@echo off
+@echo on
 
 set "qt_version=5.15.16"
 set "qt6_version=6.7.3"
