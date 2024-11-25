@@ -40,6 +40,11 @@ IF %1 == ARM64 (
 
 REM set redistPath=%VCToolsRedistDir%\%1\Microsoft.VC142.CRT
 set redistPath=C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\%VCToolsVersion%\%1\Microsoft.VC142.CRT
+if "%qt_version:~0,3%" == "6.8" (
+    redistPath=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\%VCToolsVersion%\%1\Microsoft.VC143.CRT
+  ) else (
+    redistPath=C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Redist\MSVC\%VCToolsVersion%\%1\Microsoft.VC142.CRT
+  )
 
 @echo on
 
