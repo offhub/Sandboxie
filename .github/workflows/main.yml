@@ -407,7 +407,7 @@ jobs:
 #          cache: true
 
       - name: Install Qt5 x64
-        run: SandboxiePlus\install_qt.cmd x64
+        run: SandboxiePlus\install_qt.cmd x64 build_qt6
 
       - name: Installing Jom
       #  if: steps.cache-qt.outputs.cache-hit != 'true'
