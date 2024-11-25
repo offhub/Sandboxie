@@ -7,8 +7,11 @@ set "ghSsl_user=xanasoft"
 set "ghSsl_repo=openssl-builds"
 set "ghQtBuilds_user=xanasoft"
 set "ghQtBuilds_repo=qt-builds"
-set "ghQtBuilds_hash_x86=502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705"
-set "ghQtBuilds_hash_x64=673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2"
+set "ghQtBuilds_hash_x86=3ADC4017A200E93CB4B77498D8F9BB163D908B35B66D024588ED44AFEBE1C907"
+set "ghQtBuilds_hash_x86_Qt6=E9084586DDE248E7D367A365A9DBB860303C31255DC0E63940213D3E3C008D45"
+set "ghQtBuilds_hash_x64=1E281C42FB6EBD69E4E6F79C9D399F8325D11775B2ACF52E94BF97E5CB26BD04"
+set "ghQtBuilds_hash_x64_Qt6=98E3AD2B678C83BC6622CBD10697A6FAA4052B4EF45FA72E90770B7EE54A1CC7"
+set "msvc_version=2019"
 
 REM catch build_qt6
 set "allArgs=%*"
@@ -16,7 +19,13 @@ set "allArgsCatch=%allArgs:build_qt6=%"
 if not "%~1" == "" (
     if not "%allArgs%" == "%allArgsCatch%" (
         set "qt_version=%qt6_version%"
+        set "msvc_version=2022"
+        set "ghQtBuilds_hash_x86=%ghQtBuilds_hash_x86_Qt6%"
+        set "ghQtBuilds_hash_x64=%ghQtBuilds_hash_x64_Qt6%"
     ) else (
         set "qt_version=%qt_version%"
+        set "msvc_version=2019"
+        set "ghQtBuilds_hash_x86=%ghQtBuilds_hash_x86%"
+        set "ghQtBuilds_hash_x64=%ghQtBuilds_hash_x64%"
     )
 )
