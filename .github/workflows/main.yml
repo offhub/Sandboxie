@@ -406,7 +406,7 @@ jobs:
 #      #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
 #          cache: true
 
-      - name: Install Qt5 x64
+      - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64 build_qt6
 
       - name: Installing Jom
@@ -452,16 +452,16 @@ jobs:
       - name: Collect installer assets
         run: Installer\get_assets.cmd
 
-      - name: Upload installer assets
-        #if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4.4.3
-        with:
-          name: Assets
-          path: |
-            Installer/Assets/*
-          retention-days: 60
+      # - name: Upload installer assets
+        # #if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        # uses: actions/upload-artifact@v4.4.3
+        # with:
+          # name: Assets
+          # path: |
+            # Installer/Assets/*
+          # retention-days: 60
 
-      - name: Upload Sandboxie x64
+      - name: Upload Sandboxie x64 Qt6
         #if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4.4.3
         with:
