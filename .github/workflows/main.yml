@@ -191,7 +191,7 @@ jobs:
           retention-days: 60
 
   Build_ARM64:
-    runs-on: windows-2019
+    runs-on: windows-2022
     timeout-minutes: 45
 
     steps:
@@ -232,7 +232,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2019_64'
+          arch:  'win64_msvc2022_64'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           tools: 'tools_opensslv3_x64'
           cache: true
@@ -244,7 +244,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2019_arm64'
+          arch:  'win64_msvc2022_arm64'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           tools: 'tools_opensslv3_x64'
           cache: true
@@ -364,7 +364,7 @@ jobs:
           retention-days: 60
 
   Build_x64_Qt6:
-    runs-on: windows-2019
+    runs-on: windows-2022
     timeout-minutes: 45
 
     steps:
