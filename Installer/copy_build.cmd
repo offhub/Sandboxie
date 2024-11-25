@@ -17,14 +17,22 @@ IF %1 == x86 (
 )
 IF %1 == x64 (
   set archPath=x64
-  call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+  if "%qt_version:~0,3%" == "6.8" (
+    call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+  ) else (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+  )
 REM  set qtPath=%~dp0..\..\Qt\%qt6_version%\msvc%msvc_version%_64
   set qtPath=%~dp0..\..\Qt\%qt_version%\msvc%msvc_version%_64
   set instPath=%~dp0\SbiePlus_x64
 )
 IF %1 == ARM64 (
   set archPath=ARM64
-  call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+  if "%qt_version:~0,3%" == "6.8" (
+    call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+  ) else (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsamd64_arm64.bat"
+  )
   set qtPath=%~dp0..\..\Qt\%qt6_version%\msvc%msvc_version%_arm64
   set instPath=%~dp0\SbiePlus_a64
   set "sslMajorVersion=1_1"
