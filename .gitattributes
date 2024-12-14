@@ -7,7 +7,7 @@
 *.cmd text working-tree-encoding=UTF-8
 *.c text working-tree-encoding=UTF-8
 *.cpp text working-tree-encoding=UTF-8
-*.rc text working-tree-encoding=UTF-8
+*.rc text working-tree-encoding=UTF-8 eol=lf
 *.ts text working-tree-encoding=UTF-8 eol=lf
 *.md text working-tree-encoding=UTF-8 eol=lf
 *.yml text working-tree-encoding=UTF-8 eol=lf
