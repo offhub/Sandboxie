@@ -210,8 +210,9 @@ IF %archPath% == x64 (
   copy /y %~dp0..\Sandboxie\Bin\Win32\SbieRelease\SbieDll.dll %instPath%\32\
   copy /y %~dp0..\Sandboxie\Bin\Win32\SbieRelease\SbieDll.pdb %instPath%\32\
 
-  copy /y %~dp0..\SandboxiePlus\x64\Release\SbieShellExt.dll %instPath%\
-  copy /y %~dp0..\SandboxiePlus\x64\Release\SbieShellPkg.msix %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\x64\Release\SbieShellExt.dll %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\x64\Release\SbieShellExt.pdb %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\x64\Release\SbieShellPkg.msix %instPath%\
 )
 IF %archPath% == ARM64 (
   mkdir %instPath%\32\
@@ -224,8 +225,9 @@ IF %archPath% == ARM64 (
   copy /y %~dp0..\Sandboxie\Bin\ARM64EC\SbieRelease\SbieDll.dll %instPath%\64\
   copy /y %~dp0..\Sandboxie\Bin\ARM64EC\SbieRelease\SbieDll.pdb %instPath%\64\
 
-  copy /y %~dp0..\SandboxiePlus\ARM64\Release\SbieShellExt.dll %instPath%\
-  copy /y %~dp0..\SandboxiePlus\ARM64\Release\SbieShellPkg.msix %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\ARM64\Release\SbieShellExt.dll %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\ARM64\Release\SbieShellExt.pdb %instPath%\
+  copy /y %~dp0..\SandboxiePlus\Bin\ARM64\Release\SbieShellPkg.msix %instPath%\
 )
 
 
