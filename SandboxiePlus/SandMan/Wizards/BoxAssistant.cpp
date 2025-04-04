@@ -21,7 +21,6 @@
 #include "../Views/TraceView.h"
 #include "../AddonManager.h"
 #include "../MiscHelpers/Common/NetworkAccessManager.h"
-#include "../CustomStyles.h"
 #include "../OnlineUpdater.h"
 
 CBoxAssistant::CBoxAssistant(QWidget *parent)
