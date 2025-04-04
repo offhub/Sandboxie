@@ -47,7 +47,7 @@ public:
 	virtual QString					GetFileRoot() const { return m_FilePath; }
 	virtual QString					GetRegRoot() const { return m_RegPath; }
 	virtual QString					GetIpcRoot() const { return m_IpcPath; }
-	// virtual QString					GetMountRoot() const { return m_Mount; }
+	virtual QString					GetMountRoot() const { return m_Mount; }
 
 	virtual QMap<quint32, CBoxedProcessPtr>	GetProcessList() const { return m_ProcessList; }
 
@@ -81,9 +81,9 @@ public:
 	virtual SB_STATUS				SetSnapshotInfo(const QString& ID, const QString& Name, const QString& Description = QString());
 
 	// Mount Manager
-	// virtual SB_STATUS				ImBoxCreate(quint64 uSizeKb, const QString& Password = QString());
-	// virtual SB_STATUS				ImBoxMount(const QString& Password = QString(), bool bProtect = false, bool bAutoUnmount = false);
-	// virtual SB_STATUS				ImBoxUnmount();
+	virtual SB_STATUS				ImBoxCreate(quint64 uSizeKb, const QString& Password = QString());
+	virtual SB_STATUS				ImBoxMount(const QString& Password = QString(), bool bProtect = false, bool bAutoUnmount = false);
+	virtual SB_STATUS				ImBoxUnmount();
 
 	class CSbieAPI*					Api() { return m_pAPI; }
 
@@ -101,7 +101,7 @@ protected:
 	QString							m_FileRePath; // reparsed Nt path
 	QString							m_RegPath;
 	QString							m_IpcPath;
-	// QString							m_Mount;
+	QString							m_Mount;
 	
 	bool							m_IsEnabled;
 	

@@ -813,17 +813,17 @@ SB_STATUS CSandBox::SetSnapshotInfo(const QString& ID, const QString& Name, cons
 	return SB_OK;
 }
 
-// SB_STATUS CSandBox::ImBoxCreate(quint64 uSizeKb, const QString& Password)
-// {
-	// return m_pAPI->ImBoxCreate(this, uSizeKb, Password);
-// }
+SB_STATUS CSandBox::ImBoxCreate(quint64 uSizeKb, const QString& Password)
+{
+	return m_pAPI->ImBoxCreate(this, uSizeKb, Password);
+}
 
-// SB_STATUS CSandBox::ImBoxMount(const QString& Password, bool bProtect, bool bAutoUnmount)
-// {
-	// return m_pAPI->ImBoxMount(this, Password, bProtect, bAutoUnmount);
-// }
+SB_STATUS CSandBox::ImBoxMount(const QString& Password, bool bProtect, bool bAutoUnmount)
+{
+	return m_pAPI->ImBoxMount(this, Password, bProtect, bAutoUnmount);
+}
 
-// SB_STATUS CSandBox::ImBoxUnmount()
-// {
-	// return m_pAPI->ImBoxUnmount(this);
-// }
+SB_STATUS CSandBox::ImBoxUnmount()
+{
+	return m_pAPI->ImBoxUnmount(this);
+}
