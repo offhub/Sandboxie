@@ -235,15 +235,15 @@ QList<QVariant> CSbieModel::Sync(const QMap<QString, CSandBoxPtr>& BoxList, cons
 		bool boxDel = pBoxEx->IsAutoDelete();
 		bool boxNoForce = pBoxEx->IsForceDisabled();
 		int boxColor = pBoxEx->GetColor();
-		SSandBoxNode::EMountState mountState = SSandBoxNode::eNone;
-		if (pBoxEx->UseRamDisk()) 
-			mountState = SSandBoxNode::eRamDisk;
-		else if (pBoxEx->UseImageFile()) {
-			if(pBoxEx->GetMountRoot().isEmpty())
-				mountState = SSandBoxNode::eUnmounted;
-			else
-				mountState = SSandBoxNode::eMounted;
-		}
+		// SSandBoxNode::EMountState mountState = SSandBoxNode::eNone;
+		// if (pBoxEx->UseRamDisk()) 
+			// mountState = SSandBoxNode::eRamDisk;
+		// else if (pBoxEx->UseImageFile()) {
+			// if(pBoxEx->GetMountRoot().isEmpty())
+				// mountState = SSandBoxNode::eUnmounted;
+			// else
+				// mountState = SSandBoxNode::eMounted;
+		// }
 		
 		QIcon Icon;
 		QString BoxIcon = pBox->GetText("BoxIcon");
@@ -265,8 +265,8 @@ QList<QVariant> CSbieModel::Sync(const QMap<QString, CSandBoxPtr>& BoxList, cons
 			pNode->boxColor != boxColor || 
 			pNode->boxDel != boxDel || 
 			pNode->boxNoForce != boxNoForce || 
-			!pNode->BoxIcon.isEmpty() ||
-			pNode->MountState != mountState
+			!pNode->BoxIcon.isEmpty()
+//			||			pNode->MountState != mountState
 			)
 		{
 			pNode->inUse = inUse;
@@ -280,7 +280,7 @@ QList<QVariant> CSbieModel::Sync(const QMap<QString, CSandBoxPtr>& BoxList, cons
 			else
 				Icon = theGUI->GetBoxIcon(boxType, inUse);
 			pNode->BoxIcon.clear();
-			pNode->MountState = mountState;
+			//pNode->MountState = mountState;
 		}
 
 		if (!Icon.isNull()) 
@@ -294,12 +294,12 @@ QList<QVariant> CSbieModel::Sync(const QMap<QString, CSandBoxPtr>& BoxList, cons
 				{
 					if(boxNoForce)
 						Icon = theGUI->IconAddOverlay(Icon, ":/IconDFP");
-					else if(mountState == SSandBoxNode::eRamDisk)
-						Icon = theGUI->IconAddOverlay(Icon, ":/Actions/RamDisk.png");
-					else if(mountState == SSandBoxNode::eMounted)
-						Icon = theGUI->IconAddOverlay(Icon, ":/Actions/LockOpen.png");
-					else if(mountState == SSandBoxNode::eUnmounted)
-						Icon = theGUI->IconAddOverlay(Icon, ":/Actions/LockClosed.png");
+					// else if(mountState == SSandBoxNode::eRamDisk)
+						// Icon = theGUI->IconAddOverlay(Icon, ":/Actions/RamDisk.png");
+					// else if(mountState == SSandBoxNode::eMounted)
+						// Icon = theGUI->IconAddOverlay(Icon, ":/Actions/LockOpen.png");
+					// else if(mountState == SSandBoxNode::eUnmounted)
+						// Icon = theGUI->IconAddOverlay(Icon, ":/Actions/LockClosed.png");
 					else if (boxDel && !bVintage)
 						Icon = theGUI->IconAddOverlay(Icon, ":/Boxes/AutoDel");
 				}
