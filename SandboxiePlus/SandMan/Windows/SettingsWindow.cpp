@@ -546,8 +546,29 @@ CSettingsWindow::CSettingsWindow(QWidget* parent)
 	);
 
 	wchar_t uuid_str[40];
-	if(theAPI->GetDriverInfo(-2, uuid_str, sizeof(uuid_str)))
-		ui.lblHwId->setText(tr("HwId: %1").arg(QString::fromWCharArray(uuid_str)));
+	if (theAPI->GetDriverInfo(-2, uuid_str, sizeof(uuid_str))) {
+		QString fullHwId = QString::fromWCharArray(uuid_str);
+		QString clickToR = tr("Click to reveal");
+		QString clickToH = tr("Click to hide");
+
+		// Initial state: hidden
+		ui.lblHwId->setText(tr("HwId: <a href=\"%1\">[%2]</a>").arg(fullHwId, clickToR));
+		ui.lblHwId->setToolTip(clickToR);
+
+		// Click handler
+		connect(ui.lblHwId, &QLabel::linkActivated, [=]() {
+			if (ui.lblHwId->text().contains(clickToR)) {
+				// Reveal the ID
+				ui.lblHwId->setText(tr("HwId: <a href=\"%1\" style=\"text-decoration:none; color:inherit;\">%1</a>").arg(fullHwId));
+				ui.lblHwId->setToolTip(clickToH);
+			}
+			else {
+				// Hide the ID again
+				ui.lblHwId->setText(tr("HwId: <a href=\"%1\">[%2]</a>").arg(fullHwId, clickToR));
+				ui.lblHwId->setToolTip(clickToR);
+			}
+			});
+	}
 
 	connect(ui.lblEvalCert, SIGNAL(linkActivated(const QString&)), this, SLOT(OnStartEval()));
 
@@ -767,6 +788,14 @@ bool CSettingsWindow::eventFilter(QObject *source, QEvent *event)
 		if (event->type() == QEvent::FocusIn && ui.txtCertificate->property("hidden").toBool()) {
 			ui.txtCertificate->setProperty("hidden", false);
 			ui.txtCertificate->setPlainText(g_Certificate);
+		}
+		else if (event->type() == QEvent::FocusOut && !ui.txtCertificate->property("hidden").toBool()) {
+			qDebug() << ui.txtCertificate->objectName() << "lost focus";
+			ui.txtCertificate->setProperty("hidden", true);
+			int Pos = g_Certificate.indexOf("HWID:");
+			if (Pos == -1)
+				Pos = g_Certificate.indexOf("UPDATEKEY:");
+			ui.txtCertificate->setPlainText(g_Certificate.left(Pos) + "...");
 		}
 	}
 
@@ -1317,7 +1346,9 @@ void CSettingsWindow::UpdateCert()
 	if (!g_Certificate.isEmpty()) 
 	{
 		ui.txtCertificate->setProperty("hidden", true);
-		int Pos = g_Certificate.indexOf("UPDATEKEY:");
+		int Pos = g_Certificate.indexOf("HWID:");
+		if (Pos == -1)
+			Pos = g_Certificate.indexOf("UPDATEKEY:");
 		ui.txtCertificate->setPlainText(g_Certificate.left(Pos) + "...");
 		//ui.lblSupport->setVisible(false);
 
