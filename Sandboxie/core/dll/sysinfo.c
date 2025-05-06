@@ -23,7 +23,6 @@
 
 #include "dll.h"
 #include "common/my_version.h"
-#include <windows.h>
 #include <stdio.h>
 
 
@@ -337,15 +336,11 @@ _FX BOOL Sysinfo_IsTokenAnySid(HANDLE hToken,WCHAR* compare)
 }
 
 
-//---------------------------------------------------------------------------
+"//---------------------------------------------------------------------------
 // SysInfo_DiscardProcesses
 //---------------------------------------------------------------------------
 
 
-#include <windows.h>
-#include <stdio.h>
-
-// filepath: untitled:Untitled-6
 _FX void SysInfo_DiscardProcesses(SYSTEM_PROCESS_INFORMATION *buf)
 {
     SYSTEM_PROCESS_INFORMATION *curr = buf;
@@ -364,23 +359,20 @@ _FX void SysInfo_DiscardProcesses(SYSTEM_PROCESS_INFORMATION *buf)
     WCHAR tempSid[96] = {0};
     ULONG tempSession = 0;
 
-    OutputDebugStringW(L"Starting SysInfo_DiscardProcesses...\n");
-
     for (ULONG index = 0; ; ++index) {
         NTSTATUS status = SbieApi_QueryConfAsIs(NULL, L"HideHostProcess", index, hiddenProcess, 108 * sizeof(WCHAR));
         if (NT_SUCCESS(status)) {
             if (hiddenProcesses == NULL) {
                 hiddenProcesses = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, hiddenProcessesLen * sizeof(WCHAR));
                 if (!hiddenProcesses) {
-                    OutputDebugStringW(L"Failed to allocate memory for hiddenProcesses.\n");
+                    SbieApi_Log(2310, L"HideProcess: Memory allocation failed");
                     break;
                 }
                 hiddenProcessesPtr = hiddenProcesses;
             }
             ULONG nameLen = wcslen(hiddenProcess) + 1; // include terminating 0
             if ((hiddenProcessesPtr - hiddenProcesses) + nameLen + 1 > hiddenProcessesLen) {
-                OutputDebugStringW(L"Exceeded hiddenProcesses buffer length.\n");
-                SbieApi_Log(2310, L", 'HideProcess'"); // todo add custom message
+                SbieApi_Log(2310, L"HideProcess: Too many processes to hide (max 100)");
                 break;
             }
             wmemcpy(hiddenProcessesPtr, hiddenProcess, nameLen);
@@ -388,18 +380,24 @@ _FX void SysInfo_DiscardProcesses(SYSTEM_PROCESS_INFORMATION *buf)
             *hiddenProcessesPtr = L'\0';
         }
         else if (status != STATUS_BUFFER_TOO_SMALL) {
-            OutputDebugStringW(L"Finished processing HideHostProcess entries.\n");
+            if (status != STATUS_NO_MORE_ENTRIES) {
+                SbieApi_Log(2310, L"HideProcess: Configuration query failed [%08X]", status);
+            }
             break;
         }
     }
 
-    OutputDebugStringW(L"Starting process iteration...\n");
+    //
+    // we assume the first record is always going to be the idle process or
+    // a system process -- in any case, one we're not going to have to skip
+    //
 
     while (1) {
+
         next = (SYSTEM_PROCESS_INFORMATION *) (((UCHAR *)curr) + curr->NextEntryOffset);
         if (next == curr)
             break;
-
+        
         WCHAR* imagename = NULL;
         if (next->ImageName.Buffer) {
             imagename = wcschr(next->ImageName.Buffer, L'\\');
@@ -408,61 +406,64 @@ _FX void SysInfo_DiscardProcesses(SYSTEM_PROCESS_INFORMATION *buf)
         }
 
         SbieApi_QueryProcess(next->UniqueProcessId, boxname, NULL, tempSid, &tempSession);
-
-        WCHAR debugMessage[256];
-        swprintf(debugMessage, 256, L"Processing PID: %lu, ImageName: %s, BoxName: %s\n",
-                 (ULONG)(ULONG_PTR)next->UniqueProcessId,
-                 imagename ? imagename : L"(null)",
-                 *boxname ? boxname : L"(none)");
-        OutputDebugStringW(debugMessage);
+        
+        // Log SID information for debugging
+        if (tempSid[0] != L'\0') {
+            SbieApi_Log(2310, L"Process %d [%s] SID: %s", 
+                next->UniqueProcessId, 
+                imagename ? imagename : L"(no name)", 
+                tempSid);
+        }
 
         BOOL hideProcess = FALSE;
-        BOOL isSystemProcess =
-            (_wcsnicmp(tempSid, L"S-1-5-18", 8) == 0 ||   // Local System
-             _wcsnicmp(tempSid, L"S-1-5-80", 8) == 0 ||   // NT SERVICE
-             _wcsnicmp(tempSid, L"S-1-5-20", 8) == 0 ||   // Network Service
-             _wcsnicmp(tempSid, L"S-1-5-6", 7) == 0);     // Service
-
-        if (hideNonSys && !*boxname && !isSystemProcess) {
+        if (hideNonSys && !*boxname
+          && _wcsnicmp(tempSid, L"S-1-5-18", 8) != 0
+          && _wcsnicmp(tempSid, L"S-1-5-80", 8) != 0
+          && _wcsnicmp(tempSid, L"S-1-5-20", 8) != 0
+          && _wcsnicmp(tempSid, L"S-1-5-6", 7) != 0) {
             hideProcess = TRUE;
+            SbieApi_Log(2310, L"HideProcess: Hiding non-system process %d [%s] SID: %s", 
+                next->UniqueProcessId, 
+                imagename ? imagename : L"(no name)", 
+                tempSid);
         }
         else if (hideOther && *boxname && _wcsicmp(boxname, Dll_BoxName) != 0) {
             hideProcess = TRUE;
+            SbieApi_Log(2310, L"HideProcess: Hiding process from other box %d [%s] Box: %s", 
+                next->UniqueProcessId, 
+                imagename ? imagename : L"(no name)", 
+                boxname);
         }
         else if (hideSbie && imagename && (_wcsnicmp(imagename, L"Sandboxie", 9) == 0 || _wcsnicmp(imagename, L"Sbie", 4) == 0)) {
             hideProcess = TRUE;
+            SbieApi_Log(2310, L"HideProcess: Hiding Sandboxie process %d [%s]", 
+                next->UniqueProcessId, 
+                imagename);
         }
-        else if (hiddenProcesses && imagename) {
+        else if(hiddenProcesses && imagename) {
             if (!*boxname || _wcsnicmp(imagename, L"Sandboxie", 9) == 0) {
                 for (hiddenProcessesPtr = hiddenProcesses; *hiddenProcessesPtr != L'\0'; hiddenProcessesPtr += wcslen(hiddenProcessesPtr) + 1) {
                     if (_wcsicmp(imagename, hiddenProcessesPtr) == 0) {
                         hideProcess = TRUE;
+                        SbieApi_Log(2310, L"HideProcess: Hiding explicitly configured process %d [%s]", 
+                            next->UniqueProcessId, 
+                            imagename);
                         break;
                     }
                 }
             }
         }
 
-        if (!hideProcess) {
-            OutputDebugStringW(L"Process not hidden, moving to next.\n");
+        if (!hideProcess)
             curr = next;
-        }
-        else if (next->NextEntryOffset) {
-            OutputDebugStringW(L"Process hidden, skipping to next.\n");
+        else if (next->NextEntryOffset)
             curr->NextEntryOffset += next->NextEntryOffset;
-        }
-        else {
-            OutputDebugStringW(L"Process hidden, end of list reached.\n");
+        else
             curr->NextEntryOffset = 0;
-        }
     }
 
-    if (hiddenProcesses) {
-        OutputDebugStringW(L"Freeing hiddenProcesses memory.\n");
+    if(hiddenProcesses)
         HeapFree(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, hiddenProcesses);
-    }
-
-    OutputDebugStringW(L"SysInfo_DiscardProcesses completed.\n");
 }
 
 
