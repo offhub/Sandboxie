@@ -23,6 +23,7 @@
 
 #include "dll.h"
 #include "common/my_version.h"
+#include <windows.h>
 #include <stdio.h>
 
 
