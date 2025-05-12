@@ -4433,7 +4433,7 @@ The process match level has a higher priority than the specificity and describes
            </widget>
            <widget class="QWidget" name="tabDlls">
             <attribute name="title">
-             <string>Dlls &amp;&amp; Extensions</string>
+             <string>Dlls &amp; Extensions</string>
             </attribute>
             <layout class="QGridLayout" name="gridLayout_77">
              <item row="1" column="0">
