@@ -454,7 +454,7 @@ SBIE2222 Başlat/Çalıştır Erişim Kısıtlamalarına program eklemek için, 
 .
 
 2223;pop;wrn;01
-SBIE2223 Dosyaları kopyalarken dosya boyut sınırını arttırmak için lütfen bu mesaj satırına çift tıklayın.
+SBIE2223 Dosyaları kopyalarken dosya boyut sınırını artırmak için lütfen bu mesaj satırına çift tıklayın.
 .
 
 2224;pop;wrn;01
@@ -876,8 +876,12 @@ Denetimi (UAC) açılır penceresini etkinleştirin.
 .
 
 3243;txt;01
-Not: Yönetim yetkileri verildikten sonra dahi program
-Sandboxie gözetimi altında çalıştırılmaya devam edecek.
+Not: Yönetici ayrıcalıkları verilse bile program
+Sandboxie denetimi altında çalışmaya devam edecektir.
+Ancak, gerçek Yönetici hakları verilmesi, uygulamanın
+yamalanmamış bir Windows açığını veya güvenlik açığı
+olan bir sürücüyü kullanarak korumalı alandan kaçma
+riskini artırabilir.
 .
 
 3244;txt;01
@@ -2424,7 +2428,7 @@ Başlatma/Çalıştırma Kısıtlamalarını yönetmek için Korumalı Alan Ayar
 .
 
 #----------------------------------------------------------------------------
-# Sandboxie Control:  Korumalu Alan Ayarları:  Düşük Seviye Erişimi / Donanım Erişimi
+# Sandboxie Control:  Korumalu Alan Ayarları:  Düşük Düzey Erişimi / Donanım Erişimi
 #----------------------------------------------------------------------------
 
 #----------------------------------------------------------------------------
@@ -3470,11 +3474,11 @@ Lütfen aşağıdaki bilgiye göz atın.
 .
 
 8012;ins;01
-Sandboxie sistem-seviye sürücüsünü kurup etkinleştirmek için İleri'ye tıklayın. Bu sürücü Sandboxie uygulamasının çekirdeğini oluşturmaktadır.
+Sandboxie sistem-düzeyi sürücüsünü kurup etkinleştirmek için İleri'ye tıklayın. Bu sürücü Sandboxie uygulamasının çekirdeğini oluşturmaktadır.
 .
 
 8013;ins;01
-Sistem-seviye sürücüsünün kurulumunu önleyebilecek, sistem koruma araçlarını geçici olarak kapatmak isteyebilirsiniz.
+Sistem-düzeyi sürücüsünün kurulumunu önleyebilecek, sistem koruma araçlarını geçici olarak kapatmak isteyebilirsiniz.
 .
 
 8014;ins;02
