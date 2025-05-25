@@ -876,12 +876,10 @@ Denetimi (UAC) açılır penceresini etkinleştirin.
 .
 
 3243;txt;01
-Not: Yönetici ayrıcalıkları verilse bile program
-Sandboxie denetimi altında çalışmaya devam edecektir.
-Ancak, gerçek Yönetici hakları verilmesi, uygulamanın
-yamalanmamış bir Windows açığını veya güvenlik açığı
-olan bir sürücüyü kullanarak korumalı alandan kaçma
-riskini artırabilir.
+Not: Yönetici ayrıcalıkları verilse bile program Sandboxie gözetimi altında çalışmaya devam
+edecektir. Ancak, gerçek Yönetici hakları verilmesi, uygulamanın yamalanmamış bir Windows
+açığını veya güvenlik açığı olan bir sürücüyü kullanarak korumalı alandan kaçma riskini
+artırabilir. 
 .
 
 3244;txt;01
