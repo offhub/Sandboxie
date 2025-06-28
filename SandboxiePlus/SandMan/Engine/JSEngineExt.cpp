@@ -135,7 +135,8 @@ QV4::ReturnedValue evalCall(const QV4::FunctionObject* b, const QV4::Value* v, c
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
 		v4->throwError(ret.toString());
 #else
-        v4->throwError(QJSValuePrivate::asReturnedValue(&ret));
+        //v4->throwError(QJSValuePrivate::asReturnedValue(&ret));
+        v4->throwError(ret.toString());
 #endif
         return QV4::Encode::undefined();
     } else {
