@@ -939,9 +939,9 @@ void CSettingsWindow::AddContextMenu(bool bAlwaysClassic)
 		return;
 	}
 
-	CSbieUtils::AddContextMenu(QApplication::applicationDirPath().replace("/", "\\") + "\\SandMan.exe",
+	CSbieUtils::AddContextMenu(CSbieUtils::GetApplicationDirPath() + "\\SandMan.exe",
 		CSettingsWindow::tr("Run &Sandboxed"), //CSettingsWindow::tr("Explore &Sandboxed"),
-			QApplication::applicationDirPath().replace("/", "\\") + "\\Start.exe");
+			CSbieUtils::GetApplicationDirPath() + "\\Start.exe");
 }
 
 void CSettingsWindow::RemoveContextMenu()
@@ -1544,26 +1544,26 @@ void CSettingsWindow::SaveSettings()
 
 	if (ui.chkShellMenu2->isChecked() != CSbieUtils::HasContextMenu2()) {
 		if (ui.chkShellMenu2->isChecked()) {
-			CSbieUtils::AddContextMenu2(QApplication::applicationDirPath().replace("/", "\\") + "\\SandMan.exe",
+			CSbieUtils::AddContextMenu2(CSbieUtils::GetApplicationDirPath() + "\\SandMan.exe",
 				tr("Run &Un-Sandboxed"),
-				QApplication::applicationDirPath().replace("/", "\\") + "\\Start.exe");
+				CSbieUtils::GetApplicationDirPath() + "\\Start.exe");
 		} else
 			CSbieUtils::RemoveContextMenu2();
 	}
 	if (ui.chkShellMenu3->isChecked() != CSbieUtils::HasContextMenu3()) {
 		if (ui.chkShellMenu3->isChecked()) {
-			CSbieUtils::AddContextMenu3(QApplication::applicationDirPath().replace("/", "\\") + "\\SandMan.exe",
+			CSbieUtils::AddContextMenu3(CSbieUtils::GetApplicationDirPath() + "\\SandMan.exe",
 				tr("Set Force in Sandbox"),
-				QApplication::applicationDirPath().replace("/", "\\") + "\\Start.exe");
+				CSbieUtils::GetApplicationDirPath() + "\\Start.exe");
 		}
 		else
 			CSbieUtils::RemoveContextMenu3();
 	}
 	if (ui.chkShellMenu4->isChecked() != CSbieUtils::HasContextMenu4()) {
 		if (ui.chkShellMenu4->isChecked()) {
-			CSbieUtils::AddContextMenu4(QApplication::applicationDirPath().replace("/", "\\") + "\\SandMan.exe",
+			CSbieUtils::AddContextMenu4(CSbieUtils::GetApplicationDirPath() + "\\SandMan.exe",
 				tr("Set Open Path in Sandbox"),
-				QApplication::applicationDirPath().replace("/", "\\") + "\\Start.exe");
+				CSbieUtils::GetApplicationDirPath() + "\\Start.exe");
 		}
 		else
 			CSbieUtils::RemoveContextMenu4();
