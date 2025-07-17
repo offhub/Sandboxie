@@ -163,7 +163,7 @@ SB_RESULT(void*) CSbieUtils::Install(EComponent Component)
 
 void CSbieUtils::Install(EComponent Component, QStringList& Ops)
 {
-	QString HomePath = QCoreApplication::applicationDirPath().replace("/", "\\"); // "C:\\Program Files\\Sandboxie	"
+	QString HomePath = GetApplicationDirPath(); // "C:\\Program Files\\Sandboxie"
 	if ((Component & eDriver) != 0 && GetServiceStatus(SBIEDRV) == 0) 
 		Ops.append(QString::fromWCharArray(L"kmdutil.exe|install|" SBIEDRV L"|") + HomePath + "\\" + QString::fromWCharArray(SBIEDRV_SYS) + "|type=kernel|start=demand|altitude=86900");
 	if ((Component & eService) != 0 && GetServiceStatus(SBIESVC) == 0) {
@@ -379,6 +379,11 @@ int CSbieUtils::ExecCommandEx(const QString& Command, QString* pOutput, quint32 
 
 //////////////////////////////////////////////////////////////////////////////
 // Shell integration
+
+QString CSbieUtils::GetApplicationDirPath()
+{
+	return QCoreApplication::applicationDirPath().replace("/", "\\");
+}
 
 QString CSbieUtils::ReadRegistryValue(HKEY rootKey, const QString& keyPath, const QString& valueName)
 {

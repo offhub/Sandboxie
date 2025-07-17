@@ -67,6 +67,7 @@ private:
 	static bool				HasContextMenuHelper(const QString& shellKey);
 	static void				RemoveContextMenuHelper(const QString& shellKey, bool forFiles, bool forFolders);
 	static QString			ReadRegistryValue(HKEY rootKey, const QString& keyPath, const QString& valueName = QString());
+	static QString			GetApplicationDirPath();
 };
 
 
