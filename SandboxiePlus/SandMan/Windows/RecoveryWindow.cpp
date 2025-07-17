@@ -119,9 +119,10 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	if (!Columns.isEmpty())
 		ui.treeFiles->header()->restoreState(Columns);
 
-	for (int i = 0; i < m_pFileModel->columnCount(); i++)
-		m_pFileModel->SetColumnEnabled(i, true);
-
+	if (m_pFileModel) {
+		for (int i = 0; i < m_pFileModel->columnCount(); i++)
+			m_pFileModel->SetColumnEnabled(i, true);
+	}
 
 	foreach(const QString& NtFolder, m_pBox->GetTextList("RecoverFolder", true, true)) 
 	{
@@ -288,7 +289,12 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 	else if (!m_bReloadPending)
 	{
 		m_bReloadPending = true;
-		QTimer::singleShot(500, this, SLOT(FindFiles()));
+		QPointer<CRecoveryWindow> safeThis(this);
+		QTimer::singleShot(500, this, [safeThis]() {
+			if (safeThis) {
+				safeThis->FindFiles();
+			}
+			});
 	}
 }
 
@@ -299,8 +305,9 @@ int CRecoveryWindow::FindFiles()
 		ui.lblInfo->setText(tr("There are %1 new files available to recover.").arg(m_NewFiles.count()));
 	}
 	else if (m_pCounter == NULL) {
-		m_pCounter = new CRecoveryCounter(m_pBox->GetFileRoot(), this);
-		connect(m_pCounter, SIGNAL(Count(quint32, quint32, quint64)), this, SLOT(OnCount(quint32, quint32, quint64)));
+		if (m_pBox) {
+			m_pCounter = new CRecoveryCounter(m_pBox->GetFileRoot(), this);
+		}
 	}
 
 	m_FileMap.clear();
@@ -482,63 +489,65 @@ QMap<QString, CRecoveryWindow::SRecItem> CRecoveryWindow::GetFiles()
 {
 	//bool HasShare = false;
 	QMap<QString, SRecItem> FileMap;
-	foreach(const QModelIndex& Index, ui.treeFiles->selectionModel()->selectedIndexes())
-	{
-		QModelIndex ModelIndex = m_pSortProxy->mapToSource(Index);
-		QVariant ID = m_pFileModel->GetItemID(ModelIndex);
-		//QVariant ID = m_pFileModel->GetItemID(Index);
-
-		QVariantMap File = m_FileMap.value(ID);
-		if (File.isEmpty())
-			continue;
-
-		if (File["IsDir"].toBool() == false)
+	if (ui.treeFiles && ui.treeFiles->selectionModel() && m_pSortProxy && m_pFileModel) {
+		foreach(const QModelIndex & Index, ui.treeFiles->selectionModel()->selectedIndexes())
 		{
-			//if (File["DiskPath"].toString().indexOf("\\device\\mup", 0, Qt::CaseInsensitive) == 0)
-			//	HasShare = true;
-			QString CurPath = File["DiskPath"].toString();;
-			FileMap[File["BoxPath"].toString()].FullPath = CurPath;
-			FileMap[File["BoxPath"].toString()].RelPath = CurPath.mid(CurPath.lastIndexOf("\\"));
-		}
-		else
-		{
-			QString DirPath = File["DiskPath"].toString();
-			//if(ModelIndex.parent().isValid())
-			//	DirPath = Split2(DirPath, "\\", true).first;
+			QModelIndex ModelIndex = m_pSortProxy->mapToSource(Index);
+			QVariant ID = m_pFileModel->GetItemID(ModelIndex);
+			//QVariant ID = m_pFileModel->GetItemID(Index);
 
-			QList<QModelIndex> Folders;
-			Folders.append(ModelIndex);
-			do
+			QVariantMap File = m_FileMap.value(ID);
+			if (File.isEmpty())
+				continue;
+
+			if (File["IsDir"].toBool() == false)
 			{
-				QModelIndex CurIndex = Folders.takeFirst();
-				for (int i = 0; i < m_pFileModel->rowCount(CurIndex); i++)
+				//if (File["DiskPath"].toString().indexOf("\\device\\mup", 0, Qt::CaseInsensitive) == 0)
+				//	HasShare = true;
+				QString CurPath = File["DiskPath"].toString();;
+				FileMap[File["BoxPath"].toString()].FullPath = CurPath;
+				FileMap[File["BoxPath"].toString()].RelPath = CurPath.mid(CurPath.lastIndexOf("\\"));
+			}
+			else
+			{
+				QString DirPath = File["DiskPath"].toString();
+				//if(ModelIndex.parent().isValid())
+				//	DirPath = Split2(DirPath, "\\", true).first;
+
+				QList<QModelIndex> Folders;
+				Folders.append(ModelIndex);
+				do
 				{
-					QModelIndex ChildIndex = m_pFileModel->index(i, 0, CurIndex);
-
-					QVariant ChildID = m_pFileModel->GetItemID(ChildIndex);
-					QVariantMap File = m_FileMap.value(ChildID);
-					if (File.isEmpty())
-						continue;
-
-					if (File["IsDir"].toBool() == false) 
+					QModelIndex CurIndex = Folders.takeFirst();
+					for (int i = 0; i < m_pFileModel->rowCount(CurIndex); i++)
 					{
-						//if (File["DiskPath"].toString().indexOf("\\device\\mup") == 0)
-						//	HasShare = true;
-						QString CurPath = File["DiskPath"].toString();
-						FileMap[File["BoxPath"].toString()].FullPath = CurPath;
+						QModelIndex ChildIndex = m_pFileModel->index(i, 0, CurIndex);
 
-						QString RelPath = CurPath.mid(Split2(DirPath, "\\", true).first.length());
-						if (RelPath.length() > FileMap[File["BoxPath"].toString()].RelPath.length())
-							FileMap[File["BoxPath"].toString()].RelPath = RelPath;
+						QVariant ChildID = m_pFileModel->GetItemID(ChildIndex);
+						QVariantMap File = m_FileMap.value(ChildID);
+						if (File.isEmpty())
+							continue;
+
+						if (File["IsDir"].toBool() == false)
+						{
+							//if (File["DiskPath"].toString().indexOf("\\device\\mup") == 0)
+							//	HasShare = true;
+							QString CurPath = File["DiskPath"].toString();
+							FileMap[File["BoxPath"].toString()].FullPath = CurPath;
+
+							QString RelPath = CurPath.mid(Split2(DirPath, "\\", true).first.length());
+							if (RelPath.length() > FileMap[File["BoxPath"].toString()].RelPath.length())
+								FileMap[File["BoxPath"].toString()].RelPath = RelPath;
+						}
+						else
+							Folders.append(ChildIndex);
 					}
-					else
-						Folders.append(ChildIndex);
-				}
-			} while (!Folders.isEmpty());
+				} while (!Folders.isEmpty());
+			}
 		}
-	}
 
-	return FileMap;
+		return FileMap;
+	}
 }
 
 void CRecoveryWindow::RecoverFiles(bool bBrowse, QString RecoveryFolder)
@@ -554,15 +563,15 @@ void CRecoveryWindow::RecoverFiles(bool bBrowse, QString RecoveryFolder)
 		RecoveryFolder = QFileDialog::getExistingDirectory(this, tr("Select Directory")).replace("/", "\\");
 		if (RecoveryFolder.isEmpty())
 			return;
-		
+
 		QStringList RecoverTargets = theAPI->GetUserSettings()->GetTextList("SbieCtrl_RecoverTarget", true);
-		if(!RecoverTargets.contains(RecoveryFolder))
+		if (!RecoverTargets.contains(RecoveryFolder))
 			theAPI->GetUserSettings()->UpdateTextList("SbieCtrl_RecoverTarget", RecoverTargets, true);
 	}
 
 
 	QList<QPair<QString, QString>> FileList;
-	for(QMap<QString, SRecItem>::const_iterator I = FileMap.begin(); I != FileMap.end(); ++I)
+	for (QMap<QString, SRecItem>::const_iterator I = FileMap.begin(); I != FileMap.end(); ++I)
 	{
 		QString BoxedFilePath = I.key();
 		QString RecoveryPath = I.value().FullPath;
@@ -577,11 +586,19 @@ void CRecoveryWindow::RecoverFiles(bool bBrowse, QString RecoveryFolder)
 	}
 
 
-	SB_PROGRESS Status = theGUI->RecoverFiles(m_pBox->GetName(), FileList, this);
-	if (Status.GetStatus() == OP_ASYNC)
-	{
-		connect(Status.GetValue().data(), SIGNAL(Finished()), this, SLOT(FindFiles()));
-		theGUI->AddAsyncOp(Status.GetValue(), false, tr("Recovering File(s)..."), this);
+	QPointer<CRecoveryWindow> safeThis(this);
+
+	if (m_pBox) {
+		SB_PROGRESS Status = theGUI->RecoverFiles(m_pBox->GetName(), FileList, this);
+		if (Status.GetStatus() == OP_ASYNC)
+		{
+			connect(Status.GetValue().data(), &QObject::destroyed, this, [safeThis]() {
+				if (safeThis) {
+					safeThis->FindFiles();
+				}
+				});
+			theGUI->AddAsyncOp(Status.GetValue(), false, tr("Recovering File(s)..."), this);
+		}
 	}
 }
 
