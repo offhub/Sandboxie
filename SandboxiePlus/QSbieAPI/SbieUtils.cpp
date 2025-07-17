@@ -399,37 +399,55 @@ QString CSbieUtils::GetContextMenuStartCmd()
 	return QString::fromWCharArray(path);
 }
 
-void CSbieUtils::AddContextMenu(const QString& StartPath, const QString& RunStr, /*const QString& ExploreStr,*/ const QString& IconPath)
+void CSbieUtils::AddContextMenuHelper(const QString& StartPath, const QString& RunStr, const QString& IconPath, const QString& shellKey, const QString& command, bool forFiles, bool forFolders, const QString& iconSuffix)
 {
 	std::wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
-	std::wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\"";
+	std::wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\"" + iconSuffix.toStdWString();
 
-	CreateShellEntry(L"*", L"sandbox", RunStr.toStdWString(), icon_path, start_path + L" /box:__ask__ \"%1\" %*");
-
-	std::wstring explorer_path(512, L'\0');
-
-	HKEY hkeyWinlogon;
-	LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"software\\microsoft\\windows nt\\currentversion\\winlogon", 0, KEY_READ, &hkeyWinlogon);
-	if (rc == 0)
-	{
-		ULONG path_len = explorer_path.size() * sizeof(WCHAR);
-		ULONG type;
-		rc = RegQueryValueExW(hkeyWinlogon, L"Shell", NULL, &type, (BYTE *)explorer_path.c_str(), &path_len);
-		if (rc == 0 && (type == REG_SZ || type == REG_EXPAND_SZ))
-			explorer_path.resize(path_len / sizeof(WCHAR));
-		RegCloseKey(hkeyWinlogon);
+	if (forFiles) {
+		CreateShellEntry(L"*", shellKey.toStdWString(), RunStr.toStdWString(), icon_path, start_path + L" " + command.toStdWString() + L" \"%1\" %*");
 	}
 
-	// get default explorer path
-	if (*explorer_path.c_str() == L'\0' || _wcsicmp(explorer_path.c_str(), L"explorer.exe") == 0)
-	{
-		GetWindowsDirectoryW((wchar_t*)explorer_path.c_str(), MAX_PATH);
-		ULONG path_len = wcslen(explorer_path.c_str());
-		explorer_path.resize(path_len);
-		explorer_path.append(L"\\explorer.exe");
-	}
+	if (forFolders) {
+		std::wstring folder_command = start_path + L" " + command.toStdWString() + L" ";
+		
+		// Special handling for the original sandbox context menu
+		if (shellKey == "sandbox") {
+			std::wstring explorer_path(512, L'\0');
 
-	CreateShellEntry(L"Folder", L"sandbox", RunStr.toStdWString(), icon_path, start_path + L" /box:__ask__ " + explorer_path + L" \"%1\""); // ExploreStr
+			HKEY hkeyWinlogon;
+			LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"software\\microsoft\\windows nt\\currentversion\\winlogon", 0, KEY_READ, &hkeyWinlogon);
+			if (rc == 0)
+			{
+				ULONG path_len = explorer_path.size() * sizeof(WCHAR);
+				ULONG type;
+				rc = RegQueryValueExW(hkeyWinlogon, L"Shell", NULL, &type, (BYTE *)explorer_path.c_str(), &path_len);
+				if (rc == 0 && (type == REG_SZ || type == REG_EXPAND_SZ))
+					explorer_path.resize(path_len / sizeof(WCHAR));
+				RegCloseKey(hkeyWinlogon);
+			}
+
+			// get default explorer path
+			if (*explorer_path.c_str() == L'\0' || _wcsicmp(explorer_path.c_str(), L"explorer.exe") == 0)
+			{
+				GetWindowsDirectoryW((wchar_t*)explorer_path.c_str(), MAX_PATH);
+				ULONG path_len = wcslen(explorer_path.c_str());
+				explorer_path.resize(path_len);
+				explorer_path.append(L"\\explorer.exe");
+			}
+
+			folder_command += explorer_path + L" \"%1\"";
+		} else {
+			folder_command += L"\"%1\" %*";
+		}
+
+		CreateShellEntry(L"Folder", shellKey.toStdWString(), RunStr.toStdWString(), icon_path, folder_command);
+	}
+}
+
+void CSbieUtils::AddContextMenu(const QString& StartPath, const QString& RunStr, /*const QString& ExploreStr,*/ const QString& IconPath)
+{
+	AddContextMenuHelper(StartPath, RunStr, IconPath, "sandbox", "/box:__ask__", true, true);
 }
 
 void CSbieUtils::CreateShellEntry(const std::wstring& classname, const std::wstring& key, const std::wstring& cmdtext, const std::wstring& iconpath, const std::wstring& startcmd)
@@ -455,109 +473,79 @@ void CSbieUtils::CreateShellEntry(const std::wstring& classname, const std::wstr
 	RegCloseKey(hkey);
 }
 
+void CSbieUtils::RemoveContextMenuHelper(const QString& shellKey, bool forFiles, bool forFolders)
+{
+	if (forFiles) {
+		std::wstring key = L"software\\classes\\*\\shell\\" + shellKey.toStdWString();
+		RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+	}
+	if (forFolders) {
+		std::wstring key = L"software\\classes\\folder\\shell\\" + shellKey.toStdWString();
+		RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+	}
+}
+
 void CSbieUtils::RemoveContextMenu()
 {
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\sandbox");
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\folder\\shell\\sandbox");
+	RemoveContextMenuHelper("sandbox", true, true);
+}
+
+bool CSbieUtils::HasContextMenuHelper(const QString& shellKey)
+{
+	std::wstring key = L"Software\\Classes\\*\\shell\\" + shellKey.toStdWString() + L"\\command";
+	HKEY hkey;
+	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &hkey);
+	if (rc != 0)
+		return false;
+
+	RegCloseKey(hkey);
+	return true;
 }
 
 bool CSbieUtils::HasContextMenu2()
 {
-	const wchar_t* key = L"Software\\Classes\\*\\shell\\unbox\\command";
-	HKEY hkey;
-	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey);
-
-	return true;
+	return HasContextMenuHelper("unbox");
 }
 
 void CSbieUtils::AddContextMenu2(const QString& StartPath, const QString& RunStr, const QString& IconPath)
 {
-	std::wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
-	std::wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\",-104";
-
-	CreateShellEntry(L"*", L"unbox", RunStr.toStdWString(), icon_path, start_path + L" /disable_force \"%1\" %*");
+	AddContextMenuHelper(StartPath, RunStr, IconPath, "unbox", "/disable_force", true, false, ",-104");
 }
 
 void CSbieUtils::RemoveContextMenu2()
 {
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\unbox");
+	RemoveContextMenuHelper("unbox", true, false);
 }
 
 bool CSbieUtils::HasContextMenu3()
 {
-	const wchar_t* key = L"Software\\Classes\\*\\shell\\addforce\\command";
-	//const wchar_t* key2 = L"Software\\Classes\\*\\Folder\\addforce\\command";
-	HKEY hkey,hKey2;
-	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey);
-
-
-	/*rc = RegOpenKeyEx(HKEY_CURRENT_USER, key2, 0, KEY_READ, &hkey2);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey2);*/
-
-	return true;
+	return HasContextMenuHelper("addforce");
 }
 
 void CSbieUtils::AddContextMenu3(const QString& StartPath, const QString& RunStr, const QString& IconPath)
 {
-	std::wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
-	std::wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\"";
-
-	CreateShellEntry(L"*", L"addforce", RunStr.toStdWString(), icon_path, start_path + L" /add_force \"%1\" %*");
-	CreateShellEntry(L"Folder", L"addforce", RunStr.toStdWString(), icon_path, start_path + L" /add_force \"%1\" %*");
+	AddContextMenuHelper(StartPath, RunStr, IconPath, "addforce", "/add_force", true, true);
 }
 
 void CSbieUtils::RemoveContextMenu3()
 {
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\addforce");
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\folder\\shell\\addforce");
+	RemoveContextMenuHelper("addforce", true, true);
 }
 
 
 bool CSbieUtils::HasContextMenu4()
 {
-	const wchar_t* key = L"Software\\Classes\\*\\shell\\addopen\\command";
-	//const wchar_t* key2 = L"Software\\Classes\\*\\Folder\\addforce\\command";
-	HKEY hkey, hKey2;
-	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey);
-
-
-	/*rc = RegOpenKeyEx(HKEY_CURRENT_USER, key2, 0, KEY_READ, &hkey2);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey2);*/
-
-	return true;
+	return HasContextMenuHelper("addopen");
 }
 
 void CSbieUtils::AddContextMenu4(const QString& StartPath, const QString& RunStr, const QString& IconPath)
 {
-	std::wstring start_path = L"\"" + StartPath.toStdWString() + L"\"";
-	std::wstring icon_path = L"\"" + (IconPath.isEmpty() ? StartPath : IconPath).toStdWString() + L"\"";
-
-	CreateShellEntry(L"*", L"addopen", RunStr.toStdWString(), icon_path, start_path + L" /add_open \"%1\" %*");
-	CreateShellEntry(L"Folder", L"addopen", RunStr.toStdWString(), icon_path, start_path + L" /add_open \"%1\" %*");
+	AddContextMenuHelper(StartPath, RunStr, IconPath, "addopen", "/add_open", true, true);
 }
 
 void CSbieUtils::RemoveContextMenu4()
 {
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\*\\shell\\addopen");
-	RegDeleteTreeW(HKEY_CURRENT_USER, L"software\\classes\\folder\\shell\\addopen");
+	RemoveContextMenuHelper("addopen", true, true);
 }
 
 //////////////////////////////////////////////////////////////////////////////

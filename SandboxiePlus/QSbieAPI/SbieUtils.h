@@ -63,6 +63,9 @@ private:
 	static void				Uninstall(EComponent Component, QStringList& Ops);
 
 	static void				CreateShellEntry(const std::wstring& classname, const std::wstring& key, const std::wstring& cmdtext, const std::wstring& iconpath, const std::wstring& startcmd);
+	static void				AddContextMenuHelper(const QString& StartPath, const QString& RunStr, const QString& IconPath, const QString& shellKey, const QString& command, bool forFiles, bool forFolders, const QString& iconSuffix = QString());
+	static bool				HasContextMenuHelper(const QString& shellKey);
+	static void				RemoveContextMenuHelper(const QString& shellKey, bool forFiles, bool forFolders);
 };
 
 
