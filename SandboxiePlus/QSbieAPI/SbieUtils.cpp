@@ -380,23 +380,27 @@ int CSbieUtils::ExecCommandEx(const QString& Command, QString* pOutput, quint32 
 //////////////////////////////////////////////////////////////////////////////
 // Shell integration
 
-QString CSbieUtils::GetContextMenuStartCmd()
+QString CSbieUtils::ReadRegistryValue(HKEY rootKey, const QString& keyPath, const QString& valueName)
 {
-	const wchar_t* key = L"Software\\Classes\\*\\shell\\sandbox\\command";
 	HKEY hkey;
-	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &hkey);
+	LONG rc = RegOpenKeyExW(rootKey, keyPath.toStdWString().c_str(), 0, KEY_READ, &hkey);
 	if (rc != 0)
 		return QString();
 
 	ULONG type;
-	WCHAR path[512];
-	ULONG path_len = sizeof(path) - sizeof(WCHAR) * 4;
-	rc = RegQueryValueExW(hkey, NULL, NULL, &type, (BYTE *)path, &path_len);
+	WCHAR buffer[512];
+	ULONG buffer_len = sizeof(buffer) - sizeof(WCHAR) * 4;
+	rc = RegQueryValueExW(hkey, valueName.isEmpty() ? NULL : valueName.toStdWString().c_str(), NULL, &type, (BYTE *)buffer, &buffer_len);
 	RegCloseKey(hkey);
 	if (rc != 0)
 		return QString();
 
-	return QString::fromWCharArray(path);
+	return QString::fromWCharArray(buffer);
+}
+
+QString CSbieUtils::GetContextMenuStartCmd()
+{
+	return ReadRegistryValue(HKEY_CURRENT_USER, "Software\\Classes\\*\\shell\\sandbox\\command");
 }
 
 void CSbieUtils::AddContextMenuHelper(const QString& StartPath, const QString& RunStr, const QString& IconPath, const QString& shellKey, const QString& command, bool forFiles, bool forFolders, const QString& iconSuffix)
@@ -413,30 +417,17 @@ void CSbieUtils::AddContextMenuHelper(const QString& StartPath, const QString& R
 		
 		// Special handling for the original sandbox context menu
 		if (shellKey == "sandbox") {
-			std::wstring explorer_path(512, L'\0');
-
-			HKEY hkeyWinlogon;
-			LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"software\\microsoft\\windows nt\\currentversion\\winlogon", 0, KEY_READ, &hkeyWinlogon);
-			if (rc == 0)
-			{
-				ULONG path_len = explorer_path.size() * sizeof(WCHAR);
-				ULONG type;
-				rc = RegQueryValueExW(hkeyWinlogon, L"Shell", NULL, &type, (BYTE *)explorer_path.c_str(), &path_len);
-				if (rc == 0 && (type == REG_SZ || type == REG_EXPAND_SZ))
-					explorer_path.resize(path_len / sizeof(WCHAR));
-				RegCloseKey(hkeyWinlogon);
-			}
-
+			QString explorerPath = ReadRegistryValue(HKEY_LOCAL_MACHINE, "software\\microsoft\\windows nt\\currentversion\\winlogon", "Shell");
+			
 			// get default explorer path
-			if (*explorer_path.c_str() == L'\0' || _wcsicmp(explorer_path.c_str(), L"explorer.exe") == 0)
+			if (explorerPath.isEmpty() || explorerPath.compare("explorer.exe", Qt::CaseInsensitive) == 0)
 			{
-				GetWindowsDirectoryW((wchar_t*)explorer_path.c_str(), MAX_PATH);
-				ULONG path_len = wcslen(explorer_path.c_str());
-				explorer_path.resize(path_len);
-				explorer_path.append(L"\\explorer.exe");
+				WCHAR winDir[MAX_PATH];
+				GetWindowsDirectoryW(winDir, MAX_PATH);
+				explorerPath = QString::fromWCharArray(winDir) + "\\explorer.exe";
 			}
 
-			folder_command += explorer_path + L" \"%1\"";
+			folder_command += explorerPath.toStdWString() + L" \"%1\"";
 		} else {
 			folder_command += L"\"%1\" %*";
 		}
@@ -492,14 +483,8 @@ void CSbieUtils::RemoveContextMenu()
 
 bool CSbieUtils::HasContextMenuHelper(const QString& shellKey)
 {
-	std::wstring key = L"Software\\Classes\\*\\shell\\" + shellKey.toStdWString() + L"\\command";
-	HKEY hkey;
-	LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &hkey);
-	if (rc != 0)
-		return false;
-
-	RegCloseKey(hkey);
-	return true;
+	QString keyPath = QString("Software\\Classes\\*\\shell\\%1\\command").arg(shellKey);
+	return !ReadRegistryValue(HKEY_CURRENT_USER, keyPath).isEmpty();
 }
 
 bool CSbieUtils::HasContextMenu2()
