@@ -478,7 +478,11 @@ template<CIniHighlighter::KeywordType Type>
 CIniHighlighter::KeywordMappings<Type> CIniHighlighter::parseKeywordMappings(const QString& value)
 {
 	KeywordMappings<Type> mappings;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	QStringList mappingStrings = value.split(';', Qt::SkipEmptyParts);
+#else
 	QStringList mappingStrings = value.split(';', QString::SkipEmptyParts);
+#endif
 
 	for (const QString& mapping : mappingStrings) {
 		QStringList parts = mapping.split('|');
@@ -523,7 +527,11 @@ CIniHighlighter::TooltipStyle CIniHighlighter::parseStyleConfig(const QString& s
 	// Parse format requirements (second part)
 	if (parts.size() >= 2 && !parts[1].trimmed().isEmpty()) {
 		QString formatStr = parts[1].trimmed().toLower();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		QStringList formats = formatStr.split(',', Qt::SkipEmptyParts);
+#else
 		QStringList formats = formatStr.split(',', QString::SkipEmptyParts);
+#endif
 
 		for (const QString& format : formats) {
 			QString fmt = format.trimmed();
