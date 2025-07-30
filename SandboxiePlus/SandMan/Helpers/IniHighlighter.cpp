@@ -3,10 +3,34 @@
 #include "../MiscHelpers/Common/Settings.h"
 #include "../version.h"
 
+
+// Settings validation and tooltip handling
 const QString CIniHighlighter::DEFAULT_SETTINGS_FILE = "SbieSettings.ini";
 const QString CIniHighlighter::DEFAULT_VERSION = "0.0.0";
 
 QVersionNumber CIniHighlighter::s_currentVersion;
+QString CIniHighlighter::s_currentLanguage;
+QMutex CIniHighlighter::s_languageMutex;
+
+QHash<QString, SettingInfo> CIniHighlighter::validSettings;
+QDateTime CIniHighlighter::lastFileModified;
+bool CIniHighlighter::settingsLoaded = false;
+QMutex CIniHighlighter::settingsMutex;
+
+QHash<QString, QString> CIniHighlighter::tooltipCache;
+QMutex CIniHighlighter::tooltipCacheMutex;
+
+CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Context> CIniHighlighter::contextKeywordMappings;
+CIniHighlighter::LocalizedKeywordMappings<CIniHighlighter::KeywordType::Context> CIniHighlighter::localizedContextKeywordMappings;
+CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Category> CIniHighlighter::categoryKeywordMappings;
+CIniHighlighter::LocalizedKeywordMappings<CIniHighlighter::KeywordType::Category> CIniHighlighter::localizedCategoryKeywordMappings;
+CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Requirements> CIniHighlighter::requirementsKeywordMappings;
+CIniHighlighter::LocalizedKeywordMappings<CIniHighlighter::KeywordType::Requirements> CIniHighlighter::localizedRequirementsKeywordMappings;
+CIniHighlighter::TooltipStyle CIniHighlighter::contextTooltipStyle;
+CIniHighlighter::TooltipStyle CIniHighlighter::categoryTooltipStyle;
+CIniHighlighter::TooltipStyle CIniHighlighter::requirementsTooltipStyle;
+// Settings validation and tooltip handling
+
 QVersionNumber CIniHighlighter::getCurrentVersion()
 {
 	if (s_currentVersion.isNull()) {
@@ -18,12 +42,37 @@ QVersionNumber CIniHighlighter::getCurrentVersion()
 	}
 	return s_currentVersion;
 }
-QHash<QString, SettingInfo> CIniHighlighter::validSettings;
-QDateTime CIniHighlighter::lastFileModified;
-bool CIniHighlighter::settingsLoaded = false;
-QMutex CIniHighlighter::settingsMutex;
-QHash<QString, QString> CIniHighlighter::tooltipCache;
-QMutex CIniHighlighter::tooltipCacheMutex;
+
+QString CIniHighlighter::getCurrentLanguage()
+{
+	if (s_currentLanguage.isNull()) {
+		QMutexLocker locker(&s_languageMutex);
+		if (s_currentLanguage.isNull()) {
+			// Get the current UI language from configuration
+			QString language = theConf->GetString("Options/UiLanguage");
+
+			// Handle special case "native" (use default values)
+			if (language.compare("native", Qt::CaseInsensitive) == 0) {
+				s_currentLanguage = "";
+				return s_currentLanguage;
+			}
+
+			// If no language is set, determine from system locale
+			if (language.isEmpty()) {
+				language = QLocale::system().name();
+			}
+
+			// For English variants, return empty to use default values
+			if (language.startsWith("en", Qt::CaseInsensitive)) {
+				s_currentLanguage = "";
+			}
+			else {
+				s_currentLanguage = language.toLower();
+			}
+		}
+	}
+	return s_currentLanguage;
+}
 
 CIniHighlighter::CIniHighlighter(bool bDarkMode, QTextDocument* parent, bool enableValidation)
 	: QSyntaxHighlighter(parent), m_enableValidation(enableValidation)
@@ -181,9 +230,25 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 		tooltipCache.clear();
 	}
 
+	// Clear language cache with its own mutex
+	{
+		QMutexLocker languageLock(&s_languageMutex);
+		s_currentLanguage = QString();
+	}
+
 	QFile file(filePath);
 	if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
 		validSettings.clear();
+		contextKeywordMappings.clear();
+		localizedContextKeywordMappings.clear();
+		categoryKeywordMappings.clear();
+		localizedCategoryKeywordMappings.clear();
+		requirementsKeywordMappings.clear();
+		localizedRequirementsKeywordMappings.clear();
+		contextTooltipStyle = TooltipStyle();
+		categoryTooltipStyle = TooltipStyle();
+		requirementsTooltipStyle = TooltipStyle();
+
 		QTextStream in(&file);
 #if QT_VERSION < QT_VERSION_CHECK(6,0,0)
 		// Qt5: use setCodec
@@ -193,6 +258,7 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 		QString currentSection;
 		SettingInfo currentInfo;
 		bool inSection = false;
+		bool inConfigSection = false;
 
 		while (!in.atEnd()) {
 			QString line = in.readLine().trimmed();
@@ -206,21 +272,29 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 			QRegularExpressionMatch sectionMatch = sectionRegex.match(line);
 
 			if (sectionMatch.hasMatch()) {
-				// If we were already processing a section, save it
-				if (inSection && !currentSection.isEmpty()) {
+				// If we were already processing a section, save it (except for config section)
+				if (inSection && !currentSection.isEmpty() && !inConfigSection) {
 					currentInfo.name = currentSection;
 					validSettings.insert(currentInfo.name, currentInfo);
 				}
 
 				// Start a new section
 				currentSection = sectionMatch.captured(1).trimmed();
-				currentInfo = SettingInfo(); // Reset info for new section
-				inSection = true;
+				inConfigSection = (currentSection == "___SbieSettingsConfig_");
+
+				if (!inConfigSection) {
+					currentInfo = SettingInfo(); // Reset info for new regular section
+					inSection = true;
+				}
+				else {
+					// We're entering the special config section
+					inSection = false;
+				}
 				continue;
 			}
 
 			// If not in a section yet, skip
-			if (!inSection)
+			if (!inSection && !inConfigSection)
 				continue;
 
 			// Process key=value pairs
@@ -229,85 +303,153 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 				QString key = line.left(equalsPos).trimmed();
 				QString value = line.mid(equalsPos + 1).trimmed();
 
-				// Helper function to sanitize version strings
-				auto sanitizeVersion = [this](const QString& s, bool defaultZero = false) {
-					QString v = s.trimmed();
-					v.remove(QRegularExpression("[^0-9.]"));
-					QRegularExpression rx("^[0-9]+\\.[0-9]+\\.[0-9]+$"); // Exact x.y.z format
-					if (rx.match(v).hasMatch())
-						return v;
-					return defaultZero ? QString(DEFAULT_VERSION) : QString();
-					};
-
-				// Process special fields
-				if (key.compare("AddedVersion", Qt::CaseInsensitive) == 0)
-					currentInfo.addedVersion = sanitizeVersion(value, true);
-				else if (key.compare("RemovedVersion", Qt::CaseInsensitive) == 0)
-					currentInfo.removedVersion = sanitizeVersion(value);
-				else if (key.compare("ReaddedVersion", Qt::CaseInsensitive) == 0)
-					currentInfo.readdedVersion = sanitizeVersion(value);
-				else if (key.compare("RenamedVersion", Qt::CaseInsensitive) == 0)
-					currentInfo.renamedVersion = sanitizeVersion(value);
-				else if (key.compare("SupersededBy", Qt::CaseInsensitive) == 0)
-					currentInfo.supersededBy = value;
-				else if (key.compare("Category", Qt::CaseInsensitive) == 0)
-					currentInfo.category = value;
-				else if (key.compare("Context", Qt::CaseInsensitive) == 0)
-					currentInfo.context = value;
-				else if (key.compare("Syntax", Qt::CaseInsensitive) == 0) {
-					// Replace \n escape sequences with actual newlines
-					value.replace("\\n", "\n");
-					currentInfo.syntax = value;
-				}
-				else if (key.compare("Description", Qt::CaseInsensitive) == 0) {
-					// Handle main description
-					// Replace \n escape sequences with actual newlines
-					value.replace("\\n", "\n");
-
-					// If there's already content in the description field,
-					// append this new value with a newline separator
-					if (!currentInfo.description.isEmpty()) {
-						currentInfo.description += "\n" + value;
+				if (inConfigSection) {
+					// Process configuration settings
+					if (key.compare("_ContextConf", Qt::CaseInsensitive) == 0) {
+						// Parse default context keyword mappings
+						contextKeywordMappings = parseKeywordMappings<KeywordType::Context>(value);
 					}
-					else {
+					else if (key.startsWith("_ContextConf_", Qt::CaseInsensitive)) {
+						// Handle localized context mappings
+						QRegularExpression langRegex("^_ContextConf_(.+)$", QRegularExpression::CaseInsensitiveOption);
+						QRegularExpressionMatch langMatch = langRegex.match(key);
+
+						if (langMatch.hasMatch()) {
+							QString langCode = langMatch.captured(1).toLower();
+							localizedContextKeywordMappings.insert(langCode, parseKeywordMappings<KeywordType::Context>(value));
+						}
+					}
+					else if (key.compare("_CategoryConf", Qt::CaseInsensitive) == 0) {
+						// Parse default category keyword mappings
+						categoryKeywordMappings = parseKeywordMappings<KeywordType::Category>(value);
+					}
+					else if (key.startsWith("_CategoryConf_", Qt::CaseInsensitive)) {
+						// Handle localized category mappings
+						QRegularExpression langRegex("^_CategoryConf_(.+)$", QRegularExpression::CaseInsensitiveOption);
+						QRegularExpressionMatch langMatch = langRegex.match(key);
+
+						if (langMatch.hasMatch()) {
+							QString langCode = langMatch.captured(1).toLower();
+							localizedCategoryKeywordMappings.insert(langCode, parseKeywordMappings<KeywordType::Category>(value));
+						}
+					}
+					else if (key.compare("_RequirementsConf", Qt::CaseInsensitive) == 0) {
+						// Parse default requirements keyword mappings
+						requirementsKeywordMappings = parseKeywordMappings<KeywordType::Requirements>(value);
+					}
+					else if (key.startsWith("_RequirementsConf_", Qt::CaseInsensitive)) {
+						// Handle localized requirements mappings
+						QRegularExpression langRegex("^_RequirementsConf_(.+)$", QRegularExpression::CaseInsensitiveOption);
+						QRegularExpressionMatch langMatch = langRegex.match(key);
+
+						if (langMatch.hasMatch()) {
+							QString langCode = langMatch.captured(1).toLower();
+							localizedRequirementsKeywordMappings.insert(langCode, parseKeywordMappings<KeywordType::Requirements>(value));
+						}
+					}
+					else if (key.compare("_ContextStyles", Qt::CaseInsensitive) == 0) {
+						// Parse context tooltip style configuration
+						contextTooltipStyle = parseStyleConfig(value);
+					}
+					else if (key.compare("_CategoryStyles", Qt::CaseInsensitive) == 0) {
+						// Parse category tooltip style configuration
+						categoryTooltipStyle = parseStyleConfig(value);
+					}
+					else if (key.compare("_RequirementsStyles", Qt::CaseInsensitive) == 0) {
+						// Parse requirements tooltip style configuration
+						requirementsTooltipStyle = parseStyleConfig(value);
+					}
+				}
+				else {
+					// Process normal setting fields
+					// Helper function to sanitize version strings
+					auto sanitizeVersion = [this](const QString& s, bool defaultZero = false) {
+						QString v = s.trimmed();
+						v.remove(QRegularExpression("[^0-9.]"));
+						QRegularExpression rx("^[0-9]+\\.[0-9]+\\.[0-9]+$"); // Exact x.y.z format
+						if (rx.match(v).hasMatch())
+							return v;
+						return defaultZero ? QString(DEFAULT_VERSION) : QString();
+						};
+
+					// Process special fields
+					if (key.compare("AddedVersion", Qt::CaseInsensitive) == 0)
+						currentInfo.addedVersion = sanitizeVersion(value, true);
+					else if (key.compare("RemovedVersion", Qt::CaseInsensitive) == 0)
+						currentInfo.removedVersion = sanitizeVersion(value);
+					else if (key.compare("ReaddedVersion", Qt::CaseInsensitive) == 0)
+						currentInfo.readdedVersion = sanitizeVersion(value);
+					else if (key.compare("RenamedVersion", Qt::CaseInsensitive) == 0)
+						currentInfo.renamedVersion = sanitizeVersion(value);
+					else if (key.compare("SupersededBy", Qt::CaseInsensitive) == 0)
+						currentInfo.supersededBy = value;
+					else if (key.compare("Category", Qt::CaseInsensitive) == 0)
+						currentInfo.category = value;
+					else if (key.compare("Context", Qt::CaseInsensitive) == 0)
+						currentInfo.context = value;
+					// Handle localized syntax (Syntax_XX=value)
+					else if (key.startsWith("Syntax_", Qt::CaseInsensitive)) {
+						// Modified regex to capture any language code after Syntax_
+						QRegularExpression langRegex("^Syntax_(.+)$", QRegularExpression::CaseInsensitiveOption);
+						QRegularExpressionMatch langMatch = langRegex.match(key);
+
+						if (langMatch.hasMatch()) {
+							// Get the language code and normalize to lowercase for consistent matching
+							QString langCode = langMatch.captured(1).toLower();
+							QString localizedStx = value;
+
+							// Replace \n escape sequences with actual newlines
+							localizedStx.replace("\\n", "\n");
+
+							// If there's already content for this language, append with newline
+							if (currentInfo.localizedSyntax.contains(langCode)) {
+								currentInfo.localizedSyntax[langCode] += "\n" + localizedStx;
+							}
+							else {
+								currentInfo.localizedSyntax.insert(langCode, localizedStx);
+							}
+						}
+					}
+					else if (key.compare("Syntax", Qt::CaseInsensitive) == 0)
+						currentInfo.syntax = value;
+					// Handle localized descriptions (Description_XX=value)
+					else if (key.startsWith("Description_", Qt::CaseInsensitive)) {
+						// Modified regex to capture any language code after Description_
+						QRegularExpression langRegex("^Description_(.+)$", QRegularExpression::CaseInsensitiveOption);
+						QRegularExpressionMatch langMatch = langRegex.match(key);
+
+						if (langMatch.hasMatch()) {
+							// Get the language code and normalize to lowercase for consistent matching
+							QString langCode = langMatch.captured(1).toLower();
+							QString localizedDesc = value;
+
+							// Replace \n escape sequences with actual newlines
+							localizedDesc.replace("\\n", "\n");
+
+							// If there's already content for this language, append with newline
+							if (currentInfo.localizedDescriptions.contains(langCode)) {
+								currentInfo.localizedDescriptions[langCode] += "\n" + localizedDesc;
+							}
+							else {
+								currentInfo.localizedDescriptions.insert(langCode, localizedDesc);
+							}
+						}
+					}
+					else if (key.compare("Description", Qt::CaseInsensitive) == 0)
 						currentInfo.description = value;
-					}
+					else if (key.compare("Requirements", Qt::CaseInsensitive) == 0)
+						currentInfo.requirements = value.toLower().trimmed();
 				}
-				// Handle localized descriptions (Description_XX=value)
-				else if (key.startsWith("Description_", Qt::CaseInsensitive)) {
-					// Modified regex to capture any language code after Description_
-					QRegularExpression langRegex("^Description_(.+)$", QRegularExpression::CaseInsensitiveOption);
-					QRegularExpressionMatch langMatch = langRegex.match(key);
-
-					if (langMatch.hasMatch()) {
-						// Get the language code and normalize to lowercase for consistent matching
-						QString langCode = langMatch.captured(1).toLower();
-						QString localizedDesc = value;
-
-						// Replace \n escape sequences with actual newlines
-						localizedDesc.replace("\\n", "\n");
-
-						// If there's already content for this language, append with newline
-						if (currentInfo.localizedDescriptions.contains(langCode)) {
-							currentInfo.localizedDescriptions[langCode] += "\n" + localizedDesc;
-						}
-						else {
-							currentInfo.localizedDescriptions.insert(langCode, localizedDesc);
-						}
-					}
-				}
-				else if (key.compare("Flags", Qt::CaseInsensitive) == 0)
-					currentInfo.flags = value.toLower().trimmed();
 			}
 		}
 
-		// Don't forget to save the last section
-		if (inSection && !currentSection.isEmpty()) {
-			currentInfo.name = currentSection;
-			// Ensure name contains only valid characters
-			currentInfo.name.remove(QRegularExpression("[^a-zA-Z0-9_.]"));
-			validSettings.insert(currentInfo.name, currentInfo);
-		}
+		// Don't forget to save the last section (if not the config section)
+		if (inSection && !currentSection.isEmpty() && !inConfigSection) {
+            currentInfo.name = currentSection;
+            // Ensure name contains only valid characters
+            currentInfo.name.remove(QRegularExpression("[^a-zA-Z0-9_.]"));
+            validSettings.insert(currentInfo.name, currentInfo);
+        }
 
 		file.close();
 
@@ -315,7 +457,13 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 		lastFileModified = QFileInfo(filePath).lastModified();
 		settingsLoaded = true;
 
-		qDebug() << "[validSettings] Successfully loaded" << validSettings.size() << "settings from" << filePath;
+		qDebug() << "[validSettings] Successfully loaded" << validSettings.size() << "settings,"
+			<< contextKeywordMappings.size() << "context mappings,"
+			<< localizedContextKeywordMappings.size() << "localized context mappings,"
+			<< categoryKeywordMappings.size() << "category mappings,"
+			<< localizedCategoryKeywordMappings.size() << "localized category mappings,"
+			<< requirementsKeywordMappings.size() << "requirements mappings, and"
+			<< localizedRequirementsKeywordMappings.size() << "localized requirements mappings from" << filePath;
 	}
 	else {
 		// File couldn't be opened - log the error
@@ -324,6 +472,80 @@ void CIniHighlighter::loadSettingsIni(const QString& filePath)
 		// Keep settings loaded flag false so we try again next time
 		settingsLoaded = false;
 	}
+}
+
+template<CIniHighlighter::KeywordType Type>
+CIniHighlighter::KeywordMappings<Type> CIniHighlighter::parseKeywordMappings(const QString& value)
+{
+	KeywordMappings<Type> mappings;
+	QStringList mappingStrings = value.split(';', QString::SkipEmptyParts);
+
+	for (const QString& mapping : mappingStrings) {
+		QStringList parts = mapping.split('|');
+		if (parts.size() >= 2) {
+			KeywordInfo<Type> info;
+			info.keyword = parts[0].trimmed();
+			info.displayName = parts[1].trimmed();
+			if (parts.size() >= 3) {
+				info.action = parts[2].trimmed();
+			}
+			mappings.append(info);
+		}
+	}
+
+	return mappings;
+}
+
+template CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Context>
+CIniHighlighter::parseKeywordMappings<CIniHighlighter::KeywordType::Context>(const QString& value);
+
+template CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Category>
+CIniHighlighter::parseKeywordMappings<CIniHighlighter::KeywordType::Category>(const QString& value);
+
+template CIniHighlighter::KeywordMappings<CIniHighlighter::KeywordType::Requirements>
+CIniHighlighter::parseKeywordMappings<CIniHighlighter::KeywordType::Requirements>(const QString& value);
+
+CIniHighlighter::TooltipStyle CIniHighlighter::parseStyleConfig(const QString& styleConfig)
+{
+	TooltipStyle style;
+
+	if (styleConfig.isEmpty()) {
+		return style; // Return default (empty) style
+	}
+
+	QStringList parts = styleConfig.split('|');
+
+	// Parse color (first part)
+	if (parts.size() >= 1 && !parts[0].trimmed().isEmpty()) {
+		style.color = parts[0].trimmed().toLower();
+	}
+
+	// Parse format requirements (second part)
+	if (parts.size() >= 2 && !parts[1].trimmed().isEmpty()) {
+		QString formatStr = parts[1].trimmed().toLower();
+		QStringList formats = formatStr.split(',', QString::SkipEmptyParts);
+
+		for (const QString& format : formats) {
+			QString fmt = format.trimmed();
+			if (fmt == "bold") {
+				style.bold = true;
+			}
+			else if (fmt == "italic") {
+				style.italic = true;
+			}
+			else if (fmt == "underline") {
+				style.underline = true;
+			}
+		}
+	}
+
+	// Parse font (third part) - currently not used in TooltipStyle but could be extended
+	if (parts.size() >= 3 && !parts[2].trimmed().isEmpty()) {
+		// Font parsing could be added here if needed in the future
+		// style.fontFamily = parts[2].trimmed();
+	}
+
+	return style;
 }
 
 QString CIniHighlighter::GetSettingTooltip(const QString& settingName)
@@ -340,6 +562,17 @@ QString CIniHighlighter::GetSettingTooltip(const QString& settingName)
 			return it.value();
 	}
 
+	// HTML escaping helper function
+	auto escapeHtml = [](const QString& str) -> QString {
+		QString escaped = str;
+		escaped.replace("&", "&amp;");  // Must be first to avoid double-escaping
+		escaped.replace("<", "&lt;");
+		escaped.replace(">", "&gt;");
+		escaped.replace("\"", "&quot;");
+		escaped.replace("'", "&#39;");
+		return escaped;
+		};
+
 	// Generate tooltip content (requires settings lock)
 	QString tooltip;
 	{
@@ -348,6 +581,9 @@ QString CIniHighlighter::GetSettingTooltip(const QString& settingName)
 		// Double-check after acquiring the lock
 		if (!settingsLoaded || validSettings.isEmpty() || !validSettings.contains(settingName))
 			return QString();
+
+		// Get the current UI language from configuration
+		QString currentLang = getCurrentLanguage();
 
 		const SettingInfo& info = validSettings[settingName];
 
@@ -393,174 +629,185 @@ QString CIniHighlighter::GetSettingTooltip(const QString& settingName)
 		if (!info.category.isEmpty()) {
 			QString categoryDisplay = info.category;
 
-			// Check which category types are present
-			bool hasAdvanced = categoryDisplay.contains('a');
-			bool hasDebug= categoryDisplay.contains('d');
-			bool hasFile = categoryDisplay.contains('f');
-			bool hasGeneral = categoryDisplay.contains('g');
-			bool hasNetwork = categoryDisplay.contains('n');
-			bool hasProgramControl = categoryDisplay.contains('p');
-			bool hasResourceAccess = categoryDisplay.contains('r');
-			bool hasSecurity = categoryDisplay.contains('s');
-			bool hasTemplate = categoryDisplay.contains('t');
-			bool hasVarious = categoryDisplay.contains('v');
+			// Get the appropriate category mappings based on language
+			KeywordMappings<KeywordType::Category> effectiveMappings;
 
-			// Build the appropriate category type string
-			QStringList categoryLabels;
-			if (hasAdvanced)
-				categoryLabels.append(tr("Advanced"));
-			if (hasDebug)
-				categoryLabels.append(tr("Debug"));
-			if (hasFile)
-				categoryLabels.append(tr("File"));
-			if (hasGeneral)
-				categoryLabels.append(tr("General"));
-			if (hasNetwork)
-				categoryLabels.append(tr("Network"));
-			if (hasProgramControl)
-				categoryLabels.append(tr("Program Control"));
-			if (hasResourceAccess)
-				categoryLabels.append(tr("Resource Access"));
-			if (hasSecurity)
-				categoryLabels.append(tr("Security"));
-			if (hasTemplate)
-				categoryLabels.append(tr("Template"));
-			if (hasVarious)
-				categoryLabels.append(tr("Various"));
-
-			QString categoryType = categoryLabels.join(" + ");
-
-			// Only display descriptive categories if we recognized some flags
-			if (!categoryType.isEmpty()) {
-				tooltip += "<tr><td " + labelStyle + ">" + tr("Category") + "</td>";
-				tooltip += "<td>" + valuePrefix + categoryType + "</td></tr>";
+			// First try exact match for language-specific mappings
+			if (localizedCategoryKeywordMappings.contains(currentLang)) {
+				effectiveMappings = localizedCategoryKeywordMappings.value(currentLang);
 			}
-			// Fall back to raw value if no recognized categories
+			// Try with just the language part (if it's a locale with country code like "en_US")
+			else if (currentLang.contains('_') &&
+				localizedCategoryKeywordMappings.contains(currentLang.left(currentLang.indexOf('_')))) {
+				effectiveMappings = localizedCategoryKeywordMappings.value(
+					currentLang.left(currentLang.indexOf('_')));
+			}
+			// Fall back to default if no localized mappings found
 			else {
-				tooltip += "<tr><td " + labelStyle + ">" + tr("Category") + "</td>";
-				tooltip += "<td>" + valuePrefix + categoryDisplay + "</td></tr>";
+				effectiveMappings = categoryKeywordMappings;
 			}
+
+			// Process category mappings
+			processKeywordMappings<KeywordInfo<KeywordType::Category>>(
+				categoryDisplay,
+				effectiveMappings,
+				tr("Category"),
+				labelStyle,
+				valuePrefix,
+				categoryTooltipStyle,
+				tooltip);
 		}
 
 		if (!info.context.isEmpty()) {
 			QString contextDisplay = info.context;
 
-			// Check which context types are present
-			bool hasGlobal = contextDisplay.contains('g');
-			bool hasTemplate = contextDisplay.contains('t');
-			bool hasSandbox = contextDisplay.contains('s');
-			bool hasUser = contextDisplay.contains('u');
+			// Get the appropriate context mappings
+			KeywordMappings<KeywordType::Context> effectiveMappings;
 
-			// Skip showing context if all types are present
-			if (!(hasGlobal && hasTemplate && hasSandbox && hasUser)) {
-				// Build the appropriate context type string
-				QStringList typeLabels;
-				if (hasGlobal)
-					typeLabels.append(tr("Global"));
-				if (hasTemplate)
-					typeLabels.append(tr("Template"));
-				if (hasSandbox)
-					typeLabels.append(tr("Per Sandbox"));
-				if (hasUser)
-					typeLabels.append(tr("User Settings"));
+			// First try exact match for language-specific mappings
+			if (localizedContextKeywordMappings.contains(currentLang)) {
+				effectiveMappings = localizedContextKeywordMappings.value(currentLang);
+			}
+			// Try with just the language part
+			else if (currentLang.contains('_') &&
+				localizedContextKeywordMappings.contains(currentLang.left(currentLang.indexOf('_')))) {
+				effectiveMappings = localizedContextKeywordMappings.value(
+					currentLang.left(currentLang.indexOf('_')));
+			}
+			// Fall back to default
+			else {
+				effectiveMappings = contextKeywordMappings;
+			}
 
-				QString contextType = typeLabels.join(" + ");
+			// Process context mappings
+			processKeywordMappings<KeywordInfo<KeywordType::Context>>(
+				contextDisplay,
+				effectiveMappings,
+				tr("Context"),
+				labelStyle,
+				valuePrefix,
+				contextTooltipStyle,
+				tooltip);
+		}
 
-				// Only display the tooltip row if we have recognized context types
-				if (!contextType.isEmpty()) {
-					tooltip += "<tr><td " + labelStyle + ">" + tr("Context") + "</td>";
-					tooltip += "<td>" + valuePrefix + "<i>" + contextType + "</i></td></tr>";
-				}
+		// Choose syntax based on language
+		QString syntax = info.syntax; // Default first;
+		if (!currentLang.isEmpty()) {
+			// First try exact match
+			if (info.localizedSyntax.contains(currentLang)) {
+				syntax = info.localizedSyntax[currentLang];
+			}
+			// Try with just the language part (if it's a locale with country code)
+			else if (currentLang.contains('_')) {
+				QString langBase = currentLang.left(currentLang.indexOf('_'));
+				if (info.localizedSyntax.contains(langBase))
+					syntax = info.localizedSyntax[langBase];
 			}
 		}
 
-		if (!info.syntax.isEmpty()) {
+		if (!syntax.isEmpty()) {
 			// Handle the syntax to preserve its own line breaks
-			QStringList syntaxLines = info.syntax.split('\n');
+			QStringList syntaxLines = syntax.split('\n');
 			tooltip += "<tr><td " + labelStyle + " style='vertical-align:top;'>" + tr("Syntax") + "</td>";
-			tooltip += "<td>" + valuePrefix + syntaxLines[0];
 
-			// Add additional syntax lines with proper indentation
-			for (int i = 1; i < syntaxLines.size(); i++) {
-				tooltip += "<br>&nbsp;&nbsp;" + syntaxLines[i];
+			// Process the first line - highlight square brackets in blue (not bold)
+			if (!syntaxLines.isEmpty()) {
+				QString processedLine = syntaxLines[0];
+
+				// First replace [sn] placeholder with the actual setting name
+				processedLine.replace("[sn]", settingName);
+
+				// Then escape HTML special characters
+				processedLine = escapeHtml(processedLine);
+
+				// Finally apply styling to square brackets
+				processedLine.replace("[", "<span style='color:#2196F3;'>[</span>");
+				processedLine.replace("]", "<span style='color:#2196F3;'>]</span>");
+
+				tooltip += "<td>" + valuePrefix + "<span style='font-family: Consolas, monospace;'>" + processedLine + "</span>";
+
+				// Add additional syntax lines with proper indentation
+				for (int i = 1; i < syntaxLines.size(); i++) {
+					processedLine = syntaxLines[i];
+
+					// Replace [sn] placeholder with the actual setting name
+					processedLine.replace("[sn]", settingName);
+
+					// Escape HTML special characters
+					processedLine = escapeHtml(processedLine);
+
+					// Apply styling to square brackets
+					processedLine.replace("[", "<span style='color:#2196F3;'>[</span>");
+					processedLine.replace("]", "<span style='color:#2196F3;'>]</span>");
+
+					tooltip += "<br>&nbsp;&nbsp;<span style='font-family: Consolas, monospace;'>" + processedLine + "</span>";
+				}
+				tooltip += "</td></tr>";
 			}
-			tooltip += "</td></tr>";
 		}
-
-		// Get the current UI language from configuration
-		QString currentLang = theConf->GetString("Options/UiLanguage");
-
-		// Handle special case "native" (use English)
-		if (currentLang.compare("native", Qt::CaseInsensitive) == 0) {
-			currentLang = "en";
-		}
-
-		// If no language is set, determine from system locale
-		if (currentLang.isEmpty()) {
-			currentLang = QLocale::system().name();
-		}
-
-		currentLang = currentLang.toLower();
 
 		// Choose description based on language
-		QString description;
+		QString description = info.description; // Default first
 
-		// First try exact match
-		if (info.localizedDescriptions.contains(currentLang)) {
-			description = info.localizedDescriptions[currentLang];
-		}
-		// Try with just the language part (if it's a locale with country code like "en_US")
-		else if (currentLang.contains('_') &&
-			info.localizedDescriptions.contains(currentLang.left(currentLang.indexOf('_')))) {
-			description = info.localizedDescriptions[currentLang.left(currentLang.indexOf('_'))];
-		}
-		// Fall back to default description
-		else {
-			description = info.description;
+		if (!currentLang.isEmpty()) {
+			// First try exact match
+			if (info.localizedDescriptions.contains(currentLang)) {
+				description = info.localizedDescriptions[currentLang];
+			}
+			// Try with just the language part (if it's a locale with country code)
+			else if (currentLang.contains('_')) {
+				QString langBase = currentLang.left(currentLang.indexOf('_'));
+				if (info.localizedDescriptions.contains(langBase))
+					description = info.localizedDescriptions[langBase];
+			}
 		}
 
 		if (!description.isEmpty()) {
 			// Handle the description to preserve its own line breaks
 			QStringList descLines = description.split('\n');
 			tooltip += "<tr><td " + labelStyle + " style='vertical-align:top;'>" + tr("Description") + "</td>";
-			tooltip += "<td>" + valuePrefix + descLines[0];
+
+			// Escape HTML in the first line
+			tooltip += "<td>" + valuePrefix + escapeHtml(descLines[0]);
 
 			// Add additional description lines with proper indentation
 			for (int i = 1; i < descLines.size(); i++) {
-				tooltip += "<br>&nbsp;&nbsp;" + descLines[i];
+				// Escape HTML in each description line
+				tooltip += "<br>&nbsp;&nbsp;" + escapeHtml(descLines[i]);
 			}
 			tooltip += "</td></tr>";
 		}
 
-		if (!info.flags.isEmpty()) {
-			// Special handling: parse all certificate requirements
-			bool hasStandard = info.flags.contains("s");
-			bool hasAdvanced = info.flags.contains("e");
-			bool hasInsider = info.flags.contains("i");
+		if (!info.requirements.isEmpty()) {
+			QString requirementsDisplay = info.requirements;
 
-			// Handle certificate requirements (standard and advanced)
-			if (hasStandard || hasAdvanced) {
-				QStringList certRequirements;
+			// Get the appropriate requirements mappings based on language
+			KeywordMappings<KeywordType::Requirements> effectiveMappings;
 
-				if (hasStandard)
-					certRequirements.append(tr("Supporter Certificate"));
-
-				if (hasAdvanced)
-					certRequirements.append(tr("Advanced Encryption Pack"));
-
-				QString certMessage = certRequirements.size() > 1
-					? tr("Requires: %1").arg(certRequirements.join(tr(" + ")))
-					: (hasAdvanced ? tr("Requires an Advanced Encryption Pack") : tr("Requires a Supporter Certificate"));
-
-				tooltip += "<tr><td " + labelStyle + " style='color:red;'>" + tr("Certificate") + "</td>";
-				tooltip += "<td style='color:red;'>" + valuePrefix + certMessage + "</td></tr>";
+			// First try exact match for language-specific mappings
+			if (localizedRequirementsKeywordMappings.contains(currentLang)) {
+				effectiveMappings = localizedRequirementsKeywordMappings.value(currentLang);
+			}
+			// Try with just the language part (if it's a locale with country code like "en_US")
+			else if (currentLang.contains('_') &&
+				localizedRequirementsKeywordMappings.contains(currentLang.left(currentLang.indexOf('_')))) {
+				effectiveMappings = localizedRequirementsKeywordMappings.value(
+					currentLang.left(currentLang.indexOf('_')));
+			}
+			// Fall back to default if no localized mappings found
+			else {
+				effectiveMappings = requirementsKeywordMappings;
 			}
 
-			// Handle insider build requirement (i) on a separate line
-			if (hasInsider) {
-				tooltip += "<tr><td " + labelStyle + " style='color:red;'>" + tr("Build") + "</td>";
-				tooltip += "<td style='color:red;'>" + valuePrefix + tr("Requires an Insider Build") + "</td></tr>";
-			}
+			// Process requirements mappings
+			processKeywordMappings<KeywordInfo<KeywordType::Requirements>>(
+				requirementsDisplay,
+				effectiveMappings,
+				tr("Requirements"),
+				labelStyle,
+				valuePrefix,
+				requirementsTooltipStyle,
+				tooltip);
 		}
 
 		tooltip += "</table>";

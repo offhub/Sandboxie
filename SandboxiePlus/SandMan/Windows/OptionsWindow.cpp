@@ -830,6 +830,14 @@ bool COptionsWindow::eventFilter(QObject *source, QEvent *event)
 			if (CIniHighlighter::IsCommentLine(currentLine))
 				return false;
 
+			// Check if we're on the value side of the equals sign (after the =)
+			int equalsPos = currentLine.indexOf('=');
+			if (equalsPos >= 0 && (cursor.position() - block.position()) > equalsPos) {
+				// We're in the value part, don't show tooltip
+				QToolTip::hideText();
+				return false;
+			}
+
 			// Custom word selection that includes dots and underscores
 			int initialPos = cursor.position() - block.position();
 			int startPos = initialPos;
@@ -1370,6 +1378,18 @@ void COptionsWindow::OnIniValidationToggled(int state)
 	// Save the new value to config
 	theConf->SetValue("Options/ValidateIniKeys", m_IniValidationEnabled);
 
+	// Clear the tooltip cache
+	{
+		QMutexLocker cacheLock(&CIniHighlighter::tooltipCacheMutex);
+		CIniHighlighter::tooltipCache.clear();
+	}
+
+	// Clear the language cache
+	{
+		QMutexLocker languageLock(&CIniHighlighter::s_languageMutex);
+		CIniHighlighter::s_currentLanguage = QString();
+	}
+
 	// Remove previous highlighter
 	if (m_pIniHighlighter) {
 		delete m_pIniHighlighter;
@@ -1388,14 +1408,26 @@ void COptionsWindow::OnIniValidationToggled(int state)
 
 void COptionsWindow::OnTooltipToggled(int state)
 {
-	m_HoldChange = true;
+    m_HoldChange = true;
 
-	m_TooltipsEnabled = (state == Qt::Checked);
+    m_TooltipsEnabled = (state == Qt::Checked);
 
-	// Save the new value to config
-	theConf->SetValue("Options/EnableIniTooltips", m_TooltipsEnabled);
+    // Save the new value to config
+    theConf->SetValue("Options/EnableIniTooltips", m_TooltipsEnabled);
 
-	m_HoldChange = false;
+    // Clear the tooltip cache
+    {
+        QMutexLocker cacheLock(&CIniHighlighter::tooltipCacheMutex);
+        CIniHighlighter::tooltipCache.clear();
+    }
+
+    // Clear the language cache
+    {
+        QMutexLocker languageLock(&CIniHighlighter::s_languageMutex);
+        CIniHighlighter::s_currentLanguage = QString();
+    }
+
+    m_HoldChange = false;
 }
 
 void COptionsWindow::OnSaveIni()
