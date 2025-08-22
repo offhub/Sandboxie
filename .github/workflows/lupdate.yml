@@ -30,7 +30,7 @@ jobs:
         working-directory: SandboxiePlus/SandMan
         run: |
           set +e
-          lupdate SandMan.pri
+          lupdate ../MiscHelpers/Translation.pro
           git diff --exit-code
           echo "deploy=$?" >> $GITHUB_OUTPUT
 
