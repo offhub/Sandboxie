@@ -113,6 +113,13 @@ public:
 		connect(header(), SIGNAL(customContextMenuRequested( const QPoint& )), this, SLOT(OnMenuRequested(const QPoint &)));
 
 		m_pMenu = new QMenu(this);
+
+		// Auto-resize columns shortcut (only visible columns)
+		QAction* pAutoResizeAction = new QAction(this);
+		pAutoResizeAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+		pAutoResizeAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+		connect(pAutoResizeAction, &QAction::triggered, this, &QTreeViewEx::OnAutoResizeColumns);
+		this->addAction(pAutoResizeAction);
 	}
 
 	void setColumnReset(int iMode)
@@ -245,6 +252,16 @@ public slots:
 		for (int i = 0; i < pModel->columnCount(); i++) {
 			SetColumnHidden(i, false);
 			QTreeView::resizeColumnToContents(i);
+		}
+	}
+
+	void OnAutoResizeColumns()
+	{
+		QAbstractItemModel* pModel = model();
+		for (int i = 0; i < pModel->columnCount(); i++) {
+			if (!isColumnHidden(i)) {
+				QTreeView::resizeColumnToContents(i);
+			}
 		}
 	}
 

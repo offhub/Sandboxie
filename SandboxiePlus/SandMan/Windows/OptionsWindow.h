@@ -280,6 +280,8 @@ private slots:
 
 	void OnSetTree();
 
+	void OnAutoResizeColumns();
+
 protected:
 	void closeEvent(QCloseEvent *e);
 

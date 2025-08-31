@@ -19,6 +19,13 @@ public:
 
 		m_pMenu = new QMenu(this);
 
+		// Auto-resize columns shortcut (only visible columns)
+		QAction* pAutoResizeAction = new QAction(this);
+		pAutoResizeAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+		pAutoResizeAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+		connect(pAutoResizeAction, &QAction::triggered, this, &QTreeWidgetEx::OnAutoResizeColumns);
+		this->addAction(pAutoResizeAction);
+
         // Important: if something is shown/hidden we need a new size
 		connect(this->model(), SIGNAL(rowsInserted(const QModelIndex &, int, int)), this, SLOT(OnExpandCollapsed()));
 		connect(this->model(), SIGNAL(rowsRemoved(const QModelIndex &, int, int)), this, SLOT(OnExpandCollapsed()));
@@ -70,6 +77,15 @@ public slots:
 		for (int i = 0; i < columnCount(); i++) {
 			setColumnHidden(i, false);
 			QTreeView::resizeColumnToContents(i);
+		}
+	}
+
+	void OnAutoResizeColumns()
+	{
+		for (int i = 0; i < columnCount(); i++) {
+			if (!isColumnHidden(i)) {
+				QTreeView::resizeColumnToContents(i);
+			}
 		}
 	}
 

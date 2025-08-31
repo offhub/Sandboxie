@@ -701,6 +701,13 @@ CSettingsWindow::CSettingsWindow(QWidget* parent)
 	}
 	m_pSearch->setPlaceholderText(tr("Search for settings"));
 
+	// Auto-resize columns shortcut (only visible columns)
+	QAction* pAutoResizeColumns = new QAction(this);
+	pAutoResizeColumns->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+	pAutoResizeColumns->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+	connect(pAutoResizeColumns, &QAction::triggered, this, &CSettingsWindow::OnAutoResizeColumns);
+	this->addAction(pAutoResizeColumns);
+
 	SetTabOrder(this);
 }
 
@@ -3302,4 +3309,27 @@ void CSettingsWindow::LoadCompletionConsent()
 void CSettingsWindow::SaveCompletionConsent()
 {
 	theConf->SetValue("Options/AutoCompletionConsent", m_AutoCompletionConsent);
+}
+
+void CSettingsWindow::OnAutoResizeColumns()
+{
+	QWidget* currentTab = nullptr;
+	if (ui.tabs)
+		currentTab = ui.tabs->currentWidget();
+	else if (m_pStack)
+		currentTab = m_pStack->currentWidget();
+
+	if (!currentTab)
+		return;
+
+	// Auto-resize columns for QTreeWidgets that are visible in the current tab
+	foreach(QTreeWidget * pTree, currentTab->findChildren<QTreeWidget*>()) {
+		if (!pTree->isVisible())
+			continue;
+		for (int i = 0; i < pTree->columnCount(); i++) {
+			if (!pTree->isColumnHidden(i)) {
+				pTree->resizeColumnToContents(i);
+			}
+		}
+	}
 }

@@ -170,6 +170,8 @@ private slots:
 	void OnSelectUiFont();
 	void OnResetUiFont();
 
+	void OnAutoResizeColumns();
+
 protected:
 	void closeEvent(QCloseEvent *e);
 

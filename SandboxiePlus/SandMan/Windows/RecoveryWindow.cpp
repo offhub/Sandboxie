@@ -147,6 +147,13 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	if (m_LastTargetIndex == -1)
 		m_LastTargetIndex = 0;
 	ui.cmbRecover->setCurrentIndex(m_LastTargetIndex);
+
+	// Auto-resize columns shortcut
+	QAction* pAutoResizeColumns = new QAction(this);
+	pAutoResizeColumns->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+	pAutoResizeColumns->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+	connect(pAutoResizeColumns, &QAction::triggered, this, &CRecoveryWindow::OnAutoResizeColumns);
+	this->addAction(pAutoResizeColumns);
 }
 
 CRecoveryWindow::~CRecoveryWindow()
@@ -641,4 +648,15 @@ void CRecoveryCounter::run()
 	} while (!Folders.isEmpty());
 
 	emit Count(fileCount, folderCount, totalSize);
+}
+
+void CRecoveryWindow::OnAutoResizeColumns()
+{
+	if (!ui.treeFiles)
+		return;
+	for (int i = 0; i < ui.treeFiles->model()->columnCount(); ++i) {
+		if (!ui.treeFiles->isColumnHidden(i)) {
+			ui.treeFiles->resizeColumnToContents(i);
+		}
+	}
 }
