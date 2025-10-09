@@ -579,6 +579,7 @@ protected:
 
 	bool m_ConfigDirty;
 	QColor m_BorderColor;
+	int m_BorderAlpha;
 	QString m_BoxIcon;
 
 	bool m_HoldBoxType;
