@@ -917,6 +917,7 @@ void CBoxPage::Appearance_OnInitDialog(CBox &box)
     GetDlgItem(ID_PAGE_LABEL_3)->SetWindowText(CMyMsg(MSG_3816));
     GetDlgItem(ID_SHOW_BORDER)->SetWindowText(CMyMsg(MSG_3817));
     GetDlgItem(ID_BORDER_TITLE)->SetWindowText(CMyMsg(MSG_3819));
+    GetDlgItem(ID_BORDER_ALPHA_LABEL)->SetWindowText(CMyMsg(MSG_3820));
 
     CenterControl(ID_HIDE_INDICATOR);
     CenterControl(ID_BOXNAMETITLE);
