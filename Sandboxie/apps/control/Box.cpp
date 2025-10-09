@@ -1236,7 +1236,7 @@ BOOL CBox::SetBoxNameTitle(UCHAR enabled)
 //---------------------------------------------------------------------------
 
 
-BOOL CBox::GetBorder(COLORREF *color, BOOL *title, int* width)
+BOOL CBox::GetBorder(COLORREF *color, BOOL *title, int* width, int* alpha)
 {
     /*color = RGB(255,255,0);
     *title = FALSE;
@@ -1265,7 +1265,7 @@ BOOL CBox::GetBorder(COLORREF *color, BOOL *title, int* width)
 
     return TRUE;*/
 
-    return SbieDll_GetBorderColor(m_name, color, title, width);
+    return SbieDll_GetBorderColor(m_name, color, title, width, alpha);
 }
 
 
