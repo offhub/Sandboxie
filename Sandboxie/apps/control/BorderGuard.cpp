@@ -39,6 +39,7 @@ struct BoxBorderParms {
     COLORREF color;
     BOOL title;
     int width;
+    int alpha;
 };
 
 
@@ -440,6 +441,9 @@ void CBorderGuard::RefreshBorder(
         m_border_brush = hbr;
 
         m_border_brush_color = boxparm->color;
+
+        // Apply alpha transparency setting
+        SetLayeredWindowAttributes(m_border_hwnd, 0, boxparm->alpha, LWA_ALPHA);
     }
 
     //
@@ -604,13 +608,15 @@ void CBorderGuard::RefreshConf2()
             COLORREF color;
             BOOL title;
             int width;
-            BOOL enabled = box.GetBorder(&color, &title, &width);
+            int alpha;
+            BOOL enabled = box.GetBorder(&color, &title, &width, &alpha);
             if (enabled) {
                 boxparm = new BoxBorderParms;
                 wcscpy(boxparm->boxname, box.GetName());
                 boxparm->color = color;
                 boxparm->title = title;
                 boxparm->width = width;
+                boxparm->alpha = alpha;
                 m_boxes.Add(boxparm);
             }
         }

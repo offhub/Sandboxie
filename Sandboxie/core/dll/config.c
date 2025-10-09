@@ -404,7 +404,7 @@ _FX BOOLEAN SbieDll_GetSettingsForName(
 //---------------------------------------------------------------------------
 
 
-BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* title, int* width)
+BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* title, int* width, int* alpha)
 {
 #ifndef RGB
 #define RGB(r,g,b)          ((COLORREF)(((BYTE)(r)|((WORD)((BYTE)(g))<<8))|(((DWORD)(BYTE)(b))<<16)))
@@ -413,10 +413,11 @@ BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* tit
     *color = RGB(255, 255, 0);
     if (title) *title = FALSE;
     if (width) *width = 6;
+    if (alpha) *alpha = 192; // Default to 75% opacity (192/255)
 
     NTSTATUS status;
     WCHAR str[32];
-    status = SbieApi_QueryConfAsIs(box_name, L"BorderColor", 0, str, sizeof(str) - sizeof(WCHAR)); // BorderColor=#00ffff,ttl,6
+    status = SbieApi_QueryConfAsIs(box_name, L"BorderColor", 0, str, sizeof(str) - sizeof(WCHAR)); // BorderColor=#00ffff,ttl,6,192
 
     if (!NT_SUCCESS(status) || wcslen(str) < 7 || str[0] != L'#')
         return FALSE;
@@ -450,6 +451,18 @@ BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* tit
     if (tmp != NULL) *tmp = L'\0';
 
     if (width) *width = _wtoi(ptr);
+
+    // Parse alpha value (4th parameter) - default to 192 (75% opacity) for backward compatibility
+    if (tmp == NULL) return TRUE;
+    ptr = tmp + 1;
+    tmp = wcschr(ptr, L',');
+    if (tmp != NULL) *tmp = L'\0';
+
+    if (alpha) {
+        *alpha = _wtoi(ptr);
+        if (*alpha < 0 || *alpha > 255)
+            *alpha = 192; // Default to 75% opacity if invalid
+    }
 
     return TRUE;
 }
