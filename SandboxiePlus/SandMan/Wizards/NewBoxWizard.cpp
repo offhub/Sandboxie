@@ -215,7 +215,7 @@ SB_STATUS CNewBoxWizard::TryToCreateBox()
             }
 
 		    QRgb rgb = theGUI->GetBoxColor(BoxType);
-		    pBox->SetText("BorderColor", QString("#%1%2%3").arg(qBlue(rgb), 2, 16, QChar('0')).arg(qGreen(rgb), 2, 16, QChar('0')).arg(qRed(rgb), 2, 16, QChar('0')) + ",ttl");
+		    pBox->SetText("BorderColor", QString("#%1%2%3").arg(qBlue(rgb), 2, 16, QChar('0')).arg(qGreen(rgb), 2, 16, QChar('0')).arg(qRed(rgb), 2, 16, QChar('0')) + ",ttl,6,192");
 
 
             QString Location = field("boxLocation").toString();

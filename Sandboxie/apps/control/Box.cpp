@@ -288,7 +288,7 @@ void CBox::SetDefaultSettings()
     }
 
     if (ok)
-        ok = SetBorder(TRUE, RGB(255,255,0), TRUE, 6);
+        ok = SetBorder(TRUE, RGB(255,255,0), TRUE, 6, 192);
 
 done:
 
@@ -1274,10 +1274,10 @@ BOOL CBox::GetBorder(COLORREF *color, BOOL *title, int* width, int* alpha)
 //---------------------------------------------------------------------------
 
 
-BOOL CBox::SetBorder(BOOL enabled, COLORREF color, BOOL title, int width)
+BOOL CBox::SetBorder(BOOL enabled, COLORREF color, BOOL title, int width, int alpha)
 {
-    WCHAR text[32];
-    swprintf(text, L"#%06X,%s,%d", color, !enabled ? L"off" : (title ? L"ttl" : L"on"), width);
+    WCHAR text[64];
+    swprintf(text, L"#%06X,%s,%d,%d", color, !enabled ? L"off" : (title ? L"ttl" : L"on"), width, alpha);
 
     /*swprintf(text, L"#%06X", color);
     if (title)

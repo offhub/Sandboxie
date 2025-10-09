@@ -102,6 +102,7 @@ BEGIN_MESSAGE_MAP(CBoxPage, CPropertyPage)
     ON_COMMAND(ID_BORDER_COLOR,                 Appearance_OnBorderColor)
     ON_COMMAND(ID_BORDER_TITLE,                 Appearance_OnBorderTitle)
     ON_CONTROL(EN_CHANGE, ID_BORDER_WIDTH,      OnModified)
+    ON_CONTROL(EN_CHANGE, ID_BORDER_ALPHA,      OnModified)
 
     ON_COMMAND(ID_DELETE_AUTO,                  AutoDelete_OnAuto)
     ON_COMMAND(ID_DELETE_NEVER,                 AutoDelete_OnNever)
@@ -939,15 +940,23 @@ void CBoxPage::Appearance_OnInitDialog(CBox &box)
 
     BOOL title;
     int width;
-    BOOL enabled = box.GetBorder(&Appearance_BorderColor, &title, &width);
+    int alpha = 192;
+    BOOL enabled = box.GetBorder(&Appearance_BorderColor, &title, &width, &alpha);
     if (! enabled)
         GetDlgItem(ID_BORDER_COLOR)->ShowWindow(SW_HIDE);
+
+    Appearance_BorderAlpha = alpha;
 
     CEdit* edit = (CEdit*)GetDlgItem(ID_BORDER_WIDTH);
     edit->SetLimitText(3);
     CString str;
     str.Format(L"%d", width);
     edit->SetWindowText(str);
+
+    CEdit* editAlpha = (CEdit*)GetDlgItem(ID_BORDER_ALPHA);
+    editAlpha->SetLimitText(3);
+    str.Format(L"%d", alpha);
+    editAlpha->SetWindowText(str);
 
     Appearance_SetBorderColor();
 
@@ -985,7 +994,10 @@ void CBoxPage::Appearance_OnOK(CBox &box)
         CString str;
         GetDlgItem(ID_BORDER_WIDTH)->GetWindowText(str);
         int width = _wtoi(str);
-        ok = box.SetBorder(enable, Appearance_BorderColor, title, width);
+        GetDlgItem(ID_BORDER_ALPHA)->GetWindowText(str);
+        int alpha = _wtoi(str);
+        if (alpha < 0 || alpha > 255) alpha = 192;
+        ok = box.SetBorder(enable, Appearance_BorderColor, title, width, alpha);
     }
 
     if (ok)

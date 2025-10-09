@@ -105,7 +105,7 @@ public:
     UCHAR GetBoxNameTitle() const;
     BOOL SetBoxNameTitle(UCHAR enabled);
     BOOL GetBorder(COLORREF *color, BOOL *title, int *width, int *alpha = NULL);
-    BOOL SetBorder(BOOL enabled, COLORREF color, BOOL title, int width);
+    BOOL SetBorder(BOOL enabled, COLORREF color, BOOL title, int width, int alpha = 192);
 
     BOOL GetSetBlock(WCHAR type, BOOL set, BOOL newval = FALSE);
 
