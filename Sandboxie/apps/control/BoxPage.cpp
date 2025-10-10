@@ -996,8 +996,14 @@ void CBoxPage::Appearance_OnOK(CBox &box)
         GetDlgItem(ID_BORDER_WIDTH)->GetWindowText(str);
         int width = _wtoi(str);
         GetDlgItem(ID_BORDER_ALPHA)->GetWindowText(str);
-        int alpha = _wtoi(str);
-        if (alpha < 0 || alpha > 255) alpha = 192;
+        
+        // Validate alpha is a valid number
+        WCHAR* endptr;
+        int alpha = wcstol(str, &endptr, 10);
+        if (*endptr != L'\0' || endptr == (LPCWSTR)str || alpha < 0 || alpha > 255) {
+            alpha = 192; // Default to 75% opacity if invalid format or out of range
+        }
+        
         ok = box.SetBorder(enable, Appearance_BorderColor, title, width, alpha);
     }
 

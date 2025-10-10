@@ -459,27 +459,13 @@ BOOLEAN SbieDll_GetBorderColor(const WCHAR* box_name, COLORREF* color, BOOL* tit
     if (tmp != NULL) *tmp = L'\0';
 
     if (alpha) {
-        // Validate that the string contains only digits
-        WCHAR* check_ptr = ptr;
-        BOOL valid_number = TRUE;
-        if (*check_ptr == L'\0') {
-            valid_number = FALSE;
+        WCHAR* endptr;
+        int temp_alpha = wcstol(ptr, &endptr, 10);
+        // Check if the entire string was parsed (endptr should point to null terminator)
+        if (*endptr == L'\0' && endptr != ptr && temp_alpha >= 0 && temp_alpha <= 255) {
+            *alpha = temp_alpha;
         } else {
-            while (*check_ptr) {
-                if (*check_ptr < L'0' || *check_ptr > L'9') {
-                    valid_number = FALSE;
-                    break;
-                }
-                check_ptr++;
-            }
-        }
-        
-        if (valid_number) {
-            *alpha = _wtoi(ptr);
-            if (*alpha < 0 || *alpha > 255)
-                *alpha = 192; // Default to 75% opacity if out of range
-        } else {
-            *alpha = 192; // Default to 75% opacity if invalid format
+            *alpha = 192; // Default to 75% opacity if invalid format or out of range
         }
     }
 
