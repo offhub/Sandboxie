@@ -256,8 +256,9 @@ void COptionsWindow::LoadGeneral()
 	if (!BorderWidth) BorderWidth = 6;
 	ui.spinBorderWidth->setValue(BorderWidth);
 	// Read alpha value (4th parameter) - default to 192 (75% opacity)
-	m_BorderAlpha = BorderCfg.count() >= 4 ? BorderCfg[3].toInt() : 192;
-	if (m_BorderAlpha < 0 || m_BorderAlpha > 255)
+	bool alphaOk = false;
+	m_BorderAlpha = BorderCfg.count() >= 4 ? BorderCfg[3].toInt(&alphaOk) : 192;
+	if (!alphaOk || m_BorderAlpha < 0 || m_BorderAlpha > 255)
 		m_BorderAlpha = 192;
 	ui.spinBorderAlpha->setValue(m_BorderAlpha);
 
