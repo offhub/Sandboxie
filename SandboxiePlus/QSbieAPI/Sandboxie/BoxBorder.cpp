@@ -192,6 +192,7 @@ void CBoxBorder::TimerProc()
 			m->BorderMode = 1;
 			m->BorderColor = RGB(255, 255, 0);
 			m->BorderWidth = 6;
+			m->BorderAlpha = 192; // Default to 75% opacity
 
 			QStringList BorderCfg = pProcessBox->GetText("BorderColor").split(",");
 			if (BorderCfg.first().left(1) == L'#')
@@ -221,8 +222,9 @@ void CBoxBorder::TimerProc()
 					// Parse alpha value (4th parameter) - default to 192 (75% opacity) for backward compatibility
 					if (BorderCfg.count() >= 4)
 					{
-						m->BorderAlpha = BorderCfg.at(3).toInt();
-						if (m->BorderAlpha < 0 || m->BorderAlpha > 255)
+						bool alphaOk = false;
+						m->BorderAlpha = BorderCfg.at(3).toInt(&alphaOk);
+						if (!alphaOk || m->BorderAlpha < 0 || m->BorderAlpha > 255)
 							m->BorderAlpha = 192;
 					}
 					else
