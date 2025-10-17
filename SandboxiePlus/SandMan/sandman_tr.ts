@@ -923,9 +923,134 @@ Bu sihirbazı kapatmak için Son&apos;a tıklayabilirsiniz.</translation>
 <context>
     <name>CEditorSettingsWindow</name>
     <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="28"/>
+        <source>Validate INI Keys</source>
+        <translation>INI Anahtar Doğrulaması</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>No validation</source>
+        <translation>Doğrulama kapalı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>Full validation (default)</source>
+        <translation>Doğrulama açık (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="31"/>
+        <source>Enable INI Tooltips</source>
+        <translation>INI İpuçları Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>No tooltips</source>
+        <translation>İpuçları kapalı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Basic info (default)</source>
+        <translation>Temel bilgiler (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Full details</source>
+        <translation>Tüm bilgiler</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="34"/>
+        <source>Enable Popup Tooltips</source>
+        <translation>Açılır İpuçları Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="37"/>
+        <source>Auto Completion Consent</source>
+        <translation>Otomatik Tamamlama Onayı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Not consented (default)</source>
+        <translation>Onaylanmadı (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Consented</source>
+        <translation>Onaylandı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="40"/>
+        <source>Enable Auto Completion</source>
+        <translation>Otomatik Tamamlama Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Disabled (default)</source>
+        <translation>Devre dışı (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>Manual</source>
+        <translation>Elle</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>While Typing</source>
+        <translation>Yazarken</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="43"/>
+        <source>Enable Fuzzy Matching</source>
+        <translation>Bulanık Eşleştirme Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Enabled</source>
+        <translation>Etkin</translation>
+    </message>
+    <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="55"/>
         <source>Editor Settings</source>
-        <translation type="unfinished"></translation>
+        <translation>Düzenleyici Ayarları</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Setting</source>
+        <translation>Ayar</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>State</source>
+        <translation>Durum</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="195"/>
+        <source>Reset</source>
+        <translation>Sıfırla</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Unchecked</source>
+        <translation>İşaretsiz</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Partial</source>
+        <translation>Kısmi</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Checked</source>
+        <translation>İşaretli</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="196"/>
+        <source>Reset this setting to default value</source>
+        <translation>Bu ayarı varsayılan değere sıfırlar</translation>
     </message>
 </context>
 <context>
@@ -1963,61 +2088,59 @@ Not: Güncellemeler, yalnızca test edilen güncellemelerin sunulmasını sağla
         <translation>Bazı değişiklikler henüz kaydedilmedi, bu seçenekler penceresini gerçekten kapatmak istiyor musunuz?</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1765"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1771"/>
         <source>Autocomplete Consent Required</source>
         <translation>Otomatik Tamamlama Onayı Gerekli</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1767"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1773"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1769"/>
-        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
-
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
+        <translation>Otomatik tamamlama özelliğinin kullanılabilmesi için onay vermeniz gerekmektedir.</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1775"/>
-        <source>Basic</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1776"/>
-        <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
-        <source>Full</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1779"/>
-        <source>Enable automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1781"/>
-        <source>Cancel</source>
-        <translation type="unfinished">İptal</translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1782"/>
-        <source>Keep autocomplete disabled</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Do you wish to enable autocomplete?</source>
-        <translation type="vanished">Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
+Choose autocomplete mode:
+%1 Manual: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing.</source>
+        <translation>Otomatik tamamlama özelliğini etkinleştirmeden önce, Sandboxie ayarları hakkında yeterli bilgiye sahip değilseniz, öncelikle yazılımın belgelerine veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size ait olacaktır.
 
-Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?</translation>
+Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?
+
+Otomatik tamamlama modunu seçin:
+%1 Elle: Otomatik tamamlama önerileri %2 ile görüntülenir.
+%1 Yazarken: Otomatik tamamlama önerileri yazarken görüntülenir.</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1783"/>
+        <source>Manual</source>
+        <translation>Elle</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1784"/>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <translation>Otomatik tamamlama önerileri %1 ile görüntülenir.</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1787"/>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <translation>Ootomatik tamamlama önerileri yazarken görüntülenir.</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1790"/>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <translation>Otomatik tamamlama önerilerinin görüntülenmesini devre dışı bırakır.</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1786"/>
+        <source>While Typing</source>
+        <translation>Yazarken</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1789"/>
+        <source>Cancel</source>
+        <translation>İptal</translation>
     </message>
     <message>
         <location filename="Windows/OptionsAccess.cpp" line="327"/>
@@ -5747,17 +5870,9 @@ Lütfen Sandboxie için herhangi bir güncelleme olup olmadığını denetleyin.
         <translation>Bu destekçi sertifikası &lt;font color=&apos;red&apos;&gt;%1 gün içinde sona erecek&lt;/font&gt;, lütfen &lt;a href=&quot;%2&quot;&gt;güncel bir sertifika edinin&lt;/a&gt;.</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3344"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3350"/>
         <source>Autocomplete Consent Required</source>
         <translation>Otomatik Tamamlama Onayı Gerekli</translation>
-    </message>
-    <message>
-        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
-
-Do you wish to enable autocomplete?</source>
-        <translation type="vanished">Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
-
-Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="2825"/>
@@ -5953,48 +6068,54 @@ Her benzersiz donanım kimliği için %3 kereye kadar deneme sertifikası talep 
         <translation>Düzey %1</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3346"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3352"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3348"/>
-        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
-
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
+        <translation>Otomatik tamamlama özelliğinin kullanılabilmesi için onay vermeniz gerekmektedir.</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3354"/>
-        <source>Basic</source>
-        <translation type="unfinished"></translation>
+        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manual: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing.</source>
+        <translation type="unfinished">Otomatik tamamlama özelliğini etkinleştirmeden önce, Sandboxie ayarları hakkında yeterli bilgiye sahip değilseniz, öncelikle yazılımın belgelerine veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size ait olacaktır.
+
+Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?
+
+Otomatik tamamlama modunu seçin:
+%1 Elle: Otomatik tamamlama önerileri %2 ile görüntülenir.
+%1 Yazarken: Otomatik tamamlama önerileri yazarken görüntülenir.</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3355"/>
-        <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
+        <location filename="Windows/SettingsWindow.cpp" line="3362"/>
+        <source>Manual</source>
+        <translation>Elle</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
-        <source>Full</source>
-        <translation type="unfinished"></translation>
+        <location filename="Windows/SettingsWindow.cpp" line="3363"/>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <translation>Otomatik tamamlama önerileri %1 ile görüntülenir.</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3358"/>
-        <source>Enable automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
+        <location filename="Windows/SettingsWindow.cpp" line="3366"/>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <translation>Ootomatik tamamlama önerileri yazarken görüntülenir.</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3360"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3369"/>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <translation>Otomatik tamamlama önerilerinin görüntülenmesini devre dışı bırakır.</translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3365"/>
+        <source>While Typing</source>
+        <translation>Yazarken</translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3368"/>
         <source>Cancel</source>
-        <translation type="unfinished">İptal</translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3361"/>
-        <source>Keep autocomplete disabled</source>
-        <translation type="unfinished"></translation>
+        <translation>İptal</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="1583"/>
@@ -7359,52 +7480,52 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="14"/>
         <source>Editor Settings</source>
-        <translation type="unfinished"></translation>
+        <translation>Düzenleyici Ayarları</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="41"/>
         <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Configure Editor Settings&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Use the checkboxes in the table to configure each setting. The table shows what each state means.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
-        <translation type="unfinished"></translation>
+        <translation>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Düzenleyici Ayarlarını Yapılandırma&lt;/span&gt;&lt;/p&gt;&lt;p&gt;Her bir ayarı yapılandırmak için tablodaki kutuları kullanın. Tablo, her durumun ne anlama geldiğini gösterir.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="91"/>
         <source>Setting</source>
-        <translation type="unfinished"></translation>
+        <translation>Ayar</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="96"/>
         <source>State</source>
-        <translation type="unfinished"></translation>
+        <translation>Durum</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="101"/>
-        <source>Unchecked/Disabled</source>
-        <translation type="unfinished"></translation>
+        <source>Unchecked</source>
+        <translation>İşaretsiz</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="106"/>
-        <source>Partial/Basic</source>
-        <translation type="unfinished"></translation>
+        <source>Partial</source>
+        <translation>Kısmi</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="111"/>
-        <source>Checked/Full</source>
-        <translation type="unfinished"></translation>
+        <source>Checked</source>
+        <translation>İşaretli</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="116"/>
         <source>Reset</source>
-        <translation type="unfinished"></translation>
+        <translation>Sıfırla</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="126"/>
         <source>Reset All to Defaults</source>
-        <translation type="unfinished"></translation>
+        <translation>Tümünü Varsayılanlara Sıfırla</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="129"/>
         <source>Reset all settings to their default values and remove custom config entries</source>
-        <translation type="unfinished"></translation>
+        <translation>Tüm ayarları varsayılan değerlerine sıfırlar ve özel yapılandırma girdilerini kaldırır</translation>
     </message>
 </context>
 <context>
@@ -8760,31 +8881,10 @@ Bir işlemi belirtmek için yol olarak &apos;$:program.exe&apos; kullanın.</tra
        • &lt;code&gt;Tab&lt;/code&gt;: Apply first or confirm selection&lt;br&gt;
     &lt;/body&gt;
 &lt;/html&gt;</source>
-        <oldsource>&lt;html&gt;
-    &lt;body&gt;
-        &lt;b&gt;Auto-Completion &amp; Case Correction&lt;/b&gt;&lt;br&gt;
-        • &lt;u&gt;Auto-complete&lt;/u&gt;: Suggestions popup at 3+ chars&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ Select from popup to &lt;u&gt;auto-apply&lt;/u&gt; with correct case&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Enter/Return&lt;/code&gt; to confirm selection&lt;br&gt;
-        &lt;br&gt;
-        • &lt;u&gt;Manual correction&lt;/u&gt;: After typing setting=&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Ctrl+R&lt;/code&gt; prompt appears for case correction&lt;br&gt;
-        &lt;br&gt;
-        &lt;b&gt;Modes:&lt;/b&gt;&lt;br&gt;
-        ✓ &lt;span style=&quot;color: #009900;&quot;&gt;Checked&lt;/span&gt;: Auto-complete + Case-correction&lt;br&gt;
-        ◐ &lt;span style=&quot;color: #BE4C00;&quot;&gt;Partially Checked&lt;/span&gt;: Only manual &lt;code&gt;Ctrl+R&lt;/code&gt; correction&lt;br&gt;
-        &lt;br&gt;
-        &lt;b&gt;Navigation:&lt;/b&gt;&lt;br&gt;
-        • &lt;code&gt;↑/↓/PgUp/PgDn&lt;/code&gt;: Move through popup&lt;br&gt;
-        • &lt;code&gt;Enter/Return&lt;/code&gt;: Confirm selection&lt;br&gt;
-        • &lt;code&gt;Ctrl+Space&lt;/code&gt;: Force-open suggestions&lt;br&gt;
-       • &lt;code&gt;Tab&lt;/code&gt;: Apply first or confirm selection&lt;br&gt;
-    &lt;/body&gt;
-&lt;/html&gt;</oldsource>
-        <translation type="unfinished">&lt;html&gt;
+        <translation>&lt;html&gt;
     &lt;body&gt;
         &lt;b&gt;Otomatik Tamamlama ve Büyük/Küçük Harf Düzeltmesi&lt;/b&gt;&lt;br&gt;
-        • &lt;u&gt;Otomatik Tamamlama&lt;/u&gt;: 3+ karakterde öneri penceresi açılır&lt;br&gt;
+        • &lt;u&gt;Otomatik Tamamlama&lt;/u&gt;: 2+ karakterde öneri penceresi açılır&lt;br&gt;
         &amp;nbsp;&amp;nbsp;→ Pencereden seçim yaparak &lt;u&gt;otomatik tamamlama&lt;/u&gt; ve doğru büyük/küçük harf kullanımı sağlanır&lt;br&gt;
         &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Enter/Return&lt;/code&gt; tuşu ile seçimi uygular&lt;br&gt;
         &lt;br&gt;
@@ -8811,12 +8911,12 @@ Bir işlemi belirtmek için yol olarak &apos;$:program.exe&apos; kullanın.</tra
     <message>
         <location filename="Forms/OptionsWindow.ui" line="6168"/>
         <source>Editor settings</source>
-        <translation type="unfinished"></translation>
+        <translation>Düzenleyici ayarları</translation>
     </message>
     <message>
         <location filename="Forms/OptionsWindow.ui" line="6171"/>
         <source>⚙</source>
-        <translation type="unfinished"></translation>
+        <translation>⚙</translation>
     </message>
     <message>
         <location filename="Forms/OptionsWindow.ui" line="6042"/>
@@ -10865,31 +10965,10 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
        • &lt;code&gt;Tab&lt;/code&gt;: Apply first or confirm selection&lt;br&gt;
     &lt;/body&gt;
 &lt;/html&gt;</source>
-        <oldsource>&lt;html&gt;
-    &lt;body&gt;
-        &lt;b&gt;Auto-Completion &amp; Case Correction&lt;/b&gt;&lt;br&gt;
-        • &lt;u&gt;Auto-complete&lt;/u&gt;: Suggestions popup at 3+ chars&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ Select from popup to &lt;u&gt;auto-apply&lt;/u&gt; with correct case&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Enter/Return&lt;/code&gt; to confirm selection&lt;br&gt;
-        &lt;br&gt;
-        • &lt;u&gt;Manual correction&lt;/u&gt;: After typing setting=&lt;br&gt;
-        &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Ctrl+R&lt;/code&gt; prompt appears for case correction&lt;br&gt;
-        &lt;br&gt;
-        &lt;b&gt;Modes:&lt;/b&gt;&lt;br&gt;
-        ✓ &lt;span style=&quot;color: #009900;&quot;&gt;Checked&lt;/span&gt;: Auto-complete + Case-correction&lt;br&gt;
-        ◐ &lt;span style=&quot;color: #BE4C00;&quot;&gt;Partially Checked&lt;/span&gt;: Only manual &lt;code&gt;Ctrl+R&lt;/code&gt; correction&lt;br&gt;
-        &lt;br&gt;
-        &lt;b&gt;Navigation:&lt;/b&gt;&lt;br&gt;
-        • &lt;code&gt;↑/↓/PgUp/PgDn&lt;/code&gt;: Move through popup&lt;br&gt;
-        • &lt;code&gt;Enter/Return&lt;/code&gt;: Confirm selection&lt;br&gt;
-        • &lt;code&gt;Ctrl+Space&lt;/code&gt;: Force-open suggestions&lt;br&gt;
-       • &lt;code&gt;Tab&lt;/code&gt;: Apply first or confirm selection&lt;br&gt;
-    &lt;/body&gt;
-&lt;/html&gt;</oldsource>
-        <translation type="unfinished">&lt;html&gt;
+        <translation>&lt;html&gt;
     &lt;body&gt;
         &lt;b&gt;Otomatik Tamamlama ve Büyük/Küçük Harf Düzeltmesi&lt;/b&gt;&lt;br&gt;
-        • &lt;u&gt;Otomatik Tamamlama&lt;/u&gt;: 3+ karakterde öneri penceresi açılır&lt;br&gt;
+        • &lt;u&gt;Otomatik Tamamlama&lt;/u&gt;: 2+ karakterde öneri penceresi açılır&lt;br&gt;
         &amp;nbsp;&amp;nbsp;→ Pencereden seçim yaparak &lt;u&gt;otomatik tamamlama&lt;/u&gt; ve doğru büyük/küçük harf kullanımı sağlanır&lt;br&gt;
         &amp;nbsp;&amp;nbsp;→ &lt;code&gt;Enter/Return&lt;/code&gt; tuşu ile seçimi uygular&lt;br&gt;
         &lt;br&gt;
@@ -10916,12 +10995,12 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
     <message>
         <location filename="Forms/SettingsWindow.ui" line="3262"/>
         <source>Editor settings</source>
-        <translation type="unfinished"></translation>
+        <translation>Düzenleyici ayarları</translation>
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="3265"/>
         <source>⚙</source>
-        <translation type="unfinished"></translation>
+        <translation>⚙</translation>
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="3143"/>
