@@ -3346,9 +3346,9 @@ int CSettingsWindow::ShowConsentDialog()
 	consentBox.setText(tr("Autocomplete feature requires your consent to proceed."));
 	consentBox.setInformativeText(
 		tr("If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software's documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.\n\n"
-		   "Choose autocomplete mode:\n"
-		   "• Basic: Manual completion (Ctrl+Space) with case correction\n"
-		   "• Full: Automatic completion while typing with case correction")
+		   "Choose completion mode:\n"
+		   "%1 Manual: Manual completion (Ctrl+Space) with case correction\n"
+		   "%1 Automatic: Automatic completion while typing with case correction").arg(QChar(0x2022))
 	);
 	
 	QPushButton* basicButton = consentBox.addButton(tr("Basic"), QMessageBox::YesRole);
