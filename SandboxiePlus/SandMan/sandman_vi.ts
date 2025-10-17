@@ -934,139 +934,6 @@ You can click Finish to close this wizard.</source>
     </message>
 </context>
 <context>
-    <name>CEditorSettingsWindow</name>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="28"/>
-        <source>Validate INI Keys</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
-        <source>No validation</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
-        <source>Full validation (default)</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="31"/>
-        <source>Enable INI Tooltips</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
-        <source>No tooltips</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
-        <source>Basic info (default)</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
-        <source>Full details</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="34"/>
-        <source>Enable Popup Tooltips</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="37"/>
-        <source>Auto Completion Consent</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
-        <source>Not consented (default)</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
-        <source>Consented</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="40"/>
-        <source>Enable Auto Completion</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
-        <source>Disabled (default)</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Manual</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>While Typing</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="43"/>
-        <source>Enable Fuzzy Matching</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
-        <source>Enabled</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="55"/>
-        <source>Editor Settings</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Setting</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>State</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="195"/>
-        <source>Reset</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Unchecked</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Partial</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Checked</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="196"/>
-        <source>Reset this setting to default value</source>
-        <translation type="unfinished"></translation>
-    </message>
-</context>
-<context>
     <name>CExtractDialog</name>
     <message>
         <location filename="Windows/ExtractDialog.cpp" line="23"/>
@@ -7803,6 +7670,7 @@ If you are a great patreaon supporter already, sandboxie can check online for an
     <name>EditorSettingsWindow</name>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="14"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="55"/>
         <source>Editor Settings</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7813,34 +7681,41 @@ If you are a great patreaon supporter already, sandboxie can check online for an
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="91"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Setting</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="96"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="168"/>
         <source>State</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="101"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="169"/>
         <source>Unchecked</source>
         <oldsource>Unchecked/Disabled</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="106"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="170"/>
         <source>Partial</source>
         <oldsource>Partial/Basic</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="111"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="171"/>
         <source>Checked</source>
         <oldsource>Checked/Full</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="116"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="172"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="200"/>
         <source>Reset</source>
         <translation type="unfinished"></translation>
     </message>
@@ -7852,6 +7727,100 @@ If you are a great patreaon supporter already, sandboxie can check online for an
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="129"/>
         <source>Reset all settings to their default values and remove custom config entries</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="28"/>
+        <source>Validate INI Keys</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>No validation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>Full validation (default)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="31"/>
+        <source>Enable INI Tooltips</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>No tooltips</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Basic info (default)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Full details</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="34"/>
+        <source>Enable Popup Tooltips</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="37"/>
+        <source>Auto Completion Consent</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Not consented (default)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Consented</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="40"/>
+        <source>Enable Auto Completion</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Disabled (default)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>Manual</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>While Typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="43"/>
+        <source>Enable Fuzzy Matching</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Enabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="201"/>
+        <source>Reset this setting to default value</source>
         <translation type="unfinished"></translation>
     </message>
 </context>

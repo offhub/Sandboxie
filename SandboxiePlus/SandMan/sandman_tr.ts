@@ -923,134 +923,104 @@ Bu sihirbazı kapatmak için Son&apos;a tıklayabilirsiniz.</translation>
 <context>
     <name>CEditorSettingsWindow</name>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="28"/>
         <source>Validate INI Keys</source>
-        <translation>INI Anahtar Doğrulaması</translation>
+        <translation type="vanished">INI Anahtar Doğrulaması</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
         <source>No validation</source>
-        <translation>Doğrulama kapalı</translation>
+        <translation type="vanished">Doğrulama kapalı</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
         <source>Full validation (default)</source>
-        <translation>Doğrula açık (varsayılan)</translation>
+        <translation type="vanished">Doğrula açık (varsayılan)</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="31"/>
         <source>Enable INI Tooltips</source>
-        <translation>INI İpuçları Etkin</translation>
+        <translation type="vanished">INI İpuçları Etkin</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
         <source>No tooltips</source>
-        <translation>İpuçları kapalı</translation>
+        <translation type="vanished">İpuçları kapalı</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
         <source>Basic info (default)</source>
-        <translation>Temel bilgiler (varsayılan)</translation>
+        <translation type="vanished">Temel bilgiler (varsayılan)</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
         <source>Full details</source>
-        <translation>Tüm bilgiler</translation>
+        <translation type="vanished">Tüm bilgiler</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="34"/>
         <source>Enable Popup Tooltips</source>
-        <translation>Açılır İpuçları Etkin</translation>
+        <translation type="vanished">Açılır İpuçları Etkin</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="37"/>
         <source>Auto Completion Consent</source>
-        <translation>Otomatik Tamamlama Onayı</translation>
+        <translation type="vanished">Otomatik Tamamlama Onayı</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
         <source>Not consented (default)</source>
-        <translation>Onaylanmadı (varsayılan)</translation>
+        <translation type="vanished">Onaylanmadı (varsayılan)</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
         <source>Consented</source>
-        <translation>Onaylandı</translation>
+        <translation type="vanished">Onaylandı</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="40"/>
         <source>Enable Auto Completion</source>
-        <translation>Otomatik Tamamlama Etkin</translation>
+        <translation type="vanished">Otomatik Tamamlama Etkin</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
         <source>Disabled (default)</source>
-        <translation>Devre dışı (varsayılan)</translation>
+        <translation type="vanished">Devre dışı (varsayılan)</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
         <source>Manual</source>
-        <translation>Elle</translation>
+        <translation type="vanished">Elle</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
         <source>While Typing</source>
-        <translation>Yazarken</translation>
+        <translation type="vanished">Yazarken</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="43"/>
         <source>Enable Fuzzy Matching</source>
-        <translation>Bulanık Eşleştirme Etkin</translation>
+        <translation type="vanished">Bulanık Eşleştirme Etkin</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
         <source>Enabled</source>
-        <translation>Etkin</translation>
+        <translation type="vanished">Etkin</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="55"/>
         <source>Editor Settings</source>
-        <translation>Düzenleyici Ayarları</translation>
+        <translation type="vanished">Düzenleyici Ayarları</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Setting</source>
-        <translation>Ayar</translation>
+        <translation type="vanished">Ayar</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>State</source>
-        <translation>Durum</translation>
+        <translation type="vanished">Durum</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="195"/>
         <source>Reset</source>
-        <translation>Sıfırla</translation>
+        <translation type="vanished">Sıfırla</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Unchecked</source>
-        <translation>İşaretsiz</translation>
+        <translation type="vanished">İşaretsiz</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Partial</source>
-        <translation>Kısmi</translation>
+        <translation type="vanished">Kısmi</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Checked</source>
-        <translation>İşaretli</translation>
+        <translation type="vanished">İşaretli</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="196"/>
         <source>Reset this setting to default value</source>
-        <translation>Bu ayarı varsayılan değere sıfırlar</translation>
+        <translation type="vanished">Bu ayarı varsayılan değere sıfırlar</translation>
     </message>
 </context>
 <context>
@@ -7513,6 +7483,7 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
     <name>EditorSettingsWindow</name>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="14"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="55"/>
         <source>Editor Settings</source>
         <translation>Düzenleyici Ayarları</translation>
     </message>
@@ -7523,34 +7494,41 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="91"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Setting</source>
         <translation>Ayar</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="96"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="168"/>
         <source>State</source>
         <translation>Durum</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="101"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="169"/>
         <source>Unchecked</source>
         <oldsource>Unchecked/Disabled</oldsource>
         <translation>İşaretsiz</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="106"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="170"/>
         <source>Partial</source>
         <oldsource>Partial/Basic</oldsource>
         <translation>Kısmi</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="111"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="171"/>
         <source>Checked</source>
         <oldsource>Checked/Full</oldsource>
         <translation>İşaretli</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="116"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="172"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="200"/>
         <source>Reset</source>
         <translation>Sıfırla</translation>
     </message>
@@ -7563,6 +7541,100 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <location filename="Forms/EditorSettingsWindow.ui" line="129"/>
         <source>Reset all settings to their default values and remove custom config entries</source>
         <translation>Tüm ayarları varsayılan değerlerine sıfırlar ve özel yapılandırma girdilerini kaldırır</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="28"/>
+        <source>Validate INI Keys</source>
+        <translation type="unfinished">INI Anahtar Doğrulaması</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>No validation</source>
+        <translation type="unfinished">Doğrulama kapalı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="29"/>
+        <source>Full validation (default)</source>
+        <translation type="unfinished">Doğrula açık (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="31"/>
+        <source>Enable INI Tooltips</source>
+        <translation type="unfinished">INI İpuçları Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>No tooltips</source>
+        <translation type="unfinished">İpuçları kapalı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Basic info (default)</source>
+        <translation type="unfinished">Temel bilgiler (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="32"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="35"/>
+        <source>Full details</source>
+        <translation type="unfinished">Tüm bilgiler</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="34"/>
+        <source>Enable Popup Tooltips</source>
+        <translation type="unfinished">Açılır İpuçları Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="37"/>
+        <source>Auto Completion Consent</source>
+        <translation type="unfinished">Otomatik Tamamlama Onayı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Not consented (default)</source>
+        <translation type="unfinished">Onaylanmadı (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="38"/>
+        <source>Consented</source>
+        <translation type="unfinished">Onaylandı</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="40"/>
+        <source>Enable Auto Completion</source>
+        <translation type="unfinished">Otomatik Tamamlama Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Disabled (default)</source>
+        <translation type="unfinished">Devre dışı (varsayılan)</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>Manual</source>
+        <translation type="unfinished">Elle</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
+        <source>While Typing</source>
+        <translation type="unfinished">Yazarken</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="43"/>
+        <source>Enable Fuzzy Matching</source>
+        <translation type="unfinished">Bulanık Eşleştirme Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="44"/>
+        <source>Enabled</source>
+        <translation type="unfinished">Etkin</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="201"/>
+        <source>Reset this setting to default value</source>
+        <translation type="unfinished">Bu ayarı varsayılan değere sıfırlar</translation>
     </message>
 </context>
 <context>
