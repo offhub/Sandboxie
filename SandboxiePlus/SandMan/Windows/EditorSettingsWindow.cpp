@@ -164,7 +164,7 @@ void CEditorSettingsWindow::InitializeTable()
 	ui.settingsTable->setColumnCount(6);
 	
 	QStringList headers;
-	headers << tr("Setting") << tr("State") << tr("Unchecked/Disabled") << tr("Partial/Basic") << tr("Checked/Full") << tr("Reset");
+	headers << tr("Setting") << tr("State") << tr("Unchecked") << tr("Partial") << tr("Checked") << tr("Reset");
 	ui.settingsTable->setHorizontalHeaderLabels(headers);
 	
 	// Create checkboxes based on setting metadata
