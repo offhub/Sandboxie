@@ -1769,13 +1769,13 @@ int COptionsWindow::ShowConsentDialog()
 		tr("If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software's documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.\n\n"
 		   "Choose completion mode:\n"
 		   "%1 Manual: Manual completion (Ctrl+Space) with case correction\n"
-		   "%1 Automatic: Automatic completion while typing with case correction").arg(QChar(0x2022))
+		   "%1 While Typing: Automatic completion while typing with case correction").arg(QChar(0x2022))
 	);
 	
-	QPushButton* basicButton = consentBox.addButton(tr("Basic"), QMessageBox::YesRole);
+	QPushButton* basicButton = consentBox.addButton(tr("Manual"), QMessageBox::YesRole);
 	basicButton->setToolTip(tr("Enable manual completion only (Ctrl+Space) with case correction"));
 	
-	QPushButton* fullButton = consentBox.addButton(tr("Full"), QMessageBox::YesRole);
+	QPushButton* fullButton = consentBox.addButton(tr("While Typing"), QMessageBox::YesRole);
 	fullButton->setToolTip(tr("Enable automatic completion while typing with case correction"));
 	
 	QPushButton* cancelButton = consentBox.addButton(tr("Cancel"), QMessageBox::NoRole);
