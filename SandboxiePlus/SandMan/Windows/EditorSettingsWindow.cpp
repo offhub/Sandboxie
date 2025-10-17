@@ -25,23 +25,23 @@ static EditorSettingInfo GetSettingInfo(int index)
 {
 	static const EditorSettingInfo settings[SETTING_COUNT] = {
 		// ValidateIniKeys
-		{"Options/ValidateIniKeys", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Validate INI Keys"), false, 2, 
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "No validation"), "-", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Full validation (default)")},
+	{"Options/ValidateIniKeys", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Validate INI Keys"), false, 2, 
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "No validation"), "-", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Full validation (default)")},
 		// EnableIniTooltips
-		{"Options/EnableIniTooltips", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable INI Tooltips"), true, 1,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "No tooltips"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Basic info (default)"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Full details")},
+	{"Options/EnableIniTooltips", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Enable INI Tooltips"), true, 1,
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "No tooltips"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "Basic info (default)"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "Full details")},
 		// EnablePopupTooltips
-		{"Options/EnablePopupTooltips", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable Popup Tooltips"), true, 1,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "No tooltips"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Basic info (default)"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Full details")},
+	{"Options/EnablePopupTooltips", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Enable Popup Tooltips"), true, 1,
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "No tooltips"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "Basic info (default)"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "Full details")},
 		// AutoCompletionConsent
-		{"Options/AutoCompletionConsent", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Auto Completion Consent"), false, 0,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Not consented (default)"), "-", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Consented")},
+	{"Options/AutoCompletionConsent", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Auto Completion Consent"), false, 0,
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "Not consented (default)"), "-", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Consented")},
 		// EnableAutoCompletion
-		{"Options/EnableAutoCompletion", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable Auto Completion"), true, 0,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Disabled (default)"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Manual"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "While Typing")},
+	{"Options/EnableAutoCompletion", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Enable Auto Completion"), true, 0,
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "Disabled (default)"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "Manual"), QT_TRANSLATE_NOOP("EditorSettingsWindow", "While Typing")},
 		// EnableFuzzyMatching
-		{"Options/EnableFuzzyMatching", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable Fuzzy Matching"), false, 0,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Disabled (default)"), "-", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enabled")}
+	{"Options/EnableFuzzyMatching", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Enable Fuzzy Matching"), false, 0,
+	 QT_TRANSLATE_NOOP("EditorSettingsWindow", "Disabled (default)"), "-", QT_TRANSLATE_NOOP("EditorSettingsWindow", "Enabled")}
 	};
 	
 	return (index >= 0 && index < SETTING_COUNT) ? settings[index] : settings[0];
@@ -52,7 +52,7 @@ CEditorSettingsWindow::CEditorSettingsWindow(QWidget *parent)
 {
 	ui.setupUi(this);
 
-	setWindowTitle(tr("Editor Settings"));
+	setWindowTitle(QCoreApplication::translate("EditorSettingsWindow", "Editor Settings"));
 	
 	// Initialize all reset flags to false using a loop
 	m_anyResetOccurred = false;
@@ -163,8 +163,13 @@ void CEditorSettingsWindow::InitializeTable()
 	ui.settingsTable->setRowCount(SETTING_COUNT);
 	ui.settingsTable->setColumnCount(6);
 	
-	QStringList headers;
-	headers << tr("Setting") << tr("State") << tr("Unchecked") << tr("Partial") << tr("Checked") << tr("Reset");
+    QStringList headers;
+    headers << QCoreApplication::translate("EditorSettingsWindow", "Setting")
+	    << QCoreApplication::translate("EditorSettingsWindow", "State")
+	    << QCoreApplication::translate("EditorSettingsWindow", "Unchecked")
+	    << QCoreApplication::translate("EditorSettingsWindow", "Partial")
+	    << QCoreApplication::translate("EditorSettingsWindow", "Checked")
+	    << QCoreApplication::translate("EditorSettingsWindow", "Reset");
 	ui.settingsTable->setHorizontalHeaderLabels(headers);
 	
 	// Create checkboxes based on setting metadata
@@ -184,23 +189,23 @@ void CEditorSettingsWindow::InitializeTable()
 		checkboxes[i]->setTristate(info.isTriState);
 		
 		// Column 0: Setting name
-		QTableWidgetItem* nameItem = new QTableWidgetItem(tr(info.displayName));
+	QTableWidgetItem* nameItem = new QTableWidgetItem(QCoreApplication::translate("EditorSettingsWindow", info.displayName));
 		nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
 		ui.settingsTable->setItem(i, 0, nameItem);
 		
 		// Column 1: State (checkbox)
 		ui.settingsTable->setCellWidget(i, 1, checkboxes[i]);
-		
-	// Column 5: Reset button
-	QPushButton* resetBtn = new QPushButton(tr("Reset"), this);
-	resetBtn->setToolTip(tr("Reset this setting to default value"));
+
+		// Column 5: Reset button
+	QPushButton* resetBtn = new QPushButton(QCoreApplication::translate("EditorSettingsWindow", "Reset"), this);
+	resetBtn->setToolTip(QCoreApplication::translate("EditorSettingsWindow", "Reset this setting to default value"));
 		resetBtn->setMaximumWidth(60);
 		ui.settingsTable->setCellWidget(i, 5, resetBtn);
-		
+
 		// Connect reset button
 		connect(resetBtn, &QPushButton::clicked, this, [this, i]() {
 			ResetIndividualSetting(i);
-		});
+			});
 		
 		// Connect checkbox signals
 		connect(checkboxes[i], SIGNAL(stateChanged(int)), this, SLOT(ClearResetFlags()));
@@ -263,13 +268,13 @@ void CEditorSettingsWindow::UpdateTable()
 		EditorSettingInfo info = GetSettingInfo(row);
 		
 		// Column 2: Unchecked/Disabled state
-		ui.settingsTable->setItem(row, 2, new QTableWidgetItem(tr(info.descUnchecked)));
-		
-		// Column 3: Partial/Basic state
-		ui.settingsTable->setItem(row, 3, new QTableWidgetItem(tr(info.descPartial)));
-		
-		// Column 4: Checked/Full state
-		ui.settingsTable->setItem(row, 4, new QTableWidgetItem(tr(info.descChecked)));
+	ui.settingsTable->setItem(row, 2, new QTableWidgetItem(QCoreApplication::translate("EditorSettingsWindow", info.descUnchecked)));
+
+	// Column 3: Partial/Basic state
+	ui.settingsTable->setItem(row, 3, new QTableWidgetItem(QCoreApplication::translate("EditorSettingsWindow", info.descPartial)));
+
+	// Column 4: Checked/Full state
+	ui.settingsTable->setItem(row, 4, new QTableWidgetItem(QCoreApplication::translate("EditorSettingsWindow", info.descChecked)));
 	}
 	
 	// Make all description items non-editable
