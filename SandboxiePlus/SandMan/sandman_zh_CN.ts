@@ -1200,7 +1200,7 @@ You can click Finish to close this wizard.</source>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Auto/Case</source>
+        <source>While Typing/Case</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2619,12 +2619,12 @@ Note: The update check is often behind the latest GitHub release to ensure that 
 
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</source>
+%1 While Typing: Automatic completion while typing with case correction</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</oldsource>
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
@@ -2633,8 +2633,17 @@ Choose autocomplete mode:
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1775"/>
+        <source>Manual</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
+        <source>While Typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Basic</source>
-        <translation>基本</translation>
+        <translation type="vanished">基本</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1776"/>
@@ -2642,9 +2651,8 @@ Choose autocomplete mode:
         <translation>仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
         <source>Full</source>
-        <translation>完整</translation>
+        <translation type="vanished">完整</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1779"/>
@@ -6705,12 +6713,12 @@ You can request up to %3 evaluation certificates for each unique hardware ID.</s
 
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</source>
+%1 While Typing: Automatic completion while typing with case correction</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</oldsource>
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
@@ -6719,8 +6727,17 @@ Choose autocomplete mode:
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3354"/>
+        <source>Manual</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
+        <source>While Typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Basic</source>
-        <translation>基本</translation>
+        <translation type="vanished">基本</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3355"/>
@@ -6728,9 +6745,8 @@ Choose autocomplete mode:
         <translation>仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
         <source>Full</source>
-        <translation>完整</translation>
+        <translation type="vanished">完整</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3358"/>

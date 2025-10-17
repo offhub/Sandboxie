@@ -995,7 +995,7 @@ You can click Finish to close this wizard.</source>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Auto/Case</source>
+        <source>While Typing/Case</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2742,27 +2742,27 @@ Please select a folder which contains this file.</source>
 
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</source>
+%1 While Typing: Automatic completion while typing with case correction</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</oldsource>
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1775"/>
-        <source>Basic</source>
+        <source>Manual</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
+        <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1776"/>
         <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
-        <source>Full</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6171,27 +6171,27 @@ You can request up to %3 evaluation certificates for each unique hardware ID.</s
 
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</source>
+%1 While Typing: Automatic completion while typing with case correction</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose autocomplete mode:
-• Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</oldsource>
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3354"/>
-        <source>Basic</source>
+        <source>Manual</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
+        <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3355"/>
         <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
-        <source>Full</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
