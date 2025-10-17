@@ -3336,6 +3336,12 @@ void CSettingsWindow::SaveCompletionConsent()
 	theConf->SetValue("Options/AutoCompletionConsent", m_AutoCompletionConsent);
 }
 
+QString CSettingsWindow::localizedCompletionShortcut()
+{
+	QKeySequence shortcut = QKeySequence(Qt::CTRL + Qt::Key_Space);
+	return shortcut.toString(QKeySequence::NativeText); // Returns the localized shortcut
+}
+
 // Show consent dialog and return the chosen autocomplete state
 // Returns: Qt::Unchecked (0) if cancelled, Qt::PartiallyChecked (1) for Basic, Qt::Checked (2) for Full
 int CSettingsWindow::ShowConsentDialog()
@@ -3346,19 +3352,22 @@ int CSettingsWindow::ShowConsentDialog()
 	consentBox.setText(tr("Autocomplete feature requires your consent to proceed."));
 	consentBox.setInformativeText(
 		tr("If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software's documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.\n\n"
-		   "Choose completion mode:\n"
-		   "%1 Manual: Manual completion (Ctrl+Space) with case correction\n"
-		   "%1 While Typing: Automatic completion while typing with case correction").arg(QChar(0x2022))
+			"Choose autocomplete mode:\n"
+			"%1 Manually: Autocomplete suggestions with %2.\n"
+			"%1 While Typing: Autocomplete suggestions while typing")
+		.arg(QChar(0x2022))   // Bullet symbol
+		.arg(localizedCompletionShortcut()) // Localized Ctrl+Space
 	);
-	
-	QPushButton* basicButton = consentBox.addButton(tr("Manual"), QMessageBox::YesRole);
-	basicButton->setToolTip(tr("Enable manual completion only (Ctrl+Space) with case correction"));
-	
+
+	QPushButton* basicButton = consentBox.addButton(tr("Manually"), QMessageBox::YesRole);
+	basicButton->setToolTip(tr("Manually triggers autocomplete suggestions with %1.").arg(localizedCompletionShortcut()));
+
 	QPushButton* fullButton = consentBox.addButton(tr("While Typing"), QMessageBox::YesRole);
-	fullButton->setToolTip(tr("Enable automatic completion while typing with case correction"));
-	
+	fullButton->setToolTip(tr("Automatically triggers autocomplete suggestions while typing"));
+
 	QPushButton* cancelButton = consentBox.addButton(tr("Cancel"), QMessageBox::NoRole);
-	cancelButton->setToolTip(tr("Keep autocomplete disabled"));
+	cancelButton->setToolTip(tr("Keeps autocomplete suggestions disabled"));
+
 	
 	consentBox.setDefaultButton(basicButton);
 	
