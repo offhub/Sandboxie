@@ -993,12 +993,12 @@ Klicken Sie auf Abschließen um den Assistenten zu schließen.</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Manual/Case</source>
+        <source>Manual</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>While Typing/Case</source>
+        <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2219,13 +2219,19 @@ Hinweis: Die Updateprüfung ist oft zeitversetzt zu den letzten GitHub-Veröffen
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1783"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6129,13 +6135,19 @@ Sie können bis zu %3 Evaluationszertifikate für jede eindeutige Hardware-ID an
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3362"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>

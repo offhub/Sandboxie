@@ -1161,12 +1161,12 @@ Du kan klicka på Avsluta för att stänga denna guide.</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Manual/Case</source>
+        <source>Manual</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>While Typing/Case</source>
+        <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2176,13 +2176,19 @@ Notera: Uppdateringskontrollen är ofta bakom senaste GitHub-utgivningen för at
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1783"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -7011,13 +7017,19 @@ Du kan begära upp till %3 evalueringscertifikat för varje unikt hårdvaru-ID.<
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3362"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>

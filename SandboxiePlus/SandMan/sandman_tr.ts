@@ -993,12 +993,12 @@ Bu sihirbazı kapatmak için Son&apos;a tıklayabilirsiniz.</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>Manual/Case</source>
+        <source>Manual</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="41"/>
-        <source>While Typing/Case</source>
+        <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2102,13 +2102,19 @@ Not: Güncellemeler, yalnızca test edilen güncellemelerin sunulmasını sağla
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1783"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6087,13 +6093,19 @@ Her benzersiz donanım kimliği için %3 kereye kadar deneme sertifikası talep 
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3362"/>
-        <source>Manually</source>
+        <source>Manual</source>
+        <oldsource>Manually</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
