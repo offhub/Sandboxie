@@ -2482,11 +2482,11 @@ Uwaga: Sprawdzanie aktualizacji często pomija najnowsze wydania GitHub, aby zap
 
 Choose autocomplete mode:
 %1 Manual: Autocomplete suggestions with %2.
-%1 While Typing: Autocomplete suggestions while typing</source>
+%1 While Typing: Autocomplete suggestions while typing.</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
@@ -2498,17 +2498,20 @@ Choose autocomplete mode:
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1784"/>
-        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <oldsource>Manually triggers autocomplete suggestions with %1.</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1787"/>
-        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <oldsource>Automatically triggers autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1790"/>
-        <source>Keeps autocomplete suggestions disabled</source>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <oldsource>Keeps autocomplete suggestions disabled</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6728,11 +6731,11 @@ Możesz złożyć żądanie dotyczące maksymalnie %3 certyfikatów oprogramowan
 
 Choose autocomplete mode:
 %1 Manual: Autocomplete suggestions with %2.
-%1 While Typing: Autocomplete suggestions while typing</source>
+%1 While Typing: Autocomplete suggestions while typing.</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
@@ -6744,17 +6747,20 @@ Choose autocomplete mode:
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3363"/>
-        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <oldsource>Manually triggers autocomplete suggestions with %1.</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3366"/>
-        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <oldsource>Automatically triggers autocomplete suggestions while typing</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3369"/>
-        <source>Keeps autocomplete suggestions disabled</source>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <oldsource>Keeps autocomplete suggestions disabled</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>

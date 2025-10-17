@@ -2103,13 +2103,13 @@ Not: Güncellemeler, yalnızca test edilen güncellemelerin sunulmasını sağla
 
 Choose autocomplete mode:
 %1 Manual: Autocomplete suggestions with %2.
-%1 While Typing: Autocomplete suggestions while typing</source>
+%1 While Typing: Autocomplete suggestions while typing.</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</oldsource>
-        <translation>Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
+        <translation type="unfinished">Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
 
 Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?
 
@@ -2125,18 +2125,21 @@ Otomatik tamamlama modunu seçin:
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1784"/>
-        <source>Manually triggers autocomplete suggestions with %1.</source>
-        <translation>%1 ile otomatik tamamlama önerilerini görüntüler.</translation>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <oldsource>Manually triggers autocomplete suggestions with %1.</oldsource>
+        <translation type="unfinished">%1 ile otomatik tamamlama önerilerini görüntüler.</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1787"/>
-        <source>Automatically triggers autocomplete suggestions while typing</source>
-        <translation>Yazarken otomatik tamamlama önerileri görüntülenir.</translation>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <oldsource>Automatically triggers autocomplete suggestions while typing</oldsource>
+        <translation type="unfinished">Yazarken otomatik tamamlama önerileri görüntülenir.</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1790"/>
-        <source>Keeps autocomplete suggestions disabled</source>
-        <translation>Otomatik tamamlama önerilerinin görüntülenmesini devre dışı bırakır.</translation>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <oldsource>Keeps autocomplete suggestions disabled</oldsource>
+        <translation type="unfinished">Otomatik tamamlama önerilerinin görüntülenmesini devre dışı bırakır.</translation>
     </message>
     <message>
         <location filename="Windows/OptionsWindow.cpp" line="1786"/>
@@ -6100,13 +6103,13 @@ Her benzersiz donanım kimliği için %3 kereye kadar deneme sertifikası talep 
 
 Choose autocomplete mode:
 %1 Manual: Autocomplete suggestions with %2.
-%1 While Typing: Autocomplete suggestions while typing</source>
+%1 While Typing: Autocomplete suggestions while typing.</source>
         <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
-%1 Manually: Autocomplete suggestions with %2.
+%1 Manual: Autocomplete suggestions with %2.
 %1 While Typing: Autocomplete suggestions while typing</oldsource>
-        <translation>Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
+        <translation type="unfinished">Otomatik tamamlama özelliğini etkinleştirmeden önce, ayarlar hakkında yeterli bilgiye sahip olmadığınızı düşünüyorsanız, yazılımın dokümantasyonuna veya kaynak koduna başvurmanızı öneririz. Bu özelliği etkinleştirmeniz durumunda oluşabilecek tüm sonuçlar ve sorumluluklar size aittir.
 
 Otomatik tamamlama özelliğini etkinleştirmek istiyor musunuz?
 
@@ -6122,18 +6125,21 @@ Otomatik tamamlama modunu seçin:
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3363"/>
-        <source>Manually triggers autocomplete suggestions with %1.</source>
-        <translation>%1 ile otomatik tamamlama önerilerini tetikler.</translation>
+        <source>Triggers autocomplete suggestions with %1.</source>
+        <oldsource>Manually triggers autocomplete suggestions with %1.</oldsource>
+        <translation type="unfinished">%1 ile otomatik tamamlama önerilerini tetikler.</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3366"/>
-        <source>Automatically triggers autocomplete suggestions while typing</source>
-        <translation>Triggers autocomplete suggestions while typing.</translation>
+        <source>Triggers autocomplete suggestions while typing.</source>
+        <oldsource>Automatically triggers autocomplete suggestions while typing</oldsource>
+        <translation type="unfinished">Triggers autocomplete suggestions while typing.</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3369"/>
-        <source>Keeps autocomplete suggestions disabled</source>
-        <translation>Otomatik tamamlama önerilerini devre dışı tutar.</translation>
+        <source>Keeps autocomplete suggestions disabled.</source>
+        <oldsource>Keeps autocomplete suggestions disabled</oldsource>
+        <translation type="unfinished">Otomatik tamamlama önerilerini devre dışı tutar.</translation>
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="3365"/>
