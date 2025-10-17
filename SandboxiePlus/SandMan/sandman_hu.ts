@@ -7613,17 +7613,20 @@ Ha Ön már nagy támogatója a Patreonnak, a Sandboxie online ellenőrizheti ta
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="101"/>
-        <source>Unchecked/Disabled</source>
+        <source>Unchecked</source>
+        <oldsource>Unchecked/Disabled</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="106"/>
-        <source>Partial/Basic</source>
+        <source>Partial</source>
+        <oldsource>Partial/Basic</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="111"/>
-        <source>Checked/Full</source>
+        <source>Checked</source>
+        <oldsource>Checked/Full</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>

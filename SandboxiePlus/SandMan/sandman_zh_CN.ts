@@ -1249,17 +1249,17 @@ You can click Finish to close this wizard.</source>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Unchecked</source>
-        <translation type="unfinished"></translation>
+        <translation type="unfinished">未选中/禁用</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Partial</source>
-        <translation type="unfinished"></translation>
+        <translation type="unfinished">部分/基本</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Checked</source>
-        <translation type="unfinished"></translation>
+        <translation type="unfinished">已选中/完整</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="196"/>
@@ -8243,18 +8243,21 @@ If you are a great patreaon supporter already, sandboxie can check online for an
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="101"/>
-        <source>Unchecked/Disabled</source>
-        <translation>未选中/禁用</translation>
+        <source>Unchecked</source>
+        <oldsource>Unchecked/Disabled</oldsource>
+        <translation type="unfinished">未选中/禁用</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="106"/>
-        <source>Partial/Basic</source>
-        <translation>部分/基本</translation>
+        <source>Partial</source>
+        <oldsource>Partial/Basic</oldsource>
+        <translation type="unfinished">部分/基本</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="111"/>
-        <source>Checked/Full</source>
-        <translation>已选中/完整</translation>
+        <source>Checked</source>
+        <oldsource>Checked/Full</oldsource>
+        <translation type="unfinished">已选中/完整</translation>
     </message>
     <message>
         <location filename="Forms/EditorSettingsWindow.ui" line="116"/>
