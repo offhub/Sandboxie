@@ -38,7 +38,7 @@ static EditorSettingInfo GetSettingInfo(int index)
 		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Not consented (default)"), "-", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Consented")},
 		// EnableAutoCompletion
 		{"Options/EnableAutoCompletion", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable Auto Completion"), true, 0,
-		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Disabled (default)"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Manual/Case"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Auto/Case")},
+		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Disabled (default)"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Manual/Case"), QT_TRANSLATE_NOOP("CEditorSettingsWindow", "While Typing/Case")},
 		// EnableFuzzyMatching
 		{"Options/EnableFuzzyMatching", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enable Fuzzy Matching"), false, 0,
 		 QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Disabled (default)"), "-", QT_TRANSLATE_NOOP("CEditorSettingsWindow", "Enabled")}
