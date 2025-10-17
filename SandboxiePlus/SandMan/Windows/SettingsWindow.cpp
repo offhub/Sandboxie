@@ -3353,13 +3353,13 @@ int CSettingsWindow::ShowConsentDialog()
 	consentBox.setInformativeText(
 		tr("If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software's documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.\n\n"
 			"Choose autocomplete mode:\n"
-			"%1 Manually: Autocomplete suggestions with %2.\n"
+			"%1 Manual: Autocomplete suggestions with %2.\n"
 			"%1 While Typing: Autocomplete suggestions while typing")
 		.arg(QChar(0x2022))   // Bullet symbol
 		.arg(localizedCompletionShortcut()) // Localized Ctrl+Space
 	);
 
-	QPushButton* basicButton = consentBox.addButton(tr("Manually"), QMessageBox::YesRole);
+	QPushButton* basicButton = consentBox.addButton(tr("Manual"), QMessageBox::YesRole);
 	basicButton->setToolTip(tr("Manually triggers autocomplete suggestions with %1.").arg(localizedCompletionShortcut()));
 
 	QPushButton* fullButton = consentBox.addButton(tr("While Typing"), QMessageBox::YesRole);
