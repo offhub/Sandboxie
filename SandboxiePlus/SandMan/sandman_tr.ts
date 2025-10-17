@@ -1028,23 +1028,23 @@ Bu sihirbazı kapatmak için Son&apos;a tıklayabilirsiniz.</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Unchecked/Disabled</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Partial/Basic</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
-        <source>Checked/Full</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <location filename="Windows/EditorSettingsWindow.cpp" line="195"/>
         <source>Reset</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Unchecked</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Partial</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Checked</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -2101,9 +2101,14 @@ Not: Güncellemeler, yalnızca test edilen güncellemelerin sunulmasını sağla
         <location filename="Windows/OptionsWindow.cpp" line="1769"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
 Choose autocomplete mode:
 • Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
+• Full: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6086,9 +6091,14 @@ Her benzersiz donanım kimliği için %3 kereye kadar deneme sertifikası talep 
         <location filename="Windows/SettingsWindow.cpp" line="3348"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
 Choose autocomplete mode:
 • Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
+• Full: Automatic completion while typing with case correction</oldsource>
         <translation type="unfinished"></translation>
     </message>
     <message>

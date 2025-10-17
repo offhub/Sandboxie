@@ -1229,25 +1229,37 @@ You can click Finish to close this wizard.</source>
         <translation type="unfinished">状态</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Unchecked/Disabled</source>
-        <translation type="unfinished">未选中/禁用</translation>
+        <translation type="obsolete">未选中/禁用</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Partial/Basic</source>
-        <translation type="unfinished">部分/基本</translation>
+        <translation type="obsolete">部分/基本</translation>
     </message>
     <message>
-        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <source>Checked/Full</source>
-        <translation type="unfinished">已选中/完整</translation>
+        <translation type="obsolete">已选中/完整</translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
         <location filename="Windows/EditorSettingsWindow.cpp" line="195"/>
         <source>Reset</source>
         <translation type="unfinished">重置</translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Unchecked</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Partial</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/EditorSettingsWindow.cpp" line="167"/>
+        <source>Checked</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Windows/EditorSettingsWindow.cpp" line="196"/>
@@ -2605,10 +2617,15 @@ Note: The update check is often behind the latest GitHub release to ensure that 
         <location filename="Windows/OptionsWindow.cpp" line="1769"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
 Choose autocomplete mode:
 • Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
-        <translation>如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
+• Full: Automatic completion while typing with case correction</oldsource>
+        <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
 • 基本：手动完成（Ctrl+空格）并进行大小写更正
@@ -6686,10 +6703,15 @@ You can request up to %3 evaluation certificates for each unique hardware ID.</s
         <location filename="Windows/SettingsWindow.cpp" line="3348"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
+Choose completion mode:
+%1 Manual: Manual completion (Ctrl+Space) with case correction
+%1 Automatic: Automatic completion while typing with case correction</source>
+        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
 Choose autocomplete mode:
 • Basic: Manual completion (Ctrl+Space) with case correction
-• Full: Automatic completion while typing with case correction</source>
-        <translation>如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
+• Full: Automatic completion while typing with case correction</oldsource>
+        <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
 • 基本：手动完成（Ctrl+空格）并进行大小写更正
