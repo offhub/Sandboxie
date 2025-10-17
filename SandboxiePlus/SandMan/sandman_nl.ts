@@ -2877,58 +2877,53 @@ Please select a folder which contains this file.</source>
         <translation>Programma invoeren:</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1765"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1771"/>
         <source>Autocomplete Consent Required</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1767"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1773"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1769"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1775"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose completion mode:
-%1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 While Typing: Automatic completion while typing with case correction</source>
-        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
-
-Choose completion mode:
-%1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</oldsource>
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1775"/>
-        <source>Manual</source>
+        <location filename="Windows/OptionsWindow.cpp" line="1783"/>
+        <source>Manually</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1784"/>
+        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1787"/>
+        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1790"/>
+        <source>Keeps autocomplete suggestions disabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1786"/>
         <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1776"/>
-        <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1779"/>
-        <source>Enable automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1781"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1789"/>
         <source>Cancel</source>
         <translation type="unfinished">Annuleren</translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1782"/>
-        <source>Keep autocomplete disabled</source>
-        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -6469,53 +6464,48 @@ You can request up to %3 evaluation certificates for each unique hardware ID.</s
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3346"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3352"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3348"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3354"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
-Choose completion mode:
-%1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 While Typing: Automatic completion while typing with case correction</source>
-        <oldsource>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
-
-Choose completion mode:
-%1 Manual: Manual completion (Ctrl+Space) with case correction
-%1 Automatic: Automatic completion while typing with case correction</oldsource>
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3354"/>
-        <source>Manual</source>
+        <location filename="Windows/SettingsWindow.cpp" line="3362"/>
+        <source>Manually</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3363"/>
+        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3366"/>
+        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3369"/>
+        <source>Keeps autocomplete suggestions disabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3365"/>
         <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3355"/>
-        <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3358"/>
-        <source>Enable automatic completion while typing with case correction</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3360"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3368"/>
         <source>Cancel</source>
         <translation type="unfinished">Annuleren</translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3361"/>
-        <source>Keep autocomplete disabled</source>
-        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Engine/BoxObject.cpp" line="91"/>
@@ -6898,7 +6888,7 @@ Choose completion mode:
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3344"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3350"/>
         <source>Autocomplete Consent Required</source>
         <translation type="unfinished"></translation>
     </message>

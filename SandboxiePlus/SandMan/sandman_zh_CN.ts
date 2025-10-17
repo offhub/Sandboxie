@@ -2604,17 +2604,45 @@ Note: The update check is often behind the latest GitHub release to ensure that 
         <translation>部分变更未保存，您确定要关闭这个选项窗口吗？</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1765"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1771"/>
         <source>Autocomplete Consent Required</source>
         <translation>需要同意启用自动完成</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1767"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1773"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
         <translation>自动完成功能需要您的同意才能继续。</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1769"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1775"/>
+        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1783"/>
+        <source>Manually</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1784"/>
+        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1787"/>
+        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsWindow.cpp" line="1790"/>
+        <source>Keeps autocomplete suggestions disabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose completion mode:
@@ -2625,19 +2653,14 @@ Choose completion mode:
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
 %1 Automatic: Automatic completion while typing with case correction</oldsource>
-        <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
+        <translation type="obsolete">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
 • 基本：手动完成（Ctrl+空格）并进行大小写更正
 • 完整：键入时自动完成并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1775"/>
-        <source>Manual</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1778"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1786"/>
         <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2646,28 +2669,25 @@ Choose completion mode:
         <translation type="vanished">基本</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1776"/>
         <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation>仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
+        <translation type="vanished">仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
     </message>
     <message>
         <source>Full</source>
         <translation type="vanished">完整</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1779"/>
         <source>Enable automatic completion while typing with case correction</source>
-        <translation>在键入时启用自动完成并进行大小写更正</translation>
+        <translation type="vanished">在键入时启用自动完成并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1781"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1789"/>
         <source>Cancel</source>
         <translation>取消</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1782"/>
         <source>Keep autocomplete disabled</source>
-        <translation>保持自动完成功能处于禁用状态</translation>
+        <translation type="vanished">保持自动完成功能处于禁用状态</translation>
     </message>
     <message>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
@@ -6703,12 +6723,40 @@ You can request up to %3 evaluation certificates for each unique hardware ID.</s
         <translation>试用许可证已成功申请。 请开始免费试用！</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3346"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3352"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
         <translation>自动完成功能需要您的同意才能继续。</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3348"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3354"/>
+        <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
+
+Choose autocomplete mode:
+%1 Manually: Autocomplete suggestions with %2.
+%1 While Typing: Autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3362"/>
+        <source>Manually</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3363"/>
+        <source>Manually triggers autocomplete suggestions with %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3366"/>
+        <source>Automatically triggers autocomplete suggestions while typing</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/SettingsWindow.cpp" line="3369"/>
+        <source>Keeps autocomplete suggestions disabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose completion mode:
@@ -6719,19 +6767,14 @@ Choose completion mode:
 Choose completion mode:
 %1 Manual: Manual completion (Ctrl+Space) with case correction
 %1 Automatic: Automatic completion while typing with case correction</oldsource>
-        <translation type="unfinished">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
+        <translation type="obsolete">如果您不确定自动完成弹出窗口中显示的设置，我们强烈建议您在继续之前查阅软件的文档或源代码。 在没有正确理解的情况下启用此功能可能会导致意想不到的后果，您将对此承担全部责任。
 
 选择自动完成模式：
 • 基本：手动完成（Ctrl+空格）并进行大小写更正
 • 完整：键入时自动完成并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3354"/>
-        <source>Manual</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3357"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3365"/>
         <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
@@ -6740,28 +6783,25 @@ Choose completion mode:
         <translation type="vanished">基本</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3355"/>
         <source>Enable manual completion only (Ctrl+Space) with case correction</source>
-        <translation>仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
+        <translation type="vanished">仅启用手动完成 (Ctrl+Space) 并进行大小写更正</translation>
     </message>
     <message>
         <source>Full</source>
         <translation type="vanished">完整</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3358"/>
         <source>Enable automatic completion while typing with case correction</source>
-        <translation>在键入时启用自动完成并进行大小写更正</translation>
+        <translation type="vanished">在键入时启用自动完成并进行大小写更正</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3360"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3368"/>
         <source>Cancel</source>
         <translation>取消</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3361"/>
         <source>Keep autocomplete disabled</source>
-        <translation>保持自动完成功能处于禁用状态</translation>
+        <translation type="vanished">保持自动完成功能处于禁用状态</translation>
     </message>
     <message>
         <location filename="Engine/BoxObject.cpp" line="91"/>
@@ -7176,7 +7216,7 @@ Right-click to copy</oldsource>
         <translation>你真的想删除选定的本地模板吗？</translation>
     </message>
     <message>
-        <location filename="Windows/SettingsWindow.cpp" line="3344"/>
+        <location filename="Windows/SettingsWindow.cpp" line="3350"/>
         <source>Autocomplete Consent Required</source>
         <translation>需要同意启用自动完成</translation>
     </message>
