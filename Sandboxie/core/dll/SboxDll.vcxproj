@@ -271,7 +271,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib;user32.lib</AdditionalDependencies>
       <ModuleDefinitionFile>SboxDll32.def</ModuleDefinitionFile>
       <BaseAddress>0x7D220000</BaseAddress>
       <EntryPointSymbol>DllMain</EntryPointSymbol>
@@ -291,7 +291,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib;user32.lib</AdditionalDependencies>
       <BaseAddress>
       </BaseAddress>
       <EntryPointSymbol>DllMain</EntryPointSymbol>
@@ -313,7 +313,7 @@
       <CallingConvention />
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib;user32.lib</AdditionalDependencies>
       <BaseAddress>
       </BaseAddress>
       <EntryPointSymbol>DllMain</EntryPointSymbol>
@@ -334,7 +334,7 @@
       <CallingConvention />
     </ClCompile>
     <Link>
-      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ntdll.lib;uuid.lib;kernel32.lib;user32.lib</AdditionalDependencies>
       <BaseAddress>
       </BaseAddress>
       <EntryPointSymbol>DllMain</EntryPointSymbol>
