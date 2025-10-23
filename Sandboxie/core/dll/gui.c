@@ -1460,13 +1460,9 @@ _FX HWND Gui_CreateWindowExW(
 
     if (hwndResult && Gui_UseProtectScreen) {
         LONG style = GetWindowLongW(hwndResult, GWL_STYLE);
+        // Protect any non-child window (true top-level windows)
         if ((style & WS_CHILD) == 0) {
-            // Optional: Exclude certain system windows
-            DWORD pid;
-            GetWindowThreadProcessId(hwndResult, &pid);
-            if (pid == GetCurrentProcessId()) { // Only protect our process windows
-                Gui_ProtectScreen(hwndResult);
-            }
+            Gui_ProtectScreen(hwndResult);
         }
     }
 
