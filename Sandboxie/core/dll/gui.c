@@ -1458,8 +1458,17 @@ _FX HWND Gui_CreateWindowExW(
 
     --TlsData->gui_create_window;
 
-    if (hwndResult && !hWndParent && Gui_UseProtectScreen)
-        Gui_ProtectScreen(hwndResult);
+    if (hwndResult && Gui_UseProtectScreen) {
+        LONG style = GetWindowLongW(hwndResult, GWL_STYLE);
+        if ((style & WS_CHILD) == 0) {
+            // Optional: Exclude certain system windows
+            DWORD pid;
+            GetWindowThreadProcessId(hwndResult, &pid);
+            if (pid == GetCurrentProcessId()) { // Only protect our process windows
+                Gui_ProtectScreen(hwndResult);
+            }
+        }
+    }
 
     //
     // replace window procedure
