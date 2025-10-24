@@ -72,6 +72,8 @@ static BOOLEAN WSA_InitNetProxy();
 
 static BOOLEAN WSA_InitBindIP();
 
+static BOOLEAN WSA_IsBindIPValid();
+
 BOOLEAN WSA_InitNetDnsFilter(HMODULE module);
 
 static int WSA_IsBlockedTraffic(const short *addr, int addrlen, int protocol);
