@@ -779,6 +779,14 @@ _FX int WSA_bind(
     BOOLEAN new_name = WSA_HandleAfUnix(&name, &namelen);
 
     if (WSA_BindIP) {
+        
+        // Validate that the configured bind IP is still available on the system
+        // If not available, fail the bind to prevent fallback to default adapter
+        if (!WSA_IsBindIPValid()) {
+            if (new_name) Dll_Free((void*)name);
+            __sys_WSASetLastError(WSAEADDRNOTAVAIL);
+            return SOCKET_ERROR;
+        }
 
         if (namelen >= sizeof(SOCKADDR_IN) && name && ((short*)name)[0] == AF_INET) 
         {
@@ -815,6 +823,10 @@ _FX void WSA_bind_ip(
     WSA_SOCK* pSock = WSA_GetSock(s, TRUE);
     if (pSock->Bound)
         return;
+
+    // Validate that the configured bind IP is still available
+    if (!WSA_IsBindIPValid())
+        return;  // Don't bind if IP is not available, let the connection fail properly
 
     //if (namelen >= sizeof(SOCKADDR_IN) && name && ((short*)name)[0] == AF_INET) {
     if (pSock->af == AF_INET){
@@ -1777,6 +1789,74 @@ _FX BOOLEAN WSA_InitNetProxy()
 
 
 //---------------------------------------------------------------------------
+// WSA_IsBindIPValid
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN WSA_IsBindIPValid()
+{
+    // This function validates if the currently configured bind IP addresses
+    // are still valid on the system. This is important to prevent fallback
+    // to default adapter when VPN/bound adapter is disconnected.
+
+    HMODULE Iphlpapi = LoadLibraryW(L"Iphlpapi.dll");
+    if (!Iphlpapi)
+        return FALSE;
+
+    P_GetAdaptersAddresses GetAdaptersAddresses = (P_GetAdaptersAddresses)GetProcAddress(Iphlpapi, "GetAdaptersAddresses");
+    if (!GetAdaptersAddresses) {
+        FreeLibrary(Iphlpapi);
+        return FALSE;
+    }
+
+    ULONG bufferSize = 0;
+    GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, NULL, &bufferSize);
+    
+    IP_ADAPTER_ADDRESSES* adapters = Dll_Alloc(bufferSize);
+    if (!adapters) {
+        FreeLibrary(Iphlpapi);
+        return FALSE;
+    }
+
+    BOOLEAN bIPv4Found = FALSE;
+    BOOLEAN bIPv6Found = FALSE;
+
+    if (GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_PREFIX, NULL, adapters, &bufferSize) == NO_ERROR) {
+        
+        for (IP_ADAPTER_ADDRESSES* adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+            
+            for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress; unicast != NULL; unicast = unicast->Next) {
+                
+                if (unicast->Address.lpSockaddr->sa_family == AF_INET && WSA_BindIP4.sin_family == AF_INET) {
+                    SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
+                    if (addr->sin_addr.s_addr == WSA_BindIP4.sin_addr.s_addr) {
+                        bIPv4Found = TRUE;
+                    }
+                }
+                else if (unicast->Address.lpSockaddr->sa_family == AF_INET6 && WSA_BindIP6.sin6_family == AF_INET6) {
+                    SOCKADDR_IN6_LH* addr6 = (SOCKADDR_IN6_LH*)unicast->Address.lpSockaddr;
+                    if (memcmp(&addr6->sin6_addr, &WSA_BindIP6.sin6_addr, sizeof(addr6->sin6_addr)) == 0) {
+                        bIPv6Found = TRUE;
+                    }
+                }
+            }
+        }
+    }
+
+    Dll_Free(adapters);
+    FreeLibrary(Iphlpapi);
+
+    // Return TRUE if at least one configured IP is still valid
+    BOOLEAN bResult = FALSE;
+    if (WSA_BindIP4.sin_family == AF_INET && bIPv4Found)
+        bResult = TRUE;
+    if (WSA_BindIP6.sin6_family == AF_INET6 && bIPv6Found)
+        bResult = TRUE;
+
+    return bResult;
+}
+
+
+//---------------------------------------------------------------------------
 // WSA_InitBindIP
 //---------------------------------------------------------------------------
 
@@ -1852,19 +1932,10 @@ _FX BOOLEAN WSA_InitBindIP()
         Dll_Free(adapters);
     
     if (State == 1) { // set but not present in the system
-
-        // Later in your code, before bind():
-        WSA_BindIP4.sin_family      = AF_INET;
-        WSA_BindIP4.sin_port        = 0;
-        WSA_BindIP4.sin_addr.s_addr = 0x0100007f;
-
-        WSA_BindIP6.sin6_family     = AF_INET6;
-        WSA_BindIP6.sin6_port       = 0;
-        WSA_BindIP6.sin6_flowinfo   = 0;
-        WSA_BindIP6.sin6_addr.u.Byte[15] = 1;
-        WSA_BindIP6.sin6_scope_id   = 0;
-
-        return TRUE;
+        // Don't fall back to localhost - the adapter must be available at runtime
+        // Return FALSE so that BindIP will not be used, forcing a network error
+        // when the adapter is disconnected
+        return FALSE;
     }
 
     if (FoundLevel != -1)
