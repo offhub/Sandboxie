@@ -22,6 +22,7 @@
 
 #include "BoxedProcess.h"
 #include "SbieIni.h"
+#include <atomic>
 
 struct QSBIEAPI_EXPORT SBoxSnapshot
 {
@@ -113,6 +114,12 @@ protected:
 	QString							m_RegPath;
 	QString							m_IpcPath;
 	QString							m_Mount;
+
+	// Guard to prevent multiple concurrent UpdateDetails background tasks
+	std::atomic_bool					m_UpdateDetailsRunning{false};
+	
+	// Monotonic version token for UpdateDetails requests to avoid applying stale results
+	std::atomic_uint					m_UpdateDetailsVersion{0};
 	
 	bool							m_IsEnabled;
 	QString							m_PortablePath;

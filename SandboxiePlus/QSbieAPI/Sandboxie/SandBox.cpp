@@ -130,15 +130,79 @@ CSandBox::~CSandBox()
 
 void CSandBox::UpdateDetails()
 {
+	// If the box uses a RAM disk or file image, ImBoxQuery can be slow/blocking
+	// (it may interact with the driver). Run it off the GUI thread to avoid
+	// freezing the UI and marshal the result back with a queued invocation.
 	if (GetBool("UseRamDisk") || GetBool("UseFileImage"))
 	{
-		auto res = m_pAPI->ImBoxQuery(m_RegPath);
-		if (res.IsError()) {
-			m_Mount.clear();
-			return;
-		}
-		QVariantMap Info = res.GetValue();
-		m_Mount = Info["DiskRoot"].toString();
+		QString regPath = m_RegPath;
+		auto api = m_pAPI;
+
+		// prevent duplicate concurrent queries for this box
+		bool expected = false;
+		if (!m_UpdateDetailsRunning.compare_exchange_strong(expected, true))
+			return; // already running
+
+		// increment version token: this identifies this specific request
+		unsigned int version = m_UpdateDetailsVersion.fetch_add(1) + 1;
+
+		QPointer<CSandBox> pThis(this);
+
+		// Watchdog: if no GUI callback clears the flag for this version within timeout,
+		// clear it to avoid permanently stuck state. The watchdog only clears if the
+		// version still matches (i.e., no newer request has started).
+		const int WatchdogMs = 10000; // 10s
+		QTimer::singleShot(WatchdogMs, this, [pThis, version]() {
+			if (!pThis)
+				return;
+			if (pThis->m_UpdateDetailsRunning.load() && pThis->m_UpdateDetailsVersion.load() == version) {
+				pThis->m_UpdateDetailsRunning.store(false);
+				qDebug() << "SandBox::UpdateDetails watchdog cleared running for" << pThis->GetName() << "version" << version;
+			}
+		});
+
+		// run the driver I/O on the dedicated box-query thread-pool and marshal results back to GUI
+		class ImBoxQueryRunnable : public QRunnable {
+		public:
+			ImBoxQueryRunnable(QPointer<CSandBox> box, CSbieAPI* api, const QString& regPath, unsigned int ver)
+				: m_box(box), m_api(api), m_regPath(regPath), m_ver(ver) { setAutoDelete(true); }
+			void run() override {
+				auto res = m_api->ImBoxQuery(m_regPath);
+
+				// apply the result on the GUI thread
+				QPointer<CSandBox> pThisLocal = m_box;
+				if (!pThisLocal)
+					return; // box was deleted
+
+				unsigned int ver = m_ver;
+				QMetaObject::invokeMethod(pThisLocal, [pThisLocal, res, ver]() {
+					// ignore stale results (a newer request started since this one)
+					unsigned int cur = pThisLocal->m_UpdateDetailsVersion.load();
+					if (cur == ver) {
+						if (res.IsError()) {
+							pThisLocal->m_Mount.clear();
+						}
+						else {
+							QVariantMap Info = res.GetValue();
+							pThisLocal->m_Mount = Info["DiskRoot"].toString();
+						}
+						// clear running flag on GUI thread where the object is valid
+						pThisLocal->m_UpdateDetailsRunning.store(false);
+					}
+					else {
+						qDebug() << "SandBox::UpdateDetails ignoring stale result for" << pThisLocal->GetName() << "got" << ver << "current" << cur;
+					}
+				}, Qt::QueuedConnection);
+			}
+		private:
+			QPointer<CSandBox> m_box;
+			CSbieAPI* m_api;
+			QString m_regPath;
+			unsigned int m_ver;
+		};
+
+		if (api)
+			api->GetBoxQueryPool()->start(new ImBoxQueryRunnable(pThis, api, regPath, version));
 	}
 	else if(!m_Mount.isEmpty())
 		m_Mount.clear();
