@@ -16,7 +16,6 @@
  */
 
 #include "stdafx.h"
-#include <QDebug>
 #include <QStandardPaths>
 #include "SbieAPI.h"
 
