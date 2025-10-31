@@ -70,6 +70,9 @@ public:
 	virtual QMap<QString, CSandBoxPtr> GetAllBoxes() { return m_SandBoxes; }
 	virtual QMap<quint32, CBoxedProcessPtr> GetAllProcesses() { return m_BoxedProxesses; }
 
+	// Accessor for the dedicated box-query thread pool
+	QThreadPool* GetBoxQueryPool() { return m_pBoxQueryPool; }
+
 	virtual CSandBoxPtr		GetBoxByProcessId(quint32 ProcessId) const;
 	virtual CSandBoxPtr		GetBoxByName(const QString &BoxName) const { return m_SandBoxes.value(BoxName.toLower()); }
 	virtual CBoxedProcessPtr GetProcessById(quint32 ProcessId) const;
@@ -284,6 +287,9 @@ protected:
 	QString					m_ProgramDataDir;
 	QString					m_PublicDir;
 	QString					m_UserDir;
+
+	// Dedicated thread-pool for box query / path update tasks
+	QThreadPool*			m_pBoxQueryPool;
 
 public:
 	
