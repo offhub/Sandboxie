@@ -19,6 +19,7 @@
 
 #include <QThread>
 #include <QFileSystemWatcher>
+#include <QThreadPool>
 
 #include "qsbieapi_global.h"
 
