@@ -1621,7 +1621,10 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 				return;
 			if (Value.isEmpty()) pBox->DelValue("BoxAlias");
 			else pBox->SetText("BoxAlias", Value);
-			pBox->UpdateDetails();
+			// Use async version to prevent UI blocking
+			SB_PROGRESS Progress = pBox->UpdateDetailsAsync();
+			if (Progress.GetStatus() == OP_ASYNC)
+				theGUI->AddAsyncOp(Progress.GetValue(), false, tr("Updating box details: %1").arg(pBox->GetName()));
 		}
 		else
 		{
@@ -1646,7 +1649,12 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 		foreach(const CSandBoxPtr& pBox, SandBoxes) {
 			auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
 			pBoxEx->TerminateAll();
-			Results.append(pBox->ImBoxUnmount());
+			// Use async version to prevent UI blocking
+			SB_PROGRESS Progress = pBox->ImBoxUnmountAsync();
+			if (Progress.GetStatus() == OP_ASYNC)
+				Results.append(theGUI->AddAsyncOp(Progress.GetValue(), true, tr("Unmounting image: %1").arg(pBox->GetName())));
+			else
+				Results.append(Progress);
 		}
 	}
 	else if (Action == m_pMenuRecover)

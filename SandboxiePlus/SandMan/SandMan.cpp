@@ -1804,7 +1804,12 @@ SB_STATUS CSandMan::ImBoxMount(const CSandBoxPtr& pBox, bool bAutoUnmount)
 	window.SetAutoUnMount(bAutoUnmount);
 	if (theGUI->SafeExec(&window) != 1)
 		return SB_ERR(SB_Canceled);
-	return pBox->ImBoxMount(window.GetPassword(), window.UseProtection(), window.AutoUnMount());
+	
+	// Use async version to prevent UI blocking
+	SB_PROGRESS Progress = pBox->ImBoxMountAsync(window.GetPassword(), window.UseProtection(), window.AutoUnMount());
+	if (Progress.GetStatus() == OP_ASYNC)
+		return theGUI->AddAsyncOp(Progress.GetValue(), true, tr("Mounting image: %1").arg(pBox->GetName()));
+	return Progress;
 }
 
 void CSandMan::dropEvent(QDropEvent* e)

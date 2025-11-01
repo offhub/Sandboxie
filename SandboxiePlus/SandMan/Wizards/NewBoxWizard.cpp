@@ -221,6 +221,7 @@ SB_STATUS CNewBoxWizard::TryToCreateBox()
             QString Location = field("boxLocation").toString();
             if (!Location.isEmpty()) {
                 pBox->SetText("FileRootPath", Location);
+                // Keep synchronous to ensure box is fully configured before wizard completes
                 theAPI->UpdateBoxPaths(pBox.data());
             }
 
