@@ -17,6 +17,7 @@
  */
 #include "stdafx.h"
 #include <QtConcurrent>
+#include <QPointer>
 #include "SandBox.h"
 #include "../SbieAPI.h"
 
@@ -47,6 +48,7 @@ CSandBox::CSandBox(const QString& BoxName, class CSbieAPI* pAPI) : CSbieIni(BoxN
 
 	m_ActiveProcessCount = 0;
 	m_ActiveProcessDirty = false;
+	m_UpdateDetailsPending = false;
 
 	// when loading a sandbox that is not initialized, initialize it
 	int cfglvl = GetNum("ConfigLevel");
@@ -146,6 +148,11 @@ void CSandBox::UpdateDetails()
 
 SB_PROGRESS CSandBox::UpdateDetailsAsync()
 {
+	// Debouncing - prevent duplicate requests while operation in progress
+	if (m_UpdateDetailsPending)
+		return SB_PROGRESS(OP_ASYNC, CSbieProgressPtr(new CSbieProgress()));
+	
+	m_UpdateDetailsPending = true;
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
 	QtConcurrent::run(CSandBox::UpdateDetailsAsyncWorker, pProgress, this);
 	return SB_PROGRESS(OP_ASYNC, pProgress);
@@ -153,7 +160,32 @@ SB_PROGRESS CSandBox::UpdateDetailsAsync()
 
 void CSandBox::UpdateDetailsAsyncWorker(const CSbieProgressPtr& pProgress, CSandBox* pBox)
 {
-	pBox->UpdateDetails();
+	// QPointer safely handles object deletion during async operation
+	QPointer<CSandBox> safeBox = pBox;
+	
+	// Perform blocking ImBoxQuery call on background thread
+	QString regPath = pBox->m_RegPath;
+	bool useRamDisk = pBox->GetBool("UseRamDisk");
+	bool useFileImage = pBox->GetBool("UseFileImage");
+	
+	QString mountRoot;
+	if (useRamDisk || useFileImage)
+	{
+		auto res = pBox->m_pAPI->ImBoxQuery(regPath);
+		if (!res.IsError()) {
+			QVariantMap Info = res.GetValue();
+			mountRoot = Info["DiskRoot"].toString();
+		}
+	}
+	
+	// Marshal result to GUI thread using QMetaObject::invokeMethod
+	QMetaObject::invokeMethod(pBox, [safeBox, mountRoot]() {
+		if (safeBox) {
+			safeBox->m_Mount = mountRoot;
+			safeBox->m_UpdateDetailsPending = false;
+		}
+	}, Qt::QueuedConnection);
+	
 	pProgress->Finish(SB_OK);
 }
 

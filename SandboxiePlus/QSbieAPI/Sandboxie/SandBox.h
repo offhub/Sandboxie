@@ -130,6 +130,8 @@ protected:
 	int								m_ActiveProcessCount;
 	bool							m_ActiveProcessDirty;
 
+	bool							m_UpdateDetailsPending;
+
 //private:
 //	struct SSandBox* m;
 };
