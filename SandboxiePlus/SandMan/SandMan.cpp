@@ -15,7 +15,6 @@
 #include <QtConcurrent>
 #include "../MiscHelpers/Common/SettingsWidgets.h"
 #include "Windows/OptionsWindow.h"
-#include <QProxyStyle>
 #include "../MiscHelpers/Common/TreeItemModel.h"
 #include "../MiscHelpers/Common/ListItemModel.h"
 #include "Views/TraceView.h"
@@ -420,6 +419,7 @@ void CSandMan::CreateUI()
 	statusBar()->setVisible(iViewMode == 1);
 
 	if(m_pKeepTerminated) m_pKeepTerminated->setChecked(theConf->GetBool("Options/KeepTerminated"));
+	if(m_pAutoExpand) m_pAutoExpand->setChecked(theConf->GetBool("Options/AutoExpandTree", true));
 	if(m_pShowAllSessions) m_pShowAllSessions->setChecked(theConf->GetBool("Options/ShowAllSessions"));
 
 	m_pWndTopMost->setChecked(theConf->GetBool("Options/AlwaysOnTop", false));
@@ -595,6 +595,9 @@ void CSandMan::CreateMenus(bool bAdvanced)
 
 		m_pKeepTerminated = m_pMenuView->addAction(CSandMan::GetIcon("Keep"), tr("Keep terminated"), this, SLOT(OnProcView()));
 		m_pKeepTerminated->setCheckable(true);
+
+		m_pAutoExpand = m_pMenuView->addAction(CSandMan::GetIcon("Expand"), tr("Auto Expand Tree"), this, SLOT(OnAutoExpand()));
+		m_pAutoExpand->setCheckable(true);
 	}
 	else {
 		m_pCleanUpMenu = NULL;
@@ -604,6 +607,8 @@ void CSandMan::CreateMenus(bool bAdvanced)
 			m_pCleanUpRecovery = NULL;
 
 		m_pKeepTerminated = NULL;
+
+		m_pAutoExpand = NULL;
 	}
 		m_pMenuView->addSeparator();
 		m_pEnableMonitoring = m_pMenuView->addAction(CSandMan::GetIcon("SetLogging"), tr("Trace Logging"), this, SLOT(OnMonitoring()));
@@ -707,6 +712,7 @@ void CSandMan::CreateOldMenus()
 				//m_pUpdateCore = NULL;
 		}
 		m_pRestart = m_pMenuFile->addAction(CSandMan::GetIcon("Shield9"), tr("Restart As Admin"), this, SLOT(OnRestartAsAdmin()));
+		m_pRestart->setEnabled(!IsElevated());
 		m_pExit = m_pMenuFile->addAction(CSandMan::GetIcon("Exit"), tr("Exit"), this, SLOT(OnExit()));
 
 	m_pMenuView = m_pMenuBar->addMenu(tr("&View"));
@@ -736,6 +742,7 @@ void CSandMan::CreateOldMenus()
 			m_pCleanUpTrace = NULL;
 			m_pCleanUpRecovery = NULL;
 		m_pKeepTerminated = NULL;
+		m_pAutoExpand = NULL;
 
 	m_pSandbox = m_pMenuBar->addMenu(tr("&Sandbox"));
 
@@ -850,6 +857,7 @@ QList<ToolBarAction> CSandMan::GetAvailableToolBarActions()
 			ToolBarAction{ "", nullptr },        // separator
 			ToolBarAction{ "CleanUpMenu", nullptr, tr("Cleanup") }, //tr: Name of button in toolbar for cleanup-all action
 			ToolBarAction{ "KeepTerminated", m_pKeepTerminated },
+			ToolBarAction{ "AutoExpand", m_pAutoExpand },
 			ToolBarAction{ "Refresh", m_pRefreshAll },
 			ToolBarAction{ "", nullptr },        // separator
 			ToolBarAction{ "BrowseFiles", m_pMenuBrowse },
@@ -3693,6 +3701,16 @@ void CSandMan::OnProcView()
 			});
 		}
 	}
+}
+
+void CSandMan::OnAutoExpand()
+{
+	theConf->SetValue("Options/AutoExpandTree", m_pAutoExpand->isChecked());
+
+	if (m_pAutoExpand->isChecked())
+		m_pBoxView->GetTree()->expandAll();
+	else
+		m_pBoxView->GetTree()->collapseAll();
 }
 
 void CSandMan::OnSettings()

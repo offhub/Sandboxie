@@ -8,13 +8,13 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [1.16.5 / 5.71.5] - 2025-10-xx
 
 ### Added
-- **Enhanced INI Editor:** Major improvements to the "Edit INI Section" dialog.
-  - **Dedicated Editor Settings:** A new "Editor Settings" window for configuring all INI editor behavior.
-  - **Setting Validation:** INI keys are now visually validated against `SbieSettings.ini` to catch configuration errors. (1.16.2)
-  - **Contextual Tooltips:** Tooltips for INI keys with metadata sourced from `SbieSettings.ini`, and configurable verbosity levels. (1.16.2, 1.16.4)
-  - **Auto-completion:** Auto-completion for INI keys using `SbieSettings.ini` as a reference, with a consent-based opt-in system. (1.16.3)
+- Enhanced INI Editor: Major improvements to the "Edit INI Section" dialog.
+  - Dedicated Editor Settings: A new "Editor Settings" window for configuring all INI editor behavior.
+  - Setting Validation: INI keys are now visually validated against `SbieSettings.ini` to catch configuration errors. (1.16.2)
+  - Contextual Tooltips: Tooltips for INI keys with metadata sourced from `SbieSettings.ini`, and configurable verbosity levels. (1.16.2, 1.16.4)
+  - Auto-completion: Auto-completion for INI keys using `SbieSettings.ini` as a reference, with a consent-based opt-in system. (1.16.3)
 
-  - **New Configuration Options:** [`Sandboxie-Plus.ini`]
+  - New Configuration Options: [`Sandboxie-Plus.ini`]
     - `Options/ValidateIniKeys` bool - enable/disable INI key validation (default: true) (1.16.2)
     - `Options/EnableIniTooltips` int - control INI tooltip verbosity: 0=No tooltips, 1=Basic info, 2=Full details (1.16.2)
     - `Options/EnablePopupTooltips` int - control popup tooltip verbosity: 0=No tooltips, 1=Basic info, 2=Full details (1.16.4)
@@ -22,13 +22,26 @@ This project adheres to [Semantic Versioning](http://semver.org/).
     - `Options/EnableAutoCompletion` int - auto-completion mode: 0=Disabled, 1=Manual/Case, 2=Auto/Case (1.16.3)
     - `Options/EnableFuzzyMatching` bool - enable fuzzy matching for auto-completion (1.16.3)
 
-  - **Customization via `SbieSettings.user.ini`:**
+  - Customization via `SbieSettings.user.ini`:
     - Users can now make additional customizations using the `SbieSettings.user.ini` file to fine-tune the configuration further. (1.16.3)
     
     - For more detailed guidance on configuring these options, please refer to the comments in the `SbieSettings.ini` file. This includes explanations of all new and existing settings, providing clarity for advanced configurations.
 
-- **Preserve Custom Box Colors:** Custom colors set for a sandbox will now persist even after changing the `Box Type Preset`. [#5025](https://github.com/sandboxie-plus/Sandboxie/pull/5025) (thanks Pinefone)
+- Preserve Custom Box Colors: Custom colors set for a sandbox will now persist even after changing the `Box Type Preset`. [#5025](https://github.com/sandboxie-plus/Sandboxie/pull/5025) (thanks Pinefone)
 - added alpha transparency to sandbox border settings. [#5037](https://github.com/sandboxie-plus/Sandboxie/pull/5037)
+- User-Interface: Start with all groups collapsed [#5052](https://github.com/sandboxie-plus/Sandboxie/issues/5052)
+- User-Interface: Add menu option to collapse/uncollapse groups [#5053](https://github.com/sandboxie-plus/Sandboxie/issues/5053)
+
+### Changed
+- Support Certificates can now contain multiple HWID's to simplify handling
+- context menu icon upgrade [#5038](https://github.com/sandboxie-plus/Sandboxie/issues/5038)
+- improved win32 syscall handling (experimental) when `UseWin32kFilterTable=y` is set the `KeServiceDescriptorTableFilter` will be used instead of `KeServiceDescriptorTableShadow` where apropriate
+- improved default toolbar loadout
+
+### Fixed
+- fixed BindAdapter reliability when VPN/bound adapter is disconnected. [#5055](https://github.com/sandboxie-plus/Sandboxie/pull/5055) [#4896](https://github.com/sandboxie-plus/Sandboxie/issues/4896)
+- fixed WOW6432Node bug, becomes `HKLM\SOFTWARE\WOW6432Node\WOW6432Node` upon necessary creation of a 2nd non-existent subkey [#5057](https://github.com/sandboxie-plus/Sandboxie/issues/5057)
+- fixed Powershell is able to launch an executable inside a folder added to Program control [#5027](https://github.com/sandboxie-plus/Sandboxie/issues/5027)
 
 
 
@@ -36,15 +49,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 - added option to block non administrative session leader (sandman.exe or sbiectrl.exe) from accessing encrypted box data
-  - Note: this is now enabled by default to disable it use 'ProtectAdminOnly=n'
+  - Note: this is now enabled by default to disable it use `ProtectAdminOnly=n`
 
 ### Fixed
 - Sandboxie-Plus 1.16.3 Fails to Connect to Driver on Windows Preview Build 27943 [#5003](https://github.com/sandboxie-plus/Sandboxie/issues/5003)
 - fixed latest signal crashing
 
 ### Changed
-- improved checks in Thread_CheckObject_CommonEx for encrypted boxes
-
+- improved checks in `Thread_CheckObject_CommonEx` for encrypted boxes
 
 
 

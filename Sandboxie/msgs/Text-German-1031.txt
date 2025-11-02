@@ -2144,6 +2144,10 @@ Zum Ändern der Rahmenfarbe hier klicken
 Den Rahmen nur anzeigen, wenn der Mauszeiger in der Titelleiste ist
 .
 
+3820;txt;01
+Alpha
+.
+
 #----------------------------------------------------------------------------
 # Sandboxie Control:  Sandbox Settings:  Recovery
 #----------------------------------------------------------------------------
