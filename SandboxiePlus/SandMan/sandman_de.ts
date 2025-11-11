@@ -5974,7 +5974,7 @@ This file is part of Sandboxie and all change done to it will be reverted next t
     </message>
     <message>
         <location filename="Windows/SettingsWindow.cpp" line="258"/>
-        <source>Remember previouse state</source>
+        <source>Remember previous state</source>
         <translation>Vorherigen Zustand merken</translation>
     </message>
     <message>
@@ -9957,8 +9957,8 @@ Bitte beachten Sie, dass diese Werte aktuell nutzerspezifisch sind und global f�
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="2329"/>
-        <source>Hook selected Win32k system calls to enable GPU acceleration (experimental)</source>
-        <translation>In ausgewählte Win32k Systemaufrufe einklinken um (GPU-)Hardwarebeschleunigung zu ermöglichen (experimentell)</translation>
+        <source>Hook selected Win32k system calls to enable GPU acceleration (required for chrome, firefox and more)</source>
+        <translation>In ausgewählte Win32k-Systemaufrufe einklinken um (GPU-)Hardwarebeschleunigung zu ermöglichen (benötigt für Chrome, Firefox und mehr)</translation>
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="1872"/>
@@ -10885,8 +10885,8 @@ Anders als der Vorschaukanal, enthält es keine ungetesteten, möglicherweise fe
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="2415"/>
-        <source>Use Sandboxie&apos;s own enhanced UAC prompt (experimental)</source>
-        <translation>Verwende Sandboxies eigene erweiterte UAC Abfrage (experimentell)</translation>
+        <source>Use Sandboxie&apos;s own enhanced UAC prompt (recommended)</source>
+        <translation>Verwende Sandboxies eigene erweiterte UAC-Abfrage (empfohlen)</translation>
     </message>
     <message>
         <location filename="Forms/SettingsWindow.ui" line="2425"/>
