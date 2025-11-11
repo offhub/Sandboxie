@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2020 Sandboxie Holdings, LLC 
+ * Copyright 2004-2020 Sandboxie Holdings, LLC
  * Copyright 2020-2025 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
@@ -392,8 +392,9 @@ static HASH_MAP   WSA_SockMap;
     do { \
         if (WSA_TraceFlag) { \
             wchar_t _msg[512]; \
-            Sbie_snwprintf(_msg, 512, L"BindIP; " fmt, __VA_ARGS__); \
-            SbieApi_MonitorPutMsg(MONITOR_OTHER, _msg); \
+            int _res = Sbie_snwprintf(_msg, sizeof(_msg)/sizeof(_msg[0]), L"BindIP; " fmt, ##__VA_ARGS__); \
+            if (_res >= 0) \
+                SbieApi_MonitorPutMsg(MONITOR_OTHER, _msg); \
         } \
     } while (0)
 
@@ -1298,15 +1299,27 @@ _FX int WSA_connect(
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
-    // If BindIP is configured, verify it's still available before connecting
+    // If BindIP is configured, try to bind the socket to the configured adapter
+    // When StrictBindIP=n, we allow connections even if adapter is unavailable
+    // When StrictBindIP=y, we block if adapter is down (security-first approach)
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        // If adapter is unavailable and StrictBindIP is enabled, fail immediately
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s/*, name, namelen*/) != 0) {
-            return SOCKET_ERROR;
+        
+        // If adapter is available, bind to it (regardless of strict mode)
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
+        // If adapter unavailable but StrictBindIP=n, continue without binding
+        // This allows proxy to work as fallback when VPN is down
     }
 
     void* proxy;
@@ -1367,15 +1380,27 @@ _FX int WSA_WSAConnect(
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
-    // If BindIP is configured, verify it's still available before connecting
+    // If BindIP is configured, try to bind the socket to the configured adapter
+    // When StrictBindIP=n, we allow connections even if adapter is unavailable
+    // When StrictBindIP=y, we block if adapter is down (security-first approach)
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        // If adapter is unavailable and StrictBindIP is enabled, fail immediately
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s/*, name, namelen*/) != 0) {
-            return SOCKET_ERROR;
+        
+        // If adapter is available, bind to it (regardless of strict mode)
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
+        // If adapter unavailable but StrictBindIP=n, continue without binding
+        // This allows proxy to work as fallback when VPN is down
     }
 
     void* proxy;
@@ -1436,15 +1461,27 @@ _FX int WSA_ConnectEx(
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
-    // If BindIP is configured, verify it's still available before connecting
+    // If BindIP is configured, try to bind the socket to the configured adapter
+    // When StrictBindIP=n, we allow connections even if adapter is unavailable
+    // When StrictBindIP=y, we block if adapter is down (security-first approach)
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        // If adapter is unavailable and StrictBindIP is enabled, fail immediately
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s/*, name, namelen*/) != 0) {
-            return SOCKET_ERROR;
+        
+        // If adapter is available, bind to it (regardless of strict mode)
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
+        // If adapter unavailable but StrictBindIP=n, continue without binding
+        // This allows proxy to work as fallback when VPN is down
     }
 
     void* proxy;
@@ -1601,14 +1638,21 @@ _FX int WSA_sendto(
     if (WSA_IsBlockedTraffic(to, tolen, IPPROTO_UDP))
         return SOCKET_ERROR;
 
-    // If BindIP is configured, verify it's still available before sending
+    // If BindIP is configured, try to bind the socket
+    // With StrictBindIP=n, allow sending even if adapter unavailable
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s/*, to, tolen*/) != 0) {
-            return SOCKET_ERROR;
+        
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
     }
 
@@ -1635,14 +1679,21 @@ _FX int WSA_WSASendTo(
     if (WSA_IsBlockedTraffic(lpTo, iTolen, IPPROTO_UDP))
         return SOCKET_ERROR;
 
-    // If BindIP is configured, verify it's still available before sending
+    // If BindIP is configured, try to bind the socket
+    // With StrictBindIP=n, allow sending even if adapter unavailable
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s/*, lpTo, iTolen*/) != 0) {
-            return SOCKET_ERROR;
+        
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
     }
 
@@ -1664,14 +1715,21 @@ _FX int WSA_recvfrom(
     void     *from,
     int      *fromlen)
 {
-    // If BindIP is configured, verify it's still available
+    // If BindIP is configured, try to bind the socket
+    // With StrictBindIP=n, allow receiving even if adapter unavailable
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s) != 0) {
-            return SOCKET_ERROR;
+        
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
     }
 
@@ -1707,14 +1765,21 @@ _FX int WSA_WSARecvFrom(
     LPWSAOVERLAPPED                    lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
-    // If BindIP is configured, verify it's still available
+    // If BindIP is configured, try to bind the socket
+    // With StrictBindIP=n, allow receiving even if adapter unavailable
     if (WSA_BindIP) {
-        if (!WSA_IsBindIPValid()) {
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        BOOLEAN strict = WSA_GetStrictBindIP();
+        
+        if (!bind_valid && strict) {
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
         }
-        if (WSA_bind_ip(s) != 0) {
-            return SOCKET_ERROR;
+        
+        if (bind_valid) {
+            if (WSA_bind_ip(s) != 0) {
+                return SOCKET_ERROR;
+            }
         }
     }
 
@@ -2082,7 +2147,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                                 SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
                                 // Skip APIPA addresses (169.254.x.x) - these indicate disconnected/failed DHCP
                                 if ((addr->sin_addr.S_un.S_addr & 0x0000FFFF) == 0x0000FEA9) {  // 169.254.0.0/16 in network byte order
-                                    WSA_DebugBindMsg(L"Refresh: Skipping APIPA address 169.254.x.x\n", NULL);
+                                    WSA_DebugBindMsg(L"Refresh: Skipping APIPA address 169.254.x.x\n");
                                     continue;
                                 }
                                 memcpy(&WSA_BindIP4, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN));
@@ -2091,7 +2156,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                                 // Skip link-local IPv6 addresses (fe80::/10) - these are auto-configured and not routable
                                 SOCKADDR_IN6_LH* addr = (SOCKADDR_IN6_LH*)unicast->Address.lpSockaddr;
                                 if ((addr->sin6_addr.u.Byte[0] == 0xfe) && ((addr->sin6_addr.u.Byte[1] & 0xc0) == 0x80)) {
-                                    WSA_DebugBindMsg(L"Refresh: Skipping link-local IPv6 fe80::/10\n", NULL);
+                                    WSA_DebugBindMsg(L"Refresh: Skipping link-local IPv6 fe80::/10\n");
                                     continue;
                                 }
                                 memcpy(&WSA_BindIP6, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN6_LH));
@@ -2290,7 +2355,7 @@ _FX BOOLEAN WSA_InitBindIP()
                     SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
                     // Skip APIPA addresses (169.254.x.x) - these indicate disconnected/failed DHCP
                     if ((addr->sin_addr.S_un.S_addr & 0x0000FFFF) == 0x0000FEA9) {  // 169.254.0.0/16 in network byte order
-                        WSA_DebugBindMsg(L"Init: Skipping APIPA address 169.254.x.x\n", NULL);
+                        WSA_DebugBindMsg(L"Init: Skipping APIPA address 169.254.x.x\n");
                         continue;
                     }
                     memcpy(&WSA_BindIP4, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN));
@@ -2300,7 +2365,7 @@ _FX BOOLEAN WSA_InitBindIP()
                     SOCKADDR_IN6_LH* addr = (SOCKADDR_IN6_LH*)unicast->Address.lpSockaddr;
                     // Skip link-local IPv6 addresses (fe80::/10) - these are auto-configured and not routable
                     if ((addr->sin6_addr.u.Byte[0] == 0xfe) && ((addr->sin6_addr.u.Byte[1] & 0xc0) == 0x80)) {
-                        WSA_DebugBindMsg(L"Init: Skipping link-local IPv6 fe80::/10\n", NULL);
+                        WSA_DebugBindMsg(L"Init: Skipping link-local IPv6 fe80::/10\n");
                         continue;
                     }
                     memcpy(&WSA_BindIP6, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN6_LH));
