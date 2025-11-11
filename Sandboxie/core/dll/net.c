@@ -2077,7 +2077,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                                 has_ipv6 = TRUE;
                             }
                         }
-                        WSA_DebugBindMsg(L"Adapter '%ls' found: has_v4=%d has_v6=%d\n",
+                        WSA_DebugBindMsg(L"Refresh: Adapter '%ls' found: has_v4=%d has_v6=%d\n",
                             adapter->FriendlyName, (int)has_ipv4, (int)has_ipv6);
                         // Zero-out unavailable families to avoid stale addresses
                         if (!has_ipv4) memset(&WSA_BindIP4, 0, sizeof(WSA_BindIP4));
@@ -2087,14 +2087,14 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                         WSA_BindIPv4Configured = has_ipv4;
                         WSA_BindIPv6Configured = has_ipv6;
 
-                        WSA_DebugBindMsg(L"Adapter present: cfg_after v4=%d v6=%d\n",
+                        WSA_DebugBindMsg(L"Refresh: Adapter present: cfg_after v4=%d v6=%d\n",
                             (int)WSA_BindIPv4Configured, (int)WSA_BindIPv6Configured);
                         bResult = TRUE; // adapter is present
                         break;
                     }
                 }
                 if (!bResult) {
-                    WSA_DebugBindMsg(L"Adapter '%ls' NOT found\n", WSA_BindAdapterName);
+                    WSA_DebugBindMsg(L"Refresh: Adapter '%ls' NOT found\n", WSA_BindAdapterName);
                 }
             }
         } else {
@@ -2117,7 +2117,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                             SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
                             if (addr->sin_addr.S_un.S_addr == WSA_BindIP4.sin_addr.S_un.S_addr) {
                                 ipv4_found = TRUE;
-                                WSA_DebugBindMsg(L"BindAdapterIP: IPv4 %d.%d.%d.%d found on adapter '%ls'\n",
+                                WSA_DebugBindMsg(L"Refresh: IPv4 %d.%d.%d.%d found on adapter '%ls'\n",
                                     ((BYTE*)&addr->sin_addr)[0], ((BYTE*)&addr->sin_addr)[1],
                                     ((BYTE*)&addr->sin_addr)[2], ((BYTE*)&addr->sin_addr)[3],
                                     adapter->FriendlyName);
@@ -2128,7 +2128,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                             if (memcmp(&addr->sin6_addr, &WSA_BindIP6.sin6_addr, sizeof(addr->sin6_addr)) == 0) {
                                 ipv6_found = TRUE;
                                 BYTE* b = addr->sin6_addr.u.Byte;
-                                WSA_DebugBindMsg(L"BindAdapterIP: IPv6 %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x found on adapter '%ls'\n",
+                                WSA_DebugBindMsg(L"Refresh: IPv6 %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x found on adapter '%ls'\n",
                                     b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15],
                                     adapter->FriendlyName);
                             }
@@ -2145,7 +2145,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
             
             // Result is valid only if all configured IPs were found
             bResult = (!search_ipv4 || ipv4_found) && (!search_ipv6 || ipv6_found);
-            WSA_DebugBindMsg(L"BindAdapterIP: search(v4=%d,v6=%d) found(v4=%d,v6=%d) valid=%d\n",
+            WSA_DebugBindMsg(L"Refresh: search(v4=%d,v6=%d) found(v4=%d,v6=%d) valid=%d\n",
                 (int)search_ipv4, (int)search_ipv6, (int)ipv4_found, (int)ipv6_found, (int)bResult);
         }
     }
