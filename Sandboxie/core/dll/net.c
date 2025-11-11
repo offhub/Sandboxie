@@ -2058,19 +2058,40 @@ _FX BOOLEAN WSA_RefreshBindIPState()
             if (wcslen(WSA_BindAdapterName) > 0) {
                 for (IP_ADAPTER_ADDRESSES* adapter = adapters; adapter != NULL; adapter = adapter->Next) {
                     if (_wcsicmp(adapter->FriendlyName, WSA_BindAdapterName) == 0) {
+                        // SECURITY: Only accept adapters that are UP (IfOperStatusUp = 1)
+                        // Disconnected adapters often get APIPA addresses (169.254.x.x) which should NOT be used
+                        if (adapter->OperStatus != 1) {  // IfOperStatusUp
+                            WSA_DebugBindMsg(L"Refresh: Adapter '%ls' found but status=%d (not UP=1)\n",
+                                adapter->FriendlyName, (int)adapter->OperStatus);
+                            bResult = FALSE;
+                            break;
+                        }
+                        
                         // Found target adapter: update cached addresses, but don't broaden configured IP families.
                         BOOLEAN has_ipv4 = FALSE;
                         BOOLEAN has_ipv6 = FALSE;
                         for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress; unicast != NULL; unicast = unicast->Next) {
                             if (unicast->Address.lpSockaddr && unicast->Address.lpSockaddr->sa_family == AF_INET) {
+                                SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
+                                // Skip APIPA addresses (169.254.x.x) - these indicate disconnected/failed DHCP
+                                if ((addr->sin_addr.S_un.S_addr & 0x0000FFFF) == 0x0000FEA9) {  // 169.254.0.0/16 in network byte order
+                                    WSA_DebugBindMsg(L"Refresh: Skipping APIPA address 169.254.x.x\n", NULL);
+                                    continue;
+                                }
                                 memcpy(&WSA_BindIP4, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN));
                                 has_ipv4 = TRUE;
                             } else if (unicast->Address.lpSockaddr && unicast->Address.lpSockaddr->sa_family == AF_INET6) {
+                                // Skip link-local IPv6 addresses (fe80::/10) - these are auto-configured and not routable
+                                SOCKADDR_IN6_LH* addr = (SOCKADDR_IN6_LH*)unicast->Address.lpSockaddr;
+                                if ((addr->sin6_addr.u.Byte[0] == 0xfe) && ((addr->sin6_addr.u.Byte[1] & 0xc0) == 0x80)) {
+                                    WSA_DebugBindMsg(L"Refresh: Skipping link-local IPv6 fe80::/10\n", NULL);
+                                    continue;
+                                }
                                 memcpy(&WSA_BindIP6, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN6_LH));
                                 has_ipv6 = TRUE;
                             }
                         }
-                        WSA_DebugBindMsg(L"Refresh: Adapter '%ls' found: has_v4=%d has_v6=%d\n",
+                        WSA_DebugBindMsg(L"Refresh: Adapter '%ls' UP: has_v4=%d has_v6=%d\n",
                             adapter->FriendlyName, (int)has_ipv4, (int)has_ipv6);
                         // Zero-out unavailable families to avoid stale addresses
                         if (!has_ipv4) memset(&WSA_BindIP4, 0, sizeof(WSA_BindIP4));
@@ -2087,7 +2108,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                     }
                 }
                 if (!bResult) {
-                    WSA_DebugBindMsg(L"Refresh: Adapter '%ls' NOT found\n", WSA_BindAdapterName);
+                    WSA_DebugBindMsg(L"Refresh: Adapter '%ls' NOT found or not UP\n", WSA_BindAdapterName);
                 }
             }
         } else {
@@ -2102,6 +2123,12 @@ _FX BOOLEAN WSA_RefreshBindIPState()
             if (search_ipv4 || search_ipv6) {
                 // Scan all adapters to find the configured IP addresses
                 for (IP_ADAPTER_ADDRESSES* adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+                    // SECURITY: Only check adapters that are UP (IfOperStatusUp = 1)
+                    // Skip disconnected/down adapters to prevent using APIPA or stale addresses
+                    if (adapter->OperStatus != 1) {  // IfOperStatusUp
+                        continue;
+                    }
+                    
                     for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress; unicast != NULL; unicast = unicast->Next) {
                         if (!unicast->Address.lpSockaddr)
                             continue;
@@ -2110,7 +2137,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                             SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
                             if (addr->sin_addr.S_un.S_addr == WSA_BindIP4.sin_addr.S_un.S_addr) {
                                 ipv4_found = TRUE;
-                                WSA_DebugBindMsg(L"Refresh: IPv4 %d.%d.%d.%d found on adapter '%ls'\n",
+                                WSA_DebugBindMsg(L"Refresh: IPv4 %d.%d.%d.%d found on UP adapter '%ls'\n",
                                     ((BYTE*)&addr->sin_addr)[0], ((BYTE*)&addr->sin_addr)[1],
                                     ((BYTE*)&addr->sin_addr)[2], ((BYTE*)&addr->sin_addr)[3],
                                     adapter->FriendlyName);
@@ -2121,7 +2148,7 @@ _FX BOOLEAN WSA_RefreshBindIPState()
                             if (memcmp(&addr->sin6_addr, &WSA_BindIP6.sin6_addr, sizeof(addr->sin6_addr)) == 0) {
                                 ipv6_found = TRUE;
                                 BYTE* b = addr->sin6_addr.u.Byte;
-                                WSA_DebugBindMsg(L"Refresh: IPv6 %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x found on adapter '%ls'\n",
+                                WSA_DebugBindMsg(L"Refresh: IPv6 %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x found on UP adapter '%ls'\n",
                                     b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15],
                                     adapter->FriendlyName);
                             }
@@ -2234,6 +2261,14 @@ _FX BOOLEAN WSA_InitBindIP()
             if (_wcsicmp(adapter->FriendlyName, value) != 0)
                 continue;
 
+            // SECURITY: Only accept adapters that are UP (IfOperStatusUp = 1)
+            // Skip disconnected adapters during initialization to avoid APIPA addresses
+            if (adapter->OperStatus != 1) {  // IfOperStatusUp
+                WSA_DebugBindMsg(L"Init: Adapter '%ls' found but status=%d (not UP=1) - skipping\n",
+                    adapter->FriendlyName, (int)adapter->OperStatus);
+                continue;  // Keep searching in case adapter comes up later
+            }
+
             // Found matching adapter - store the name for runtime validation
             wcsncpy_s(WSA_BindAdapterName, sizeof(WSA_BindAdapterName) / sizeof(WCHAR), adapter->FriendlyName, _TRUNCATE);
 
@@ -2245,10 +2280,22 @@ _FX BOOLEAN WSA_InitBindIP()
             for (IP_ADAPTER_UNICAST_ADDRESS* unicast = adapter->FirstUnicastAddress; unicast != NULL; unicast = unicast->Next) {
 
                 if (unicast->Address.lpSockaddr && unicast->Address.lpSockaddr->sa_family == AF_INET) {
+                    SOCKADDR_IN* addr = (SOCKADDR_IN*)unicast->Address.lpSockaddr;
+                    // Skip APIPA addresses (169.254.x.x) - these indicate disconnected/failed DHCP
+                    if ((addr->sin_addr.S_un.S_addr & 0x0000FFFF) == 0x0000FEA9) {  // 169.254.0.0/16 in network byte order
+                        WSA_DebugBindMsg(L"Init: Skipping APIPA address 169.254.x.x\n", NULL);
+                        continue;
+                    }
                     memcpy(&WSA_BindIP4, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN));
                     has_ipv4 = TRUE;
                 }
                 else if (unicast->Address.lpSockaddr && unicast->Address.lpSockaddr->sa_family == AF_INET6) {
+                    SOCKADDR_IN6_LH* addr = (SOCKADDR_IN6_LH*)unicast->Address.lpSockaddr;
+                    // Skip link-local IPv6 addresses (fe80::/10) - these are auto-configured and not routable
+                    if ((addr->sin6_addr.u.Byte[0] == 0xfe) && ((addr->sin6_addr.u.Byte[1] & 0xc0) == 0x80)) {
+                        WSA_DebugBindMsg(L"Init: Skipping link-local IPv6 fe80::/10\n", NULL);
+                        continue;
+                    }
                     memcpy(&WSA_BindIP6, unicast->Address.lpSockaddr, sizeof(SOCKADDR_IN6_LH));
                     has_ipv6 = TRUE;
                 }
