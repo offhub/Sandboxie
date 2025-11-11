@@ -2156,9 +2156,16 @@ _FX BOOLEAN WSA_IsBindIPValid()
     DWORD now = GetTickCount();
     
     // Refresh every 5 seconds to detect network changes (VPN connect/disconnect, etc.)
-    if (lastRefreshTime == 0 || (now - lastRefreshTime) > 5000) {
+    // SECURITY: Always re-check if cached result was FALSE to prevent IP leakage
+    // Only use cache when last check was successful AND within time window
+    if (lastRefreshTime == 0 || (now - lastRefreshTime) > 5000 || !cachedValid) {
         cachedValid = WSA_RefreshBindIPState();
         lastRefreshTime = now;
+        
+        // If refresh failed, invalidate the cache immediately
+        if (!cachedValid) {
+            lastRefreshTime = 0;
+        }
     }
     
     return cachedValid;
