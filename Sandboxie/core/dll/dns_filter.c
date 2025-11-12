@@ -187,6 +187,15 @@ _FX BOOLEAN WSA_FillResponseStructure(
     }
     neededSize += sockaddrSize;
 
+    // Add BLOB size for HOSTENT structure
+    // HOSTENT structure + domain name + NULL terminator + h_aliases NULL + h_addr_list entries + final NULL
+    DWORD hostNameLen = (wcslen(pLookup->DomainName) + 1);  // Convert to char count
+    DWORD addrSize = isIPv6Query ? 16 : 4;  // IPv6 or IPv4 address size
+    DWORD blobSize = sizeof(HOSTENT) + hostNameLen + sizeof(PCHAR) +  // h_aliases NULL terminator
+                     (ipCount * sizeof(PCHAR)) + sizeof(PCHAR) +      // h_addr_list array + NULL terminator
+                     (ipCount * addrSize);                             // actual IP addresses
+    neededSize += sizeof(BLOB) + blobSize;
+
     // Buffer not enough, return error
     if (*lpdwBufferLength < neededSize) {
         *lpdwBufferLength = neededSize;
@@ -278,6 +287,62 @@ _FX BOOLEAN WSA_FillResponseStructure(
             csaInfo->iProtocol = 23;
         }
     }
+
+    // Create BLOB with HOSTENT structure
+    lpqsResults->lpBlob = (LPBLOB)currentPtr;
+    currentPtr += sizeof(BLOB);
+
+    lpqsResults->lpBlob->cbSize = blobSize;
+    lpqsResults->lpBlob->pBlobData = currentPtr;
+
+    HOSTENT* hostent = (HOSTENT*)currentPtr;
+    BYTE* hostentBase = currentPtr;
+    currentPtr += sizeof(HOSTENT);
+
+    // Set address type and length
+    hostent->h_addrtype = isIPv6Query ? AF_INET6 : AF_INET;
+    hostent->h_length = isIPv6Query ? 16 : 4;
+
+    // Set h_name (relative pointer)
+    hostent->h_name = (char*)((UINT_PTR)currentPtr - (UINT_PTR)hostentBase);
+    for (DWORD i = 0; i < wcslen(pLookup->DomainName); i++) {
+        currentPtr[i] = (BYTE)pLookup->DomainName[i];  // Convert WCHAR to char
+    }
+    currentPtr[wcslen(pLookup->DomainName)] = 0;
+    currentPtr += wcslen(pLookup->DomainName) + 1;
+
+    // Set h_aliases (relative pointer to NULL array)
+    hostent->h_aliases = (char**)((UINT_PTR)currentPtr - (UINT_PTR)hostentBase);
+    *(PCHAR*)currentPtr = 0;  // NULL terminator
+    currentPtr += sizeof(PCHAR);
+
+    // Set h_addr_list (relative pointer)
+    hostent->h_addr_list = (char**)((UINT_PTR)currentPtr - (UINT_PTR)hostentBase);
+    PCHAR* addrList = (PCHAR*)currentPtr;
+    currentPtr += (ipCount + 1) * sizeof(PCHAR);  // Array of pointers + NULL terminator
+
+    // Fill IP addresses
+    DWORD addrIdx = 0;
+    for (entry = (IP_ENTRY*)List_Head(pLookup->pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+        if ((isIPv6Query && entry->Type != AF_INET6) ||
+            (!isIPv6Query && entry->Type != AF_INET)) {
+            continue;
+        }
+
+        // Set address pointer (relative)
+        addrList[addrIdx] = (char*)((UINT_PTR)currentPtr - (UINT_PTR)hostentBase);
+
+        // Copy IP address
+        if (isIPv6Query) {
+            memcpy(currentPtr, entry->IP.Data, 16);
+            currentPtr += 16;
+        } else {
+            *(DWORD*)currentPtr = entry->IP.Data32[3];
+            currentPtr += 4;
+        }
+        addrIdx++;
+    }
+    addrList[addrIdx] = 0;  // NULL terminator
 
     return TRUE;
 }
