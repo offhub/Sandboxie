@@ -29,7 +29,6 @@
 #define NOGDI
 #include "dll.h"
 
-#include <winsock2.h>
 #include <windows.h>
 #include <wchar.h>
 #include <oleauto.h>
