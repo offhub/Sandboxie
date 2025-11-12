@@ -153,7 +153,8 @@ _FX BOOLEAN WSA_FillResponseStructure(
     // Calc buffer size needed
     DWORD neededSize = sizeof(WSAQUERYSETW);
     DWORD domainNameLen = (wcslen(pLookup->DomainName) + 1) * sizeof(WCHAR);
-    neededSize += domainNameLen;
+    neededSize += domainNameLen;  // for lpszServiceInstanceName
+    neededSize += domainNameLen;  // for lpszQueryString
 
     // Calc IP size
     DWORD ipCount = 0;
@@ -237,7 +238,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
             memset(remoteAddr, 0, sizeof(SOCKADDR_IN));
 
             remoteAddr->sin_family = AF_INET;
-            remoteAddr->sin_port = 0x3500;
+            remoteAddr->sin_port = 0x3500;  // Port 53 in network byte order (DNS)
             remoteAddr->sin_addr.S_un.S_addr = entry->IP.Data32[3];
 
             csaInfo->RemoteAddr.lpSockaddr = (LPSOCKADDR)remoteAddr;
@@ -264,7 +265,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
             memset(remoteAddr, 0, sizeof(SOCKADDR_IN6_LH));
 
             remoteAddr->sin6_family = AF_INET6;
-            remoteAddr->sin6_port = 0x3500;
+            remoteAddr->sin6_port = 0x3500;  // Port 53 in network byte order (DNS)
             memcpy(remoteAddr->sin6_addr.u.Byte, entry->IP.Data, 16);
 
             csaInfo->RemoteAddr.lpSockaddr = (LPSOCKADDR)remoteAddr;
