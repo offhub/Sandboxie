@@ -29,7 +29,6 @@
 #define NOGDI
 #include "dll.h"
 
-#include <winsock2.h>
 #include <windows.h>
 #include <wchar.h>
 #include <oleauto.h>
@@ -343,7 +342,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
             memset(remoteAddr, 0, sizeof(SOCKADDR_IN));
 
             remoteAddr->sin_family = AF_INET;
-            remoteAddr->sin_port = htons(53);  // DNS port in network byte order
+            remoteAddr->sin_port = 0x3500;  // DNS port 53 in network byte order (big-endian)
             remoteAddr->sin_addr.S_un.S_addr = entry->IP.Data32[3];
 
             csaInfo->RemoteAddr.lpSockaddr = (LPSOCKADDR)remoteAddr;
@@ -371,7 +370,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
             memset(remoteAddr, 0, sizeof(SOCKADDR_IN6_LH));
 
             remoteAddr->sin6_family = AF_INET6;
-            remoteAddr->sin6_port = htons(53);  // DNS port in network byte order
+            remoteAddr->sin6_port = 0x3500;  // DNS port 53 in network byte order (big-endian)
             memcpy(remoteAddr->sin6_addr.u.Byte, entry->IP.Data, 16);
 
             csaInfo->RemoteAddr.lpSockaddr = (LPSOCKADDR)remoteAddr;
