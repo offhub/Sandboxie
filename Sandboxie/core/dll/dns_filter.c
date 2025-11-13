@@ -748,13 +748,15 @@ _FX int WSA_WSALookupServiceNextW(
                         pLookup->DomainName, lpqsResults->dwNameSpace,
                         WSA_IsIPv6Query(pLookup->ServiceClassId) ? L"IPv6" : L"IPv4", hLookup);
 
-                for (DWORD i = 0; i < lpqsResults->dwNumberOfCsAddrs; i++) {
-                    IP_ADDRESS ip;
-                    if (lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr &&
-                        WSA_GetIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr,
-                            lpqsResults->lpcsaBuffer[i].RemoteAddr.iSockaddrLength, &ip))
-                        WSA_DumpIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr->sa_family, &ip, msg);
-                }                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                    for (DWORD i = 0; i < lpqsResults->dwNumberOfCsAddrs; i++) {
+                        IP_ADDRESS ip;
+                        if (lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr &&
+                            WSA_GetIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr,
+                                lpqsResults->lpcsaBuffer[i].RemoteAddr.iSockaddrLength, &ip))
+                            WSA_DumpIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr->sa_family, &ip, msg);
+                    }
+
+                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
 
                 return NO_ERROR;
