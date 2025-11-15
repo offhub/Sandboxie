@@ -2492,7 +2492,7 @@ void CSandMan::OnStatusChanged()
 				theAPI->GetGlobalSettings()->SetText("FileRootPath", BoxPath + "\\%SANDBOX%");
 		}
 
-		if (SbiePath.compare(QApplication::applicationDirPath().replace("/", "\\"), Qt::CaseInsensitive) == 0)
+		if (SbiePath.compare(CSbieUtils::GetApplicationDirPath(), Qt::CaseInsensitive) == 0)
 		{
 			QString AgentCmd = theAPI->GetUserSettings()->GetText("SbieCtrl_AutoStartAgent");
 			if (AgentCmd.isEmpty() || AgentCmd == "SandMan.exe")
