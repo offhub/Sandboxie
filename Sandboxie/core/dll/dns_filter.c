@@ -18,6 +18,30 @@
 //---------------------------------------------------------------------------
 // DNS Filter
 //
+// This module provides DNS query filtering for sandboxed applications through
+// three separate interception layers:
+//
+// 1. WSALookupService API (ws2_32.dll) - Legacy WinSock DNS resolution
+//    - Functions: WSALookupServiceBeginW, WSALookupServiceNextW, WSALookupServiceEnd
+//    - Returns: WSAQUERYSETW with HOSTENT BLOB (relative pointers)
+//    - Used by: Older applications, some games
+//
+// 2. DnsApi (dnsapi.dll) - Modern Windows DNS API
+//    - Functions: DnsQuery_A, DnsQuery_W
+//    - Returns: DNS_RECORD linked list (absolute pointers)
+//    - Used by: Modern browsers, system utilities, most contemporary apps
+//
+// 3. Raw Socket Interception (ws2_32.dll) - Direct UDP packet filtering
+//    - Functions: sendto, WSASendTo (port 53 traffic)
+//    - Parses: DNS wire format packets (RFC 1035)
+//    - Used by: nslookup, dig, custom DNS clients
+//
+// Naming Convention:
+//    WSA_*    - WSALookupService API specific functions
+//    DNSAPI_* - DnsApi specific functions  
+//    Socket_* - Raw socket interception functions (in socket_hooks.c)
+//    DNS_*    - Shared infrastructure (filter lists, IP entries, config)
+//
 // IMPORTANT: HOSTENT structures in BLOB format use RELATIVE POINTERS (offsets)
 //            not absolute pointers. All pointer-typed fields in HOSTENT contain
 //            offset values from the HOSTENT base address. Consumer code must
@@ -37,6 +61,8 @@
 #include "common/netfw.h"
 #include "common/map.h"
 #include "wsa_defs.h"
+#include "dnsapi_defs.h"
+#include "socket_hooks.h"
 #include "common/pattern.h"
 #include "common/str_util.h"
 #include "core/drv/api_defs.h"
@@ -47,7 +73,7 @@
 // Functions
 //---------------------------------------------------------------------------
 
-
+// WSALookupService API hooks (ws2_32.dll)
 static int WSA_WSALookupServiceBeginW(
     LPWSAQUERYSETW  lpqsRestrictions,
     DWORD           dwControlFlags,
@@ -61,27 +87,63 @@ static int WSA_WSALookupServiceNextW(
 
 static int WSA_WSALookupServiceEnd(HANDLE hLookup);
 
+// DnsApi hooks (dnsapi.dll)
+static DNS_STATUS DNSAPI_DnsQuery_A(
+    PCSTR           pszName,
+    WORD            wType,
+    DWORD           Options,
+    PVOID           pExtra,
+    PDNSAPI_DNS_RECORD* ppQueryResults,
+    PVOID*          pReserved);
 
+static DNS_STATUS DNSAPI_DnsQuery_W(
+    PCWSTR          pszName,
+    WORD            wType,
+    DWORD           Options,
+    PVOID           pExtra,
+    PDNSAPI_DNS_RECORD* ppQueryResults,
+    PVOID*          pReserved);
+
+static VOID DNSAPI_DnsRecordListFree(
+    PVOID           pRecordList,
+    INT             FreeType);
+
+static PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
+    const WCHAR*    domainName,
+    WORD            wType,
+    LIST*           pEntries);
+
+// Shared utility functions (implemented in net.c)
 BOOLEAN WSA_GetIP(const short* addr, int addrlen, IP_ADDRESS* pIP);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
+// Initialization functions
+BOOLEAN DNSAPI_Init(HMODULE module);
+static void DNS_InitFilterRules(void);
+
 //---------------------------------------------------------------------------
 
-
+// WSALookupService system function pointers
 static P_WSALookupServiceBeginW __sys_WSALookupServiceBeginW = NULL;
 static P_WSALookupServiceNextW __sys_WSALookupServiceNextW = NULL;
 static P_WSALookupServiceEnd __sys_WSALookupServiceEnd = NULL;
+
+// DnsApi system function pointers
+static P_DnsQuery_A __sys_DnsQuery_A = NULL;
+static P_DnsQuery_W __sys_DnsQuery_W = NULL;
+static P_DnsRecordListFree __sys_DnsRecordListFree = NULL;
 
 
 //---------------------------------------------------------------------------
 // Variables
 //---------------------------------------------------------------------------
 
-
 extern POOL* Dll_Pool;
 
-static LIST       WSA_FilterList;
-static BOOLEAN    WSA_FilterEnabled = FALSE;
+// Shared DNS filter infrastructure (exported for socket_hooks.c)
+LIST       DNS_FilterList;      // Shared by WSA, DNSAPI, and raw socket implementations
+BOOLEAN    DNS_FilterEnabled = FALSE;
+BOOLEAN    DNS_TraceFlag = FALSE;
 
 typedef struct _IP_ENTRY
 {
@@ -91,6 +153,7 @@ typedef struct _IP_ENTRY
     IP_ADDRESS IP;
 } IP_ENTRY;
 
+// WSALookupService specific state tracking
 typedef struct _WSA_LOOKUP {
     LIST* pEntries;          // THREAD SAFETY: Read-only after initialization; safe for concurrent reads
     BOOLEAN NoMore;
@@ -101,8 +164,6 @@ typedef struct _WSA_LOOKUP {
 } WSA_LOOKUP;
 
 static HASH_MAP   WSA_LookupMap;
-
-static BOOLEAN    WSA_DnsTraceFlag = FALSE;
 
 
 //---------------------------------------------------------------------------
@@ -478,17 +539,18 @@ _FX BOOLEAN WSA_FillResponseStructure(
 }
 
 //---------------------------------------------------------------------------
-// WSA_InitNetDnsFilter
+// DNS_InitFilterRules
+//
+// Initializes shared DNS filter rules (called once, from whichever DLL loads first)
 //---------------------------------------------------------------------------
 
-
-_FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
+_FX void DNS_InitFilterRules(void)
 {
-    P_WSALookupServiceBeginW WSALookupServiceBeginW;
-    P_WSALookupServiceNextW WSALookupServiceNextW;
-    P_WSALookupServiceEnd WSALookupServiceEnd;
+    // Already initialized?
+    if (DNS_FilterList.count > 0)
+        return;
 
-    List_Init(&WSA_FilterList);
+    List_Init(&DNS_FilterList);
 
     //
     // Load filter rules
@@ -564,12 +626,12 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
             *aux = entries;
         }
 
-        List_Insert_After(&WSA_FilterList, NULL, pat);
+        List_Insert_After(&DNS_FilterList, NULL, pat);
     }
 
-    if (WSA_FilterList.count > 0) {
+    if (DNS_FilterList.count > 0) {
 
-        WSA_FilterEnabled = TRUE;
+        DNS_FilterEnabled = TRUE;
 
         map_init(&WSA_LookupMap, Dll_Pool);
 
@@ -579,12 +641,32 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
             const WCHAR* strings[] = { L"NetworkDnsFilter" , NULL };
             SbieApi_LogMsgExt(-1, 6009, strings);
 
-            WSA_FilterEnabled = FALSE;
+            DNS_FilterEnabled = FALSE;
         }
     }
 
+    // If there are any DnsTrace options set, then output this debug string
+    WCHAR wsTraceOptions[4];
+    if (SbieApi_QueryConf(NULL, L"DnsTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0')
+        DNS_TraceFlag = TRUE;
+}
+
+//---------------------------------------------------------------------------
+// WSA_InitNetDnsFilter
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
+{
+    P_WSALookupServiceBeginW WSALookupServiceBeginW;
+    P_WSALookupServiceNextW WSALookupServiceNextW;
+    P_WSALookupServiceEnd WSALookupServiceEnd;
+
+    // Initialize shared filter rules (if not already done)
+    DNS_InitFilterRules();
+
     //
-    // Setup DNS hooks
+    // Setup WSALookupService hooks (ws2_32.dll)
     //
 
     WSALookupServiceBeginW = (P_WSALookupServiceBeginW)GetProcAddress(module, "WSALookupServiceBeginW");
@@ -602,10 +684,43 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
         SBIEDLL_HOOK(WSA_, WSALookupServiceEnd);
     }
 
-    // If there are any DnsTrace options set, then output this debug string
-    WCHAR wsTraceOptions[4];
-    if (SbieApi_QueryConf(NULL, L"DnsTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0')
-        WSA_DnsTraceFlag = TRUE;
+    //
+    // Setup raw socket hooks for nslookup and other direct DNS tools
+    //
+    Socket_InitHooks(module);
+
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// DNSAPI_Init
+//
+// Initializes DnsApi hooks (called when dnsapi.dll is loaded)
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN DNSAPI_Init(HMODULE module)
+{
+    // Initialize shared filter rules (if not already done)
+    DNS_InitFilterRules();
+
+    //
+    // Setup DnsApi hooks (dnsapi.dll)
+    //
+
+    P_DnsQuery_A DnsQuery_A = (P_DnsQuery_A)GetProcAddress(module, "DnsQuery_A");
+    if (DnsQuery_A) {
+        SBIEDLL_HOOK(DNSAPI_, DnsQuery_A);
+    }
+
+    P_DnsQuery_W DnsQuery_W = (P_DnsQuery_W)GetProcAddress(module, "DnsQuery_W");
+    if (DnsQuery_W) {
+        SBIEDLL_HOOK(DNSAPI_, DnsQuery_W);
+    }
+
+    P_DnsRecordListFree DnsRecordListFree = (P_DnsRecordListFree)GetProcAddress(module, "DnsRecordListFree");
+    if (DnsRecordListFree) {
+        SBIEDLL_HOOK(DNSAPI_, DnsRecordListFree);
+    }
 
     return TRUE;
 }
@@ -621,7 +736,7 @@ _FX int WSA_WSALookupServiceBeginW(
     DWORD           dwControlFlags,
     LPHANDLE        lphLookup)
 {
-    if (WSA_FilterEnabled && lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
+    if (DNS_FilterEnabled && lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
         ULONG path_len = wcslen(lpqsRestrictions->lpszServiceInstanceName);
         WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
         wmemcpy(path_lwr, lpqsRestrictions->lpszServiceInstanceName, path_len);
@@ -629,7 +744,7 @@ _FX int WSA_WSALookupServiceBeginW(
         _wcslwr(path_lwr);
 
         PATTERN* found;
-        if (Pattern_MatchPathList(path_lwr, path_len, &WSA_FilterList, NULL, NULL, NULL, &found) > 0) {
+        if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
             HANDLE fakeHandle = (HANDLE)Dll_Alloc(sizeof(ULONG_PTR));
             if (!fakeHandle) {
                 Dll_Free(path_lwr);
@@ -670,7 +785,7 @@ _FX int WSA_WSALookupServiceBeginW(
                     pLookup->NoMore = TRUE;
             }
 
-            if (WSA_DnsTraceFlag) {
+            if (DNS_TraceFlag) {
                 WCHAR ClsId[64] = { 0 };
                 if (lpqsRestrictions->lpServiceClassId) {
                     Sbie_snwprintf(ClsId, 64, L" (ClsId: %08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX)",
@@ -695,7 +810,7 @@ _FX int WSA_WSALookupServiceBeginW(
 
     int ret = __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
 
-    if (WSA_DnsTraceFlag && lpqsRestrictions) {
+    if (DNS_TraceFlag && lpqsRestrictions) {
         WCHAR ClsId[64] = { 0 };
         if (lpqsRestrictions->lpServiceClassId) {
             Sbie_snwprintf(ClsId, 64, L" (ClsId: %08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX)",
@@ -730,7 +845,7 @@ _FX int WSA_WSALookupServiceNextW(
 {
     WSA_LOOKUP* pLookup = NULL;
 
-    if (WSA_FilterEnabled) {
+    if (DNS_FilterEnabled) {
         pLookup = WSA_GetLookup(hLookup, FALSE);
 
         if (pLookup && pLookup->Filtered) {
@@ -742,7 +857,7 @@ _FX int WSA_WSALookupServiceNextW(
             if (WSA_FillResponseStructure(pLookup, lpqsResults, lpdwBufferLength)) {
                 pLookup->NoMore = TRUE;
 
-                if (WSA_DnsTraceFlag) {
+                if (DNS_TraceFlag) {
                     WCHAR msg[2048];
                     Sbie_snwprintf(msg, ARRAYSIZE(msg), L"DNS Filtered Response: %s (NS: %d, Type: %s, Hdl: %p)",
                         pLookup->DomainName, lpqsResults->dwNameSpace,
@@ -814,6 +929,7 @@ _FX int WSA_WSALookupServiceNextW(
 
                 // Convert relative pointer to absolute using ABS_PTR helper
                 // HOSTENT uses relative offsets (not absolute pointers) in BLOB format
+                // NOTE: Windows BLOB spec requires relative offsets, but some providers may violate this
                 // Extract offset from pointer-typed field (stored as offset value, not real pointer)
                 uintptr_t addrListOffset = GET_REL_FROM_PTR(hp->h_addr_list);
                 PCHAR* addrArray = (PCHAR*)ABS_PTR(hp, addrListOffset);
@@ -842,7 +958,7 @@ _FX int WSA_WSALookupServiceNextW(
         pLookup->NoMore = TRUE;
     }
 
-    if (WSA_DnsTraceFlag && ret == NO_ERROR) {
+    if (DNS_TraceFlag && ret == NO_ERROR) {
         WCHAR msg[2048];
         Sbie_snwprintf(msg, ARRAYSIZE(msg), L"DNS Request Found: %s (NS: %d, Hdl: %p)",
             lpqsResults->lpszServiceInstanceName, lpqsResults->dwNameSpace, hLookup);
@@ -897,7 +1013,7 @@ _FX int WSA_WSALookupServiceNextW(
 
 _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
 {
-    if (WSA_FilterEnabled) {
+    if (DNS_FilterEnabled) {
         WSA_LOOKUP* pLookup = WSA_GetLookup(hLookup, FALSE);
 
         if (pLookup && pLookup->Filtered) {
@@ -911,7 +1027,7 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
 
             Dll_Free(hLookup);
 
-            if (WSA_DnsTraceFlag) {
+            if (DNS_TraceFlag) {
                 WCHAR msg[256];
                 Sbie_snwprintf(msg, 256, L"DNS Filtered Request End (Hdl: %p)", hLookup);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -923,7 +1039,7 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
         map_remove(&WSA_LookupMap, hLookup);
     }
 
-    if (WSA_DnsTraceFlag) {
+    if (DNS_TraceFlag) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"DNS Request End (Hdl: %p)", hLookup);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -931,3 +1047,329 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
 
     return __sys_WSALookupServiceEnd(hLookup);
 }
+
+
+//---------------------------------------------------------------------------
+// DnsApi Implementation (dnsapi.dll)
+//---------------------------------------------------------------------------
+
+//---------------------------------------------------------------------------
+// DNSAPI_BuildDnsRecordList
+//
+// Builds a DNS_RECORD linked list from IP_ENTRY list.
+// Memory is allocated using LocalAlloc for DnsFree compatibility.
+//
+// IMPORTANT: Different from HOSTENT BLOB format - uses absolute pointers
+//            in a linked list structure. Caller must free with DnsRecordListFree.
+//---------------------------------------------------------------------------
+
+_FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
+    const WCHAR* domainName,
+    WORD wType,
+    LIST* pEntries)
+{
+    if (!pEntries || !domainName)
+        return NULL;
+
+    PDNSAPI_DNS_RECORD pFirstRecord = NULL;
+    PDNSAPI_DNS_RECORD pLastRecord = NULL;
+
+    USHORT targetType = (wType == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
+    SIZE_T domainNameLen = (wcslen(domainName) + 1) * sizeof(WCHAR);
+
+    // Build linked list of DNS_RECORD structures
+    IP_ENTRY* entry;
+    for (entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+        if (entry->Type != targetType)
+            continue;
+
+        // Allocate DNS_RECORD using LocalAlloc (required for DnsFree compatibility)
+        PDNSAPI_DNS_RECORD pRecord = (PDNSAPI_DNS_RECORD)LocalAlloc(LPTR, sizeof(DNSAPI_DNS_RECORD));
+        if (!pRecord) {
+            // Free already allocated records on failure - use LocalFree to match allocation
+            PDNSAPI_DNS_RECORD pCur = pFirstRecord;
+            while (pCur) {
+                PDNSAPI_DNS_RECORD pNext = pCur->pNext;
+                if (pCur->pName) LocalFree(pCur->pName);
+                LocalFree(pCur);
+                pCur = pNext;
+            }
+            return NULL;
+        }
+
+        // Allocate and copy domain name
+        pRecord->pName = (PWSTR)LocalAlloc(LPTR, domainNameLen);
+        if (!pRecord->pName) {
+            LocalFree(pRecord);
+            // Free already allocated records on failure - use LocalFree to match allocation
+            PDNSAPI_DNS_RECORD pCur = pFirstRecord;
+            while (pCur) {
+                PDNSAPI_DNS_RECORD pNext = pCur->pNext;
+                if (pCur->pName) LocalFree(pCur->pName);
+                LocalFree(pCur);
+                pCur = pNext;
+            }
+            return NULL;
+        }
+        wcscpy_s(pRecord->pName, domainNameLen / sizeof(WCHAR), domainName);
+
+        // Set record type and flags
+        pRecord->wType = wType;
+        
+        // Set Flags: Section = DNSREC_ANSWER (1), CharSet = Unicode (0), all other fields = 0
+        // This ensures ipconfig displays "Section . . . . . . . : Answer" instead of "Question"
+        // CharSet should be 0 (DnsCharSetUnicode) for wide string domain names
+        pRecord->Flags.DW = 0;
+        pRecord->Flags.S.Section = DNSREC_ANSWER;
+        pRecord->Flags.S.CharSet = 0;  // DnsCharSetUnicode - matches Windows behavior for wide strings
+        
+        pRecord->dwTtl = 300;  // 5 minutes TTL (default)
+        pRecord->pNext = NULL;
+
+        // Copy IP address data
+        if (wType == DNS_TYPE_AAAA) {
+            pRecord->wDataLength = 16;
+            memcpy(pRecord->Data.AAAA.Ip6Address, entry->IP.Data, 16);
+        } else {
+            pRecord->wDataLength = 4;
+            pRecord->Data.A.IpAddress = entry->IP.Data32[3];
+        }
+
+        // Add to linked list
+        if (!pFirstRecord) {
+            pFirstRecord = pRecord;
+            pLastRecord = pRecord;
+        } else {
+            pLastRecord->pNext = pRecord;
+            pLastRecord = pRecord;
+        }
+    }
+
+    return pFirstRecord;
+}
+
+//---------------------------------------------------------------------------
+// DNSAPI_DnsQuery_W
+//
+// Hook for DnsQuery_W - filters DNS queries using the same rules as
+// WSALookupService but returns DNS_RECORD linked list format.
+//---------------------------------------------------------------------------
+
+_FX DNS_STATUS DNSAPI_DnsQuery_W(
+    PCWSTR          pszName,
+    WORD            wType,
+    DWORD           Options,
+    PVOID           pExtra,
+    PDNSAPI_DNS_RECORD* ppQueryResults,
+    PVOID*          pReserved)
+{
+    // Only filter A and AAAA queries
+    if (DNS_FilterEnabled && pszName && (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA)) {
+        ULONG path_len = wcslen(pszName);
+        WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
+        wmemcpy(path_lwr, pszName, path_len);
+        path_lwr[path_len] = L'\0';
+        _wcslwr(path_lwr);
+
+        PATTERN* found;
+        if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
+            PVOID* aux = Pattern_Aux(found);
+            LIST* pEntries = (LIST*)*aux;
+
+            if (pEntries) {
+                // Build DNS_RECORD linked list
+                PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries);
+                
+                if (pRecords) {
+                    *ppQueryResults = pRecords;
+                    
+                    if (DNS_TraceFlag) {
+                        WCHAR msg[1024];
+                        Sbie_snwprintf(msg, 1024, L"DnsApi Request Intercepted: %s (Type: %s) - Using filtered response",
+                            pszName, (wType == DNS_TYPE_AAAA) ? L"AAAA" : L"A");
+                        
+                        // Log IP addresses
+                        PDNSAPI_DNS_RECORD pRec = pRecords;
+                        while (pRec) {
+                            IP_ADDRESS ip;
+                            if (wType == DNS_TYPE_AAAA) {
+                                memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
+                            } else {
+                                ip.Data32[3] = pRec->Data.A.IpAddress;
+                            }
+                            WSA_DumpIP((wType == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET, &ip, msg);
+                            pRec = pRec->pNext;
+                        }
+                        
+                        SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+                    }
+                    
+                    Dll_Free(path_lwr);
+                    return 0;  // DNS_STATUS success
+                } else {
+                    // No matching entries, return name error
+                    Dll_Free(path_lwr);
+                    return DNS_ERROR_RCODE_NAME_ERROR;
+                }
+            } else {
+                // Pattern matched but no IPs configured - block with NXDOMAIN
+                if (DNS_TraceFlag) {
+                    WCHAR msg[1024];
+                    Sbie_snwprintf(msg, 1024, L"DnsApi Request Blocked: %s (Type: %s) - No IP configured, returning NXDOMAIN",
+                        pszName, (wType == DNS_TYPE_AAAA) ? L"AAAA" : L"A");
+                    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+                }
+                
+                Dll_Free(path_lwr);
+                return DNS_ERROR_RCODE_NAME_ERROR;
+            }
+        }
+
+        Dll_Free(path_lwr);
+    }
+
+    // Call original DnsQuery_W
+    DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+
+    if (DNS_TraceFlag && pszName) {
+        WCHAR msg[1024];
+        Sbie_snwprintf(msg, 1024, L"DnsApi Request: %s (Type: %d, Status: %d)",
+            pszName, wType, status);
+        
+        // Log returned IP addresses if successful
+        if (status == 0 && ppQueryResults && *ppQueryResults) {
+            PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
+            while (pRec) {
+                if (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA) {
+                    IP_ADDRESS ip;
+                    if (pRec->wType == DNS_TYPE_AAAA) {
+                        memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
+                        WSA_DumpIP(AF_INET6, &ip, msg);
+                    } else {
+                        ip.Data32[3] = pRec->Data.A.IpAddress;
+                        WSA_DumpIP(AF_INET, &ip, msg);
+                    }
+                }
+                pRec = pRec->pNext;
+            }
+        }
+        
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    }
+
+    return status;
+}
+
+//---------------------------------------------------------------------------
+// DNSAPI_DnsQuery_A
+//
+// Hook for DnsQuery_A (ANSI version) - converts to wide and calls DnsQuery_W hook
+//---------------------------------------------------------------------------
+
+_FX DNS_STATUS DNSAPI_DnsQuery_A(
+    PCSTR           pszName,
+    WORD            wType,
+    DWORD           Options,
+    PVOID           pExtra,
+    PDNSAPI_DNS_RECORD* ppQueryResults,
+    PVOID*          pReserved)
+{
+    // For filtering, convert to wide and use shared filter logic
+    if (DNS_FilterEnabled && pszName && (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA)) {
+        int nameLen = MultiByteToWideChar(CP_ACP, 0, pszName, -1, NULL, 0);
+        if (nameLen > 0) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName) {
+                MultiByteToWideChar(CP_ACP, 0, pszName, -1, wName, nameLen);
+                
+                ULONG path_len = wcslen(wName);
+                WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
+                wmemcpy(path_lwr, wName, path_len);
+                path_lwr[path_len] = L'\0';
+                _wcslwr(path_lwr);
+
+                PATTERN* found;
+                if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
+                    PVOID* aux = Pattern_Aux(found);
+                    LIST* pEntries = (LIST*)*aux;
+
+                    if (pEntries) {
+                        // Build DNS_RECORD linked list using wide domain name
+                        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries);
+                        
+                        if (pRecords) {
+                            *ppQueryResults = pRecords;
+                            
+                            if (DNS_TraceFlag) {
+                                WCHAR msg[1024];
+                                Sbie_snwprintf(msg, 1024, L"DnsApi Request Intercepted (A): %S (Type: %s) - Using filtered response",
+                                    pszName, (wType == DNS_TYPE_AAAA) ? L"AAAA" : L"A");
+                                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+                            }
+                            
+                            // Note: path_lwr and wName are from Dll_AllocTemp - they auto-clear, no explicit free needed
+                            return 0;
+                        } else {
+                            // Note: path_lwr and wName are from Dll_AllocTemp - they auto-clear, no explicit free needed
+                            return DNS_ERROR_RCODE_NAME_ERROR;
+                        }
+                    }
+                }
+
+                // Note: path_lwr and wName are from Dll_AllocTemp - they auto-clear, no explicit free needed
+            }
+        }
+    }
+
+    // Call original DnsQuery_A
+    DNS_STATUS status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+
+    if (DNS_TraceFlag && pszName) {
+        WCHAR msg[1024];
+        Sbie_snwprintf(msg, 1024, L"DnsApi Request (A): %S (Type: %d, Status: %d)",
+            pszName, wType, status);
+        
+        // Log returned IP addresses if successful
+        if (status == 0 && ppQueryResults && *ppQueryResults) {
+            PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
+            while (pRec) {
+                if (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA) {
+                    IP_ADDRESS ip;
+                    if (pRec->wType == DNS_TYPE_AAAA) {
+                        memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
+                        WSA_DumpIP(AF_INET6, &ip, msg);
+                    } else {
+                        ip.Data32[3] = pRec->Data.A.IpAddress;
+                        WSA_DumpIP(AF_INET, &ip, msg);
+                    }
+                }
+                pRec = pRec->pNext;
+            }
+        }
+        
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    }
+
+    return status;
+}
+
+//---------------------------------------------------------------------------
+// DNSAPI_DnsRecordListFree
+//
+// Hook for DnsRecordListFree - ensures proper cleanup of filtered records
+//---------------------------------------------------------------------------
+
+_FX VOID DNSAPI_DnsRecordListFree(
+    PVOID           pRecordList,
+    INT             FreeType)
+{
+    if (DNS_TraceFlag) {
+        WCHAR msg[256];
+        Sbie_snwprintf(msg, 256, L"DnsApi RecordListFree called (List: %p, Type: %d)", pRecordList, FreeType);
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    }
+
+    // Call original DnsRecordListFree
+    __sys_DnsRecordListFree(pRecordList, FreeType);
+}
+

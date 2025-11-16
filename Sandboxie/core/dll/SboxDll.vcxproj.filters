@@ -263,6 +263,9 @@
       <Filter>net</Filter>
     </ClCompile>
     <ClCompile Include="kernel.c" />
+    <ClCompile Include="socket_hooks.c">
+      <Filter>net</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="advapi.h" />
@@ -371,6 +374,12 @@
     </ClInclude>
     <ClInclude Include="..\..\common\my_xeb.h">
       <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="dnsapi_defs.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="socket_hooks.h">
+      <Filter>net</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

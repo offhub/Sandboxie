@@ -743,6 +743,7 @@
     <ClCompile Include="setup.c" />
     <ClCompile Include="sfc.c" />
     <ClCompile Include="sh.c" />
+    <ClCompile Include="socket_hooks.c" />
     <ClCompile Include="support.c" />
     <ClCompile Include="sxs.c" />
     <ClCompile Include="sysinfo.c">
@@ -812,6 +813,7 @@
     <ClCompile Include="dns_filter.c">
       <FileType>CppCode</FileType>
     </ClCompile>
+    <ClInclude Include="dnsapi_defs.h" />
     <ClInclude Include="dump.h" />
     <ClInclude Include="guidlg.h" />
     <ClInclude Include="gui_p.h" />
@@ -824,6 +826,7 @@
     <ClInclude Include="pstore.h" />
     <ClInclude Include="sbieapi.h" />
     <ClInclude Include="sbiedll.h" />
+    <ClInclude Include="socket_hooks.h" />
     <ClInclude Include="taskbar.h" />
     <ClInclude Include="trace.h" />
     <ClInclude Include="wsa_defs.h" />
