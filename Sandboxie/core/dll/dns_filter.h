@@ -37,9 +37,31 @@ typedef struct _IP_ENTRY
     IP_ADDRESS IP;
 } IP_ENTRY;
 
+// DNS Type Filter - specifies which DNS record types to filter for a pattern
+// If NULL, default behavior applies (filter A/AAAA/ANY only)
+#define MAX_DNS_TYPE_FILTERS 32
+typedef struct _DNS_TYPE_FILTER
+{
+    USHORT allowed_types[MAX_DNS_TYPE_FILTERS];  // Array of DNS types to filter (0-terminated)
+    USHORT type_count;                            // Number of types in array
+} DNS_TYPE_FILTER;
+
+// Auxiliary data stored with each DNS filter pattern
+// Contains both IP entries and optional type filter
+typedef struct _DNS_FILTER_AUX
+{
+    LIST* ip_entries;                    // List of IP_ENTRY (NULL for block mode)
+    DNS_TYPE_FILTER* type_filter;        // Type filter (NULL = default A/AAAA/ANY)
+} DNS_FILTER_AUX;
+
 BOOLEAN WSA_InitNetDnsFilter(HMODULE module);
 BOOLEAN DNSAPI_Init(HMODULE module);
 BOOLEAN DNS_IsExcluded(const WCHAR* domain);
+
+// DNS Type Filter Helper Functions (used by socket_hooks.c)
+BOOLEAN DNS_IsTypeInFilterList(const DNS_TYPE_FILTER* type_filter, USHORT query_type);
+BOOLEAN DNS_CanSynthesizeResponse(USHORT query_type);
+const WCHAR* DNS_GetTypeName(WORD wType);
 
 #ifdef __cplusplus
 }

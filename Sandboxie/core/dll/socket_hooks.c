@@ -295,7 +295,8 @@ static int Socket_BuildDnsResponse(
     BOOLEAN        block,
     BYTE*          response,
     int            response_size,
-    USHORT         qtype);
+    USHORT         qtype,
+    DNS_TYPE_FILTER* type_filter);
 
 static BOOLEAN Socket_ValidateDnsResponse(
     const BYTE*    response,
@@ -315,6 +316,87 @@ static int Socket_GetFakeResponse(
     int      len,
     void     *from,
     int      *fromlen);
+
+//---------------------------------------------------------------------------
+// Raw Socket DNS Logging Helpers
+//---------------------------------------------------------------------------
+
+// Log raw DNS query with domain and type
+static void Socket_LogDnsQuery(const WCHAR* prefix, const WCHAR* domain, USHORT qtype_network, const WCHAR* suffix, SOCKET s)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    USHORT qtype_host = _ntohs(qtype_network);
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s: %s (Type: %s, %s, Socket: %p)",
+        prefix, domain, DNS_GetTypeName(qtype_host), suffix, (void*)(ULONG_PTR)s);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+// Log intercepted DNS with IP addresses and response info
+static void Socket_LogInterceptedResponse(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_network,
+    int query_len, const BYTE* response, int response_len, SOCKET s, LIST* pEntries, const WCHAR* func_suffix)
+{
+    if (!DNS_TraceFlag || !domain || !response)
+        return;
+    
+    USHORT qtype_host = _ntohs(qtype_network);
+    
+    // Check actual response flags to determine if it's NXDOMAIN or success
+    DNS_HEADER* resp_hdr = (DNS_HEADER*)response;
+    USHORT resp_flags = _ntohs(resp_hdr->Flags);
+    USHORT rcode = resp_flags & 0x000F;  // Response code in lower 4 bits
+    BOOLEAN is_nxdomain = (rcode == 3);  // RCODE 3 = NXDOMAIN
+    
+    WCHAR msg[512];
+    
+    if (!is_nxdomain && pEntries) {
+        Sbie_snwprintf(msg, 512, L"%s DNS: %s (Type: %s) - answered locally (len=%d), FAKE RESPONSE QUEUED (len=%d)%s%s, socket=%p",
+            protocol, domain, DNS_GetTypeName(qtype_host), query_len, response_len,
+            func_suffix ? L" (" : L"", func_suffix ? func_suffix : L"", (void*)(ULONG_PTR)s);
+        
+        // Log IP addresses
+        IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
+        while (entry) {
+            WSA_DumpIP(entry->Type, &entry->IP, msg);
+            entry = (IP_ENTRY*)List_Next(entry);
+        }
+        
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    } else {
+        Sbie_snwprintf(msg, 512, L"%s DNS: %s (Type: %s) - BLOCKED unsupported type (len=%d), NXDOMAIN QUEUED (len=%d)%s%s, socket=%p",
+            protocol, domain, DNS_GetTypeName(qtype_host), query_len, response_len,
+            func_suffix ? L" (" : L"", func_suffix ? func_suffix : L"", (void*)(ULONG_PTR)s);
+        SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+    }
+}
+
+// Log filter mode passthrough
+static void Socket_LogFilterPassthrough(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_network, const WCHAR* func_name)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    USHORT qtype_host = _ntohs(qtype_network);
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s DNS: %s%s (Type: %s) - Filter mode, non-address query, forwarding to real DNS",
+        protocol, func_name ? func_name : L"", domain, DNS_GetTypeName(qtype_host));
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+// Log forwarded to real DNS
+static void Socket_LogForwarded(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_network, const WCHAR* func_name, SOCKET s)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    USHORT qtype_host = _ntohs(qtype_network);
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"Raw DNS Query Forwarded to Real Server (%s): %s (Type: %s, Port: 53, Socket: %p)",
+        func_name ? func_name : protocol, domain, DNS_GetTypeName(qtype_host), (void*)(ULONG_PTR)s);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
 
 //---------------------------------------------------------------------------
 // Socket_GetRawDnsFilterEnabled
@@ -721,17 +803,42 @@ _FX int Socket_send(
             
             if (match_result > 0) {
                 
-                // Check if an IP address is defined for this domain
+                // Get auxiliary data containing IP list and type filter
                 PVOID* aux = Pattern_Aux(found);
-                BOOLEAN hasIP = (aux && *aux != NULL);
-                LIST* pEntries = hasIP ? (LIST*)*aux : NULL;
+                if (!aux || !*aux) {
+                    // No aux data - shouldn't happen, but be safe
+                    Dll_Free(domain_lwr);
+                    return __sys_send(s, buf, len, flags);
+                }
+
+                DNS_FILTER_AUX* filter_aux = (DNS_FILTER_AUX*)(*aux);
+                LIST* pEntries = filter_aux->ip_entries;
+                DNS_TYPE_FILTER* type_filter = filter_aux->type_filter;
+                BOOLEAN hasIP = (pEntries != NULL);
                 
                 // Build fake DNS response
                 BYTE response[512];
                 int response_len = Socket_BuildDnsResponse(
-                    dns_payload, dns_payload_len, pEntries, !hasIP, response, 512, qtype);
+                    dns_payload, dns_payload_len, pEntries, !hasIP, response, 512, qtype, type_filter);
                 
-                if (response_len > 0) {
+                // response_len == 0 means "pass through to real DNS" (filter mode, non-filtered query)
+                // response_len < 0 means error
+                // response_len > 0 means we have a fake response to queue
+                
+                if (response_len < 0) {
+                    // Error building response - drop the query
+                    if (DNS_TraceFlag) {
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, L"TCP DNS: Error building response, dropping query");
+                    }
+                    return len;  // Return success to prevent real send
+                }
+                
+                if (response_len == 0) {
+                    // Filter mode + non-A/AAAA query: Pass through to real DNS
+                    Socket_LogFilterPassthrough(L"TCP", domainName, qtype, NULL);
+                    // Fall through to call __sys_send - let real DNS handle it
+                }
+                else if (response_len > 0) {
                     // Validate the response before queuing
                     if (!Socket_ValidateDnsResponse(response, response_len)) {
                         if (DNS_TraceFlag) {
@@ -764,47 +871,17 @@ _FX int Socket_send(
                     // When client calls recv(), we'll return our fake response
                     
                     // Log the interception with detailed diagnostics
-                    if (DNS_TraceFlag) {
-                        WCHAR msg[512];
-                        if (hasIP) {
-                            Sbie_snwprintf(msg, 512, L"TCP DNS: %s (Type: %s) - answered locally (len=%d), FAKE RESPONSE QUEUED (len=%d), socket=%p",
-                                domainName,
-                                (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                                len, response_len, (void*)(ULONG_PTR)s);
-                            
-                            // Log IP addresses
-                            if (pEntries) {
-                                IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
-                                while (entry) {
-                                    WSA_DumpIP(entry->Type, &entry->IP, msg);
-                                    entry = (IP_ENTRY*)List_Next(entry);
-                                }
-                            }
-                            
-                            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                        } else {
-                            Sbie_snwprintf(msg, 512, L"TCP DNS: %s (Type: %s) - answered locally (len=%d), NXDOMAIN QUEUED (len=%d), socket=%p",
-                                domainName,
-                                (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                                len, response_len, (void*)(ULONG_PTR)s);
-                            SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
-                        }
-                    }
+                    Socket_LogInterceptedResponse(L"TCP", domainName, qtype, len, response, response_len, s, pEntries, NULL);
                     
                     // Return success - client thinks data was sent
                     return len;
-                }
+                } // end else if (response_len > 0)
+                
+                // If response_len == 0, we fall through here to call __sys_send
             }
             else {
                 // Domain not in filter list - trace allowed queries
-                if (DNS_TraceFlag) {
-                    WCHAR msg[512];
-                    Sbie_snwprintf(msg, 512, L"Raw DNS Query Forwarded to Real Server (send): %s (Type: %s, Port: 53, Socket: %p)",
-                        domainName,
-                        (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                        (void*)(ULONG_PTR)s);
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                }
+                Socket_LogForwarded(L"TCP", domainName, qtype, L"send", s);
             }
         }
     }
@@ -917,17 +994,42 @@ _FX int Socket_WSASend(
                 
                 if (match_result > 0) {
                     
-                    // Check if an IP address is defined for this domain
+                    // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
-                    BOOLEAN hasIP = (aux && *aux != NULL);
-                    LIST* pEntries = hasIP ? (LIST*)*aux : NULL;
+                    if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+                    }
+
+                    DNS_FILTER_AUX* filter_aux = (DNS_FILTER_AUX*)(*aux);
+                    LIST* pEntries = filter_aux->ip_entries;
+                    DNS_TYPE_FILTER* type_filter = filter_aux->type_filter;
+                    BOOLEAN hasIP = (pEntries != NULL);
                     
                     // Build fake DNS response
                     BYTE response[512];
                     int response_len = Socket_BuildDnsResponse(
-                        dns_payload, dns_payload_len, pEntries, !hasIP, response, 512, qtype);
+                        dns_payload, dns_payload_len, pEntries, !hasIP, response, 512, qtype, type_filter);
                     
-                    if (response_len > 0) {
+                    // response_len == 0 means "pass through to real DNS" (filter mode, non-filtered query)
+                    // response_len < 0 means error
+                    // response_len > 0 means we have a fake response to queue
+                    
+                    if (response_len < 0) {
+                        // Error building response - drop the query
+                        if (DNS_TraceFlag) {
+                            SbieApi_MonitorPutMsg(MONITOR_DNS, L"TCP DNS: WSASend error building response, dropping query");
+                        }
+                        if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
+                        return 0;  // Return success to prevent real send
+                    }
+                    
+                    if (response_len == 0) {
+                        // Filter mode + non-A/AAAA query: Pass through to real DNS
+                        Socket_LogFilterPassthrough(L"TCP", domainName, qtype, L"WSASend ");
+                        // Fall through to call __sys_WSASend - let real DNS handle it
+                    }
+                    else if (response_len > 0) {
                         // Validate the response before queuing
                         if (!Socket_ValidateDnsResponse(response, response_len)) {
                             if (DNS_TraceFlag) {
@@ -956,47 +1058,20 @@ _FX int Socket_WSASend(
                         Socket_AddFakeResponse(s, response, response_len, NULL);
                         
                         // Log the DNS query activity
-                        if (DNS_TraceFlag) {
-                            WCHAR msg[512];
-                            if (hasIP) {
-                                Sbie_snwprintf(msg, 512, L"TCP DNS: %s (Type: %s) - answered locally (len=%d), FAKE RESPONSE QUEUED (len=%d) (WSASend)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                                    len, response_len);
-                                
-                                // Log IP addresses
-                                if (pEntries) {
-                                    IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
-                                    while (entry) {
-                                        WSA_DumpIP(entry->Type, &entry->IP, msg);
-                                        entry = (IP_ENTRY*)List_Next(entry);
-                                    }
-                                }
-                            } else {
-                                Sbie_snwprintf(msg, 512, L"TCP DNS: %s (Type: %s) - answered locally, NXDOMAIN queued (WSASend)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER");
-                            }
-                            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                        }
+                        Socket_LogInterceptedResponse(L"TCP", domainName, qtype, len, response, response_len, s, pEntries, L"WSASend");
                         
                         // Set bytes sent and return success WITHOUT actually sending
                         if (lpNumberOfBytesSent) {
                             *lpNumberOfBytesSent = len;
                         }
                         return 0;  // Success (answered locally)
-                    }
+                    } // end else if (response_len > 0)
+                    
+                    // If response_len == 0, we fall through here to call __sys_WSASend
                 }
                 else {
                     // Domain not in filter list - trace allowed queries
-                    if (DNS_TraceFlag) {
-                        WCHAR msg[512];
-                        Sbie_snwprintf(msg, 512, L"TCP DNS: Forwarded to Real Server (WSASend): %s (Type: %s, Socket: %p)",
-                            domainName,
-                            (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                            (void*)(ULONG_PTR)s);
-                        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                    }
+                    Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASend", s);
                 }
             }
         }
@@ -1054,17 +1129,41 @@ _FX int Socket_sendto(
                 
                 if (match_result > 0) {
                     
-                    // Check if an IP address is defined for this domain
+                    // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
-                    BOOLEAN hasIP = (aux && *aux != NULL);
-                    LIST* pEntries = hasIP ? (LIST*)*aux : NULL;
+                    if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_sendto(s, buf, len, flags, to, tolen);
+                    }
+
+                    DNS_FILTER_AUX* filter_aux = (DNS_FILTER_AUX*)(*aux);
+                    LIST* pEntries = filter_aux->ip_entries;
+                    DNS_TYPE_FILTER* type_filter = filter_aux->type_filter;
+                    BOOLEAN hasIP = (pEntries != NULL);
                     
                     // Build fake DNS response
                     BYTE response[512];
                     int response_len = Socket_BuildDnsResponse(
-                        (const BYTE*)buf, len, pEntries, !hasIP, response, 512, qtype);
+                        (const BYTE*)buf, len, pEntries, !hasIP, response, 512, qtype, type_filter);
                     
-                    if (response_len > 0) {
+                    // response_len == 0 means "pass through to real DNS" (filter mode, non-filtered query)
+                    // response_len < 0 means error
+                    // response_len > 0 means we have a fake response to queue
+                    
+                    if (response_len < 0) {
+                        // Error building response - drop the query
+                        if (DNS_TraceFlag) {
+                            SbieApi_MonitorPutMsg(MONITOR_DNS, L"UDP DNS: sendto error building response, dropping query");
+                        }
+                        return len;  // Return success to prevent real send
+                    }
+                    
+                    if (response_len == 0) {
+                        // Filter mode + non-A/AAAA query: Pass through to real DNS
+                        Socket_LogFilterPassthrough(L"UDP", domainName, qtype, L"sendto ");
+                        // Fall through to call __sys_sendto - let real DNS handle it
+                    }
+                    else if (response_len > 0) {
                         // Validate the response before queuing
                         if (!Socket_ValidateDnsResponse(response, response_len)) {
                             if (DNS_TraceFlag) {
@@ -1077,45 +1176,17 @@ _FX int Socket_sendto(
                         Socket_AddFakeResponse(s, response, response_len, to);
                         
                         // Log the interception
-                        if (DNS_TraceFlag) {
-                            WCHAR msg[512];
-                            if (hasIP) {
-                                Sbie_snwprintf(msg, 512, L"UDP DNS: %s (Type: %s) - answered locally, fake response queued (sendto)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER");
-                                
-                                // Log IP addresses
-                                if (pEntries) {
-                                    IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
-                                    while (entry) {
-                                        WSA_DumpIP(entry->Type, &entry->IP, msg);
-                                        entry = (IP_ENTRY*)List_Next(entry);
-                                    }
-                                }
-                                
-                                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                            } else {
-                                Sbie_snwprintf(msg, 512, L"UDP DNS: %s (Type: %s) - answered locally, NXDOMAIN queued (sendto)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER");
-                                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
-                            }
-                        }
+                        Socket_LogInterceptedResponse(L"UDP", domainName, qtype, len, response, response_len, s, pEntries, L"sendto");
                         
                         // Return success without actually sending (UDP answered locally)
                         return len;
-                    }
+                    } // end else if (response_len > 0)
+                    
+                    // If response_len == 0, we fall through here to call __sys_sendto
                 }
                 else {
                     // Domain not in filter list - trace allowed queries
-                    if (DNS_TraceFlag) {
-                        WCHAR msg[512];
-                        Sbie_snwprintf(msg, 512, L"Raw DNS Query Forwarded to Real Server (sendto): %s (Type: %s, Port: 53, Socket: %p)",
-                            domainName,
-                            (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                            (void*)(ULONG_PTR)s);
-                        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                    }
+                    Socket_LogForwarded(L"UDP", domainName, qtype, L"sendto", s);
                 }
             }
         }
@@ -1179,17 +1250,42 @@ _FX int Socket_WSASendTo(
                 
                 if (match_result > 0) {
                     
-                    // Check if an IP address is defined for this domain
+                    // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
-                    BOOLEAN hasIP = (aux && *aux != NULL);
-                    LIST* pEntries = hasIP ? (LIST*)*aux : NULL;
+                    if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
+                    }
+
+                    DNS_FILTER_AUX* filter_aux = (DNS_FILTER_AUX*)(*aux);
+                    LIST* pEntries = filter_aux->ip_entries;
+                    DNS_TYPE_FILTER* type_filter = filter_aux->type_filter;
+                    BOOLEAN hasIP = (pEntries != NULL);
                     
                     // Build fake DNS response
                     BYTE response[512];
                     int response_len = Socket_BuildDnsResponse(
-                        (const BYTE*)buffers[0].buf, buffers[0].len, pEntries, !hasIP, response, 512, qtype);
+                        (const BYTE*)buffers[0].buf, buffers[0].len, pEntries, !hasIP, response, 512, qtype, type_filter);
                     
-                    if (response_len > 0) {
+                    // response_len == 0 means "pass through to real DNS" (filter mode, non-filtered query)
+                    // response_len < 0 means error
+                    // response_len > 0 means we have a fake response to queue
+                    
+                    if (response_len < 0) {
+                        // Error building response - drop the query
+                        if (DNS_TraceFlag) {
+                            SbieApi_MonitorPutMsg(MONITOR_DNS, L"UDP DNS: WSASendTo error building response, dropping query");
+                        }
+                        if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
+                        return 0;  // Return success to prevent real send
+                    }
+                    
+                    if (response_len == 0) {
+                        // Filter mode + non-A/AAAA query: Pass through to real DNS
+                        Socket_LogFilterPassthrough(L"UDP", domainName, qtype, L"WSASendTo ");
+                        // Fall through to call __sys_WSASendTo - let real DNS handle it
+                    }
+                    else if (response_len > 0) {
                         // Validate the response before queuing
                         if (!Socket_ValidateDnsResponse(response, response_len)) {
                             if (DNS_TraceFlag) {
@@ -1203,50 +1299,20 @@ _FX int Socket_WSASendTo(
                         Socket_AddFakeResponse(s, response, response_len, lpTo);
                         
                         // Log the interception
-                        if (DNS_TraceFlag) {
-                            WCHAR msg[512];
-                            if (hasIP) {
-                                Sbie_snwprintf(msg, 512, L"UDP DNS: %s (Type: %s, Socket: %p) - answered locally, fake response queued (WSASendTo)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                                    (void*)(ULONG_PTR)s);
-                                
-                                // Log IP addresses
-                                if (pEntries) {
-                                    IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
-                                    while (entry) {
-                                        WSA_DumpIP(entry->Type, &entry->IP, msg);
-                                        entry = (IP_ENTRY*)List_Next(entry);
-                                    }
-                                }
-                                
-                                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                            } else {
-                                Sbie_snwprintf(msg, 512, L"UDP DNS: %s (Type: %s, Socket: %p) - answered locally, NXDOMAIN queued (WSASendTo)",
-                                    domainName,
-                                    (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                                    (void*)(ULONG_PTR)s);
-                                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
-                            }
-                        }
+                        Socket_LogInterceptedResponse(L"UDP", domainName, qtype, buffers[0].len, response, response_len, s, pEntries, L"WSASendTo");
                         
                         // Set bytes sent and return success (answered locally)
                         if (lpNumberOfBytesSent) {
                             *lpNumberOfBytesSent = buffers[0].len;
                         }
                         return 0;  // Success
-                    }
+                    } // end else if (response_len > 0)
+                    
+                    // If response_len == 0, we fall through here to call __sys_WSASendTo
                 }
                 else {
                     // Domain not in filter list - trace allowed queries
-                    if (DNS_TraceFlag) {
-                        WCHAR msg[512];
-                        Sbie_snwprintf(msg, 512, L"Raw DNS Query Forwarded to Real Server (WSASendTo): %s (Type: %s, Port: 53, Socket: %p)",
-                            domainName,
-                            (qtype == 0x1C00) ? L"AAAA" : (qtype == 0x0100) ? L"A" : L"OTHER",
-                            (void*)(ULONG_PTR)s);
-                        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                    }
+                    Socket_LogForwarded(L"UDP", domainName, qtype, L"WSASendTo", s);
                 }
             }
         }
@@ -1560,9 +1626,9 @@ _FX int Socket_MatchDomainHierarchical(
 //---------------------------------------------------------------------------
 // Socket_BuildDnsResponse
 //
-// Builds a fake DNS response packet with configured IP addresses
+// Builds a fake DNS response packet with configured IP addresses or NXDOMAIN
 //
-// Returns: Length of response packet, or -1 on error
+// Returns: Length of response packet, 0 for pass-through, or -1 on error
 //---------------------------------------------------------------------------
 
 _FX int Socket_BuildDnsResponse(
@@ -1572,10 +1638,35 @@ _FX int Socket_BuildDnsResponse(
     BOOLEAN        block,
     BYTE*          response,
     int            response_size,
-    USHORT         qtype)
+    USHORT         qtype,
+    DNS_TYPE_FILTER* type_filter)
 {
     if (!query || !response || query_len < sizeof(DNS_HEADER) || response_size < 512)
         return -1;
+
+    USHORT qtype_host = _ntohs(qtype);
+    
+    // Block mode (no IPs) should block ALL query types
+    if (!pEntries) {
+        // In block mode, intercept everything regardless of type filter
+        block = TRUE;
+    } else {
+        // Filter mode (with IPs) - check if this type should be filtered
+        BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, qtype_host);
+        
+        if (!should_filter) {
+            // Type not in filter list - pass to real DNS
+            return 0;
+        }
+        
+        // Type is in filter list - check if we can synthesize
+        BOOLEAN can_synthesize = DNS_CanSynthesizeResponse(qtype_host);
+        
+        if (!can_synthesize) {
+            // Filter mode but unsupported type (MX/CNAME/etc.) - return NXDOMAIN
+            block = TRUE;
+        }
+    }
 
     // Copy query to response buffer (up to response_size)
     int copy_len = (query_len < response_size) ? query_len : response_size;
@@ -1584,8 +1675,8 @@ _FX int Socket_BuildDnsResponse(
     DNS_HEADER* resp_header = (DNS_HEADER*)response;
     
     // Set response flags
-    if (block) {
-        // NXDOMAIN response (domain doesn't exist)
+    if (block || !pEntries) {
+        // NXDOMAIN response (domain doesn't exist OR type blocked)
         resp_header->Flags = _htons(0x8183);  // Response, NXDOMAIN
         resp_header->AnswerRRs = _htons(0);
     } else {
@@ -1593,20 +1684,19 @@ _FX int Socket_BuildDnsResponse(
         resp_header->Flags = _htons(0x8180);  // Response, No error, Recursion available
         
         // Count how many IPs we have matching the query type
+        // For ANY queries (type 255), return all A + AAAA records
         USHORT answer_count = 0;
         BOOLEAN has_ipv4 = FALSE;
         BOOLEAN has_ipv6 = FALSE;
+        BOOLEAN is_any_query = (qtype_host == 255);
         
         if (pEntries) {
             IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
             while (entry) {
-                // Convert qtype from network byte order for comparison
-                USHORT qtype_host = _ntohs(qtype);
-                
-                if (qtype_host == DNS_TYPE_A && entry->Type == AF_INET) {
+                if ((qtype_host == DNS_TYPE_A || is_any_query) && entry->Type == AF_INET) {
                     answer_count++;
                     has_ipv4 = TRUE;
-                } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET6) {
+                } else if ((qtype_host == DNS_TYPE_AAAA || is_any_query) && entry->Type == AF_INET6) {
                     answer_count++;
                     has_ipv6 = TRUE;
                 } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET) {
@@ -1617,7 +1707,7 @@ _FX int Socket_BuildDnsResponse(
             }
             
             // Fallback: if AAAA query but no IPv6, use IPv4-mapped IPv6
-            if (_ntohs(qtype) == DNS_TYPE_AAAA && !has_ipv6 && has_ipv4) {
+            if (qtype_host == DNS_TYPE_AAAA && !has_ipv6 && has_ipv4) {
                 // Count IPv4 addresses to map
                 entry = (IP_ENTRY*)List_Head(pEntries);
                 while (entry) {
@@ -1640,11 +1730,11 @@ _FX int Socket_BuildDnsResponse(
     // Add answer records
     int offset = copy_len;
     IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
+    BOOLEAN is_any_query = (qtype_host == 255);  // Check if this is ANY query
     
     // Check if we need IPv4-to-IPv6 mapping (AAAA query with no IPv6 addresses)
     BOOLEAN need_ipv4_mapping = FALSE;
     BOOLEAN has_native_ipv6 = FALSE;
-    USHORT qtype_host = _ntohs(qtype);
     
     if (qtype_host == DNS_TYPE_AAAA) {
         // Check if we have any native IPv6 addresses
@@ -1662,19 +1752,23 @@ _FX int Socket_BuildDnsResponse(
     while (entry && offset + (int)sizeof(DNS_RR) + 16 < response_size) {
         BOOLEAN match = FALSE;
         int rdata_len = 0;
+        USHORT record_type = 0;  // Actual type for this record (A or AAAA)
         BYTE ipv6_mapped[16];  // For IPv4-mapped IPv6 addresses
         
-        if (qtype_host == DNS_TYPE_A && entry->Type == AF_INET) {
+        if ((qtype_host == DNS_TYPE_A || is_any_query) && entry->Type == AF_INET) {
             match = TRUE;
             rdata_len = 4;  // IPv4 address
-        } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET6) {
+            record_type = DNS_TYPE_A;
+        } else if ((qtype_host == DNS_TYPE_AAAA || is_any_query) && entry->Type == AF_INET6) {
             match = TRUE;
             rdata_len = 16;  // IPv6 address
+            record_type = DNS_TYPE_AAAA;
         } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET && need_ipv4_mapping) {
             // AAAA query but only IPv4 available - create IPv4-mapped IPv6 address
             // Format: ::ffff:a.b.c.d (RFC 4291 section 2.5.5.2)
             match = TRUE;
             rdata_len = 16;
+            record_type = DNS_TYPE_AAAA;
             
             // Build IPv4-mapped IPv6: first 10 bytes = 0, next 2 bytes = 0xff, last 4 bytes = IPv4
             memset(ipv6_mapped, 0, 10);
@@ -1689,7 +1783,7 @@ _FX int Socket_BuildDnsResponse(
             
             // Compressed name pointer (0xC00C points to offset 12 - first question name)
             rr->name = _htons(0xC00C);
-            rr->type = _htons(qtype_host);
+            rr->type = _htons(record_type);  // Use actual record type (A or AAAA), not query type
             rr->rr_class = _htons(1);  // IN (Internet)
             rr->ttl = _htonl(300);     // 5 minutes TTL
             rr->rdlength = _htons(rdata_len);
@@ -1697,15 +1791,15 @@ _FX int Socket_BuildDnsResponse(
             offset += sizeof(DNS_RR);
             
             // Copy IP address data
-            if (qtype_host == DNS_TYPE_A && entry->Type == AF_INET) {
+            if (record_type == DNS_TYPE_A && entry->Type == AF_INET) {
                 // IPv4: use Data32[3] for the last 32-bit word
                 memcpy(response + offset, &entry->IP.Data32[3], 4);
                 offset += 4;
-            } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET6) {
+            } else if (record_type == DNS_TYPE_AAAA && entry->Type == AF_INET6) {
                 // IPv6: use Data array (16 bytes)
                 memcpy(response + offset, entry->IP.Data, 16);
                 offset += 16;
-            } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET && need_ipv4_mapping) {
+            } else if (record_type == DNS_TYPE_AAAA && entry->Type == AF_INET && need_ipv4_mapping) {
                 // IPv4-mapped IPv6
                 memcpy(response + offset, ipv6_mapped, 16);
                 offset += 16;

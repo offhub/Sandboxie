@@ -58,8 +58,40 @@ typedef LONG DNS_STATUS;
 #define DNS_TYPE_A      1   // IPv4 address record
 #endif
 
+#ifndef DNS_TYPE_NS
+#define DNS_TYPE_NS     2   // Name server record
+#endif
+
+#ifndef DNS_TYPE_CNAME
+#define DNS_TYPE_CNAME  5   // Canonical name record
+#endif
+
+#ifndef DNS_TYPE_SOA
+#define DNS_TYPE_SOA    6   // Start of authority record
+#endif
+
+#ifndef DNS_TYPE_PTR
+#define DNS_TYPE_PTR    12  // Pointer record
+#endif
+
+#ifndef DNS_TYPE_MX
+#define DNS_TYPE_MX     15  // Mail exchange record
+#endif
+
+#ifndef DNS_TYPE_TXT
+#define DNS_TYPE_TXT    16  // Text record
+#endif
+
 #ifndef DNS_TYPE_AAAA
 #define DNS_TYPE_AAAA   28  // IPv6 address record
+#endif
+
+#ifndef DNS_TYPE_SRV
+#define DNS_TYPE_SRV    33  // Service locator record
+#endif
+
+#ifndef DNS_TYPE_ALL
+#define DNS_TYPE_ALL    255 // Wildcard (ANY) - requests all record types
 #endif
 
 //---------------------------------------------------------------------------
