@@ -31,6 +31,7 @@
 #include "common/map.h"
 #include "common/str_util.h"
 #include "wsa_defs.h"
+#include "dns_filter.h"
 #include "core/svc/sbieiniwire.h"
 #include "common/base64.c"
 #include "core/drv/api_defs.h"
@@ -78,7 +79,7 @@ static BOOLEAN WSA_IsBindIPValid();
 
 static BOOLEAN WSA_RefreshBindIPState();
 
-BOOLEAN WSA_InitNetDnsFilter(HMODULE module);
+BOOLEAN DNSAPI_Init(HMODULE module);
 
 static int WSA_IsBlockedTraffic(const short *addr, int addrlen, int protocol);
 
@@ -1451,6 +1452,45 @@ _FX int WSA_ConnectEx(
     LPDWORD lpdwBytesSent,
     LPOVERLAPPED lpOverlapped)
 {
+    // DNS tracking: Check if connecting to port 53 (must be declared before first use)
+    extern BOOLEAN DNS_FilterEnabled;
+    extern BOOLEAN DNS_TraceFlag;
+    extern BOOLEAN Socket_GetRawDnsFilterEnabled();
+    extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
+    
+    BOOLEAN DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled();
+    
+    // Always log ConnectEx calls when DNS filtering is enabled (for debugging)
+    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_TraceFlag && name) {
+        USHORT destPort = 0;
+        USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
+
+        if (addrFamily == AF_INET && namelen >= sizeof(struct sockaddr_in)) {
+            destPort = _ntohs(((struct sockaddr_in*)name)->sin_port);
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP: ConnectEx() called, AF_INET, port=%d, socket=%p",
+                destPort, (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        else if (addrFamily == AF_INET6 && namelen >= sizeof(struct sockaddr_in6)) {
+            destPort = _ntohs(((struct sockaddr_in6*)name)->sin6_port);
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP: ConnectEx() called, AF_INET6, port=%d, socket=%p",
+                destPort, (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        
+        // Mark socket as DNS if connecting to port 53
+        if (destPort == 53) {
+            Socket_MarkDnsSocket(s, TRUE);
+            
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP DNS: ConnectEx detected port 53, socket=%p marked as DNS",
+                (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+    }
+    
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
