@@ -42,9 +42,9 @@
 //      - Primary filter rule specification
 //      - Format: [process,]domain[:ip1;ip2;...] or [process,]domain (block mode)
 //      - Examples: 
-//        * NetworkDnsFilter=*.ads.com:0.0.0.0  (redirect to loopback)
-//        * NetworkDnsFilter=malware.com        (block all types)
-//        * NetworkDnsFilter=chrome.exe,tracker.com:127.0.0.1
+//        * NetworkDnsFilter=*.example.com:0.0.0.0  (redirect to loopback)
+//        * NetworkDnsFilter=example.org        (block all types)
+//        * NetworkDnsFilter=chrome.exe,example.com:127.0.0.1
 //
 //    NetworkDnsFilterType=<domain>:<types>
 //      - Type-based filtering specification
