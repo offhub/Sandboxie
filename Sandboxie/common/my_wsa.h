@@ -250,5 +250,23 @@ __inline USHORT _ntohs(USHORT PT)
 	return TP;
 }
 
+__inline ULONG _htonl(ULONG HL)
+{
+	ULONG LH;
+	((UCHAR*)&LH)[0] = ((UCHAR*)&HL)[3];
+	((UCHAR*)&LH)[1] = ((UCHAR*)&HL)[2];
+	((UCHAR*)&LH)[2] = ((UCHAR*)&HL)[1];
+	((UCHAR*)&LH)[3] = ((UCHAR*)&HL)[0];
+	return LH;
+}
+
+__inline USHORT _htons(USHORT HS)
+{
+	USHORT SH;
+	((UCHAR*)&SH)[0] = ((UCHAR*)&HS)[1];
+	((UCHAR*)&SH)[1] = ((UCHAR*)&HS)[0];
+	return SH;
+}
+
 
 #endif /* _MY_WSA_H */

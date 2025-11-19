@@ -198,6 +198,7 @@ static DLL Ldr_Dlls[] = {
     { L"d3d9.dll",              Gui_Init_D3D9,                  0},
     { L"sxs.dll",               Sxs_Init,                       0}, // add message to SxsInstallW
     { L"ws2_32.dll",            WSA_Init,                       0}, // network restrictions
+    { L"dnsapi.dll",            DNSAPI_Init,                    0}, // DNS API filtering
     { L"iphlpapi.dll",          IpHlp_Init,                     0}, // ping support
     { L"msi.dll",               Scm_MsiDll,                     0}, // msi installer
     { L"secur32.dll",           Lsa_Init_Secur32,               0}, // xp, vista - LsaRegisterLogonProcess
