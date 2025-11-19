@@ -27,14 +27,57 @@
 //    - Used by: Older applications, some games
 //
 // 2. DnsApi (dnsapi.dll) - Modern Windows DNS API
-//    - Functions: DnsQuery_A, DnsQuery_W
+//    - Functions: DnsQuery_A, DnsQuery_W, DnsQueryEx, DnsQueryRaw
 //    - Returns: DNS_RECORD linked list (absolute pointers)
 //    - Used by: Modern browsers, system utilities, most contemporary apps
 //
 // 3. Raw Socket Interception (ws2_32.dll) - Direct UDP packet filtering
 //    - Functions: sendto, WSASendTo (port 53 traffic)
 //    - Parses: DNS wire format packets (RFC 1035)
-//    - Used by: nslookup, dig, custom DNS clients
+//    - Used by: nslookup, dig, custom DNS clients bypassing high-level APIs
+//    - Control: FilterRawDns (boolean) enables/disables raw socket hooking
+//
+// Configuration Settings:
+//    NetworkDnsFilter=<domain>:<ip_addresses>
+//      - Primary filter rule specification
+//      - Format: [process,]domain[:ip1;ip2;...] or [process,]domain (block mode)
+//      - Examples: 
+//        * NetworkDnsFilter=*.ads.com:0.0.0.0  (redirect to loopback)
+//        * NetworkDnsFilter=malware.com        (block all types)
+//        * NetworkDnsFilter=chrome.exe,tracker.com:127.0.0.1
+//
+//    NetworkDnsFilterType=<domain>:<types>
+//      - Type-based filtering specification
+//      - Format: [process,]domain:type1;type2;... or [process,]domain:*
+//      - Supported types: A, AAAA, MX, TXT, CNAME, etc. (named or numeric TYPE28)
+//      - Examples:
+//        * NetworkDnsFilterType=*.example.com:A;AAAA  (filter only A/AAAA)
+//        * NetworkDnsFilterType=*:*                   (filter all types)
+//      - IMPORTANT: Unsupported types (MX, TXT, SRV, etc.) will be BLOCKED if 
+//                   specified in the type list or when using wildcard (*).
+//                   Only A and AAAA (or ANY) records can be synthesized from IP addresses.
+//                   Don't set NetworkDnsFilterType if you don't want to block 
+//                   unsupported record types.
+//
+//    NetworkDnsFilterExclude=<patterns>
+//      - Exclusion/whitelist patterns (higher priority than NetworkDnsFilter)
+//      - Format: [process,]pattern1;pattern2;... (semicolon-separated)
+//      - Supports wildcards: *.trusted.com, safe.*.domain.com
+//      - Examples:
+//        * NetworkDnsFilterExclude=*.microsoft.com;*.windows.net
+//        * NetworkDnsFilterExclude=chrome.exe,*.google.com
+//
+//    FilterRawDns=y|n
+//      - Boolean: Enable/disable raw socket DNS interception (default: n)
+//      - Per-process support: FilterRawDns=nslookup.exe,y
+//      - NOTE: Only controls hook enablement; actual domain filtering uses
+//              NetworkDnsFilter patterns
+//
+//    DnsTrace=y|n
+//      - Enable DNS filtering activity logging to resource monitor
+//
+//    DnsDebug=y|n
+//      - Enable verbose debug logging for troubleshooting
 //
 // Naming Convention:
 //    WSA_*    - WSALookupService API specific functions
