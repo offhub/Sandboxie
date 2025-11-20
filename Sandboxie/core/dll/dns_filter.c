@@ -62,7 +62,7 @@
 //    NetworkDnsFilterExclude=<patterns>
 //      - Exclusion/whitelist patterns (higher priority than NetworkDnsFilter)
 //      - Format: [process,]pattern1;pattern2;... (semicolon-separated)
-//      - Supports wildcards: *.trusted.com, safe.*.domain.com
+//      - Supports wildcards: *.example.com, safe.*.example.com
 //      - Examples:
 //        * NetworkDnsFilterExclude=*.microsoft.com;*.windows.net
 //        * NetworkDnsFilterExclude=chrome.exe,*.google.com
@@ -2227,8 +2227,9 @@ _FX int WSA_WSALookupServiceNextW(
 
     if (DNS_TraceFlag && ret == NO_ERROR) {
         WCHAR msg[2048];
-        Sbie_snwprintf(msg, ARRAYSIZE(msg), L"DNS Request Found: %s (NS: %d, Hdl: %p)",
-            lpqsResults->lpszServiceInstanceName, lpqsResults->dwNameSpace, hLookup);
+        USHORT query_type = WSA_IsIPv6Query(lpqsResults->lpServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+        Sbie_snwprintf(msg, ARRAYSIZE(msg), L"DNS Request Found: %s (Type: %s, NS: %d, Hdl: %p)",
+            lpqsResults->lpszServiceInstanceName, DNS_GetTypeName(query_type), lpqsResults->dwNameSpace, hLookup);
 
         for (DWORD i = 0; i < lpqsResults->dwNumberOfCsAddrs; i++) {
             IP_ADDRESS ip;
@@ -2780,6 +2781,89 @@ _FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
 }
 
 //---------------------------------------------------------------------------
+// DNS_GetBlockedTag
+//
+// Helper to convert "X Intercepted" tag to "X Blocked" for consistent logging
+//---------------------------------------------------------------------------
+
+static const WCHAR* DNS_GetBlockedTag(const WCHAR* sourceTag, WCHAR* buffer, size_t bufferSize)
+{
+    const WCHAR* interceptedPos = wcsstr(sourceTag, L" Intercepted");
+    if (interceptedPos) {
+        size_t baseLen = interceptedPos - sourceTag;
+        if (baseLen < bufferSize - 10) {  // Leave room for " Blocked" + null
+            wmemcpy(buffer, sourceTag, baseLen);
+            wcscpy(buffer + baseLen, L" Blocked");
+            return buffer;
+        }
+    }
+    return sourceTag;  // Fallback to original tag
+}
+
+//---------------------------------------------------------------------------
+// DNSAPI_FilterDnsQuery
+//
+// Common filtering logic for DnsQuery_W/A/UTF8 - eliminates code duplication
+// Returns TRUE if query was intercepted (filtered/blocked), FALSE to passthrough
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNSAPI_FilterDnsQuery(
+    const WCHAR*            wName,
+    WORD                    wType,
+    LIST*                   pEntries,
+    DNS_TYPE_FILTER*        type_filter,
+    DNS_CHARSET             CharSet,
+    const WCHAR*            sourceTag,
+    PDNSAPI_DNS_RECORD*     ppQueryResults,
+    DNS_STATUS*             pStatus)
+{
+    // Block mode (no IPs) should block ALL query types
+    if (!pEntries) {
+        WCHAR blockTag[128];
+        DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
+                       wName, wType, L"Returning NXDOMAIN");
+        *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
+        return TRUE;
+    }
+
+    // Filter mode (with IPs) - check if this type should be filtered
+    BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
+    
+    if (!should_filter) {
+        // Type not in filter list - pass to real DNS
+        *pStatus = 0;
+        return FALSE;
+    }
+
+    // Type is in filter list - check if we can synthesize or should block
+    if (DNS_CanSynthesizeResponse(wType)) {
+        // Filter mode with supported type: build DNS_RECORD linked list
+        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries, CharSet);
+        
+        if (pRecords) {
+            *ppQueryResults = pRecords;
+            DNS_LogDnsRecords(sourceTag, wName, wType, pRecords);
+            *pStatus = 0;
+            return TRUE;
+        } else {
+            // No matching entries, return name error
+            WCHAR blockTag[128];
+            DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
+                           wName, wType, L"Returning NXDOMAIN");
+            *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
+            return TRUE;
+        }
+    } else {
+        // Unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
+        WCHAR blockTag[128];
+        DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
+                       wName, wType, L"Returning NXDOMAIN");
+        *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
+        return TRUE;
+    }
+}
+
+//---------------------------------------------------------------------------
 // DNSAPI_DnsQuery_W
 //
 // Hook for DnsQuery_W - filters DNS queries using the same rules as
@@ -2802,62 +2886,34 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
         path_lwr[path_len] = L'\0';
         _wcslwr(path_lwr);
 
-    if (DNS_IsExcluded(path_lwr)) {
-        DNS_LogExclusion(path_lwr);
-        Dll_Free(path_lwr);
-        return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-    }        PATTERN* found;
-        if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
-        PVOID* aux = Pattern_Aux(found);
-        if (!aux || !*aux) {
-            DNS_LogPassthrough(L"DnsQuery_W Passthrough", pszName, wType, L"No filter configured, forwarding to real DNS");
+        if (DNS_IsExcluded(path_lwr)) {
+            DNS_LogExclusion(path_lwr);
             Dll_Free(path_lwr);
             return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
         }
-        
+
+        PATTERN* found;
+        if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
+            PVOID* aux = Pattern_Aux(found);
+            if (!aux || !*aux) {
+                DNS_LogPassthrough(L"DnsQuery_W Passthrough", pszName, wType, L"No filter configured, forwarding to real DNS");
+                Dll_Free(path_lwr);
+                return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+            }
+
             LIST* pEntries = NULL;
             DNS_TYPE_FILTER* type_filter = NULL;
             DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
 
-        // Block mode (no IPs) should block ALL query types
-        if (!pEntries) {
-            // In block mode, block everything regardless of type filter
-            DNS_LogBlocked(L"DnsQuery_W Blocked", pszName, wType, L"No IP configured (block mode)");
-            Dll_Free(path_lwr);
-            return DNS_ERROR_RCODE_NAME_ERROR;
-        }
-        
-        // Filter mode (with IPs) - check if this type should be filtered
-        BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
-        
-        if (!should_filter) {
-            // Type not in filter list - pass to real DNS
-            DNS_LogPassthrough(L"DnsQuery_W Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
-            Dll_Free(path_lwr);
-            return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-        }
-        
-            // Type is in filter list - check if we can synthesize or should block
-            if (DNS_CanSynthesizeResponse(wType)) {
-                // Filter mode with supported type: build DNS_RECORD linked list
-                PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries, DnsCharSetUnicode);
-                
-                if (pRecords) {
-                    *ppQueryResults = pRecords;
-                    DNS_LogDnsRecords(L"DnsQuery_W Intercepted", pszName, wType, pRecords);
-                    Dll_Free(path_lwr);
-                    return 0;  // DNS_STATUS success
-                } else {
-                    // No matching entries, return name error
-                    Dll_Free(path_lwr);
-                    return DNS_ERROR_RCODE_NAME_ERROR;
-                }
-            } else {
-                // Unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
-                DNS_LogBlocked(L"DnsQuery_W Blocked", pszName, wType, L"Returning NXDOMAIN");
+            DNS_STATUS status;
+            if (DNSAPI_FilterDnsQuery(pszName, wType, pEntries, type_filter, DnsCharSetUnicode,
+                                      L"DnsQuery_W Intercepted", ppQueryResults, &status)) {
                 Dll_Free(path_lwr);
-                return DNS_ERROR_RCODE_NAME_ERROR;
+                return status;
             }
+
+            // Not filtered - log passthrough and continue to real DNS
+            DNS_LogPassthrough(L"DnsQuery_W Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
         }
 
         Dll_Free(path_lwr);
@@ -2942,42 +2998,15 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
                     DNS_TYPE_FILTER* type_filter = NULL;
                     DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
 
-                    // Block mode (no IPs) should block ALL query types
-                    if (!pEntries) {
-                        DNS_LogBlocked(L"DnsQuery_A Blocked", wName, wType, L"No IP configured (block mode)");
+                    DNS_STATUS status;
+                    if (DNSAPI_FilterDnsQuery(wName, wType, pEntries, type_filter, DnsCharSetAnsi,
+                                              L"DnsQuery_A Intercepted", ppQueryResults, &status)) {
                         Dll_Free(wName);
-                        return DNS_ERROR_RCODE_NAME_ERROR;
+                        return status;
                     }
 
-                    // Filter mode (with IPs) - check if this type should be filtered
-                    BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
-                    
-                    if (!should_filter) {
-                        DNS_LogPassthroughAnsi(L"DnsQuery_A Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
-                        Dll_Free(wName);
-                        return __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-                    }
-
-                    // Type is in filter list - check if we can synthesize
-                    if (DNS_CanSynthesizeResponse(wType)) {
-                        // Build DNS_RECORD linked list using wide domain name
-                        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries, DnsCharSetAnsi);
-                        
-                        if (pRecords) {
-                            *ppQueryResults = pRecords;
-                            DNS_LogDnsRecords(L"DnsQuery_A Intercepted", wName, wType, pRecords);
-                            Dll_Free(wName);  // Free after logging
-                            return 0;
-                        } else {
-                            Dll_Free(wName);
-                            return DNS_ERROR_RCODE_NAME_ERROR;
-                        }
-                    } else {
-                        // Unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
-                        DNS_LogBlocked(L"DnsQuery_A Blocked", wName, wType, L"Returning NXDOMAIN");
-                        Dll_Free(wName);
-                        return DNS_ERROR_RCODE_NAME_ERROR;
-                    }
+                    // Not filtered - log passthrough and continue to real DNS
+                    DNS_LogPassthroughAnsi(L"DnsQuery_A Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
                 }
 
                 Dll_Free(wName);
@@ -3063,41 +3092,15 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
                     DNS_TYPE_FILTER* type_filter = NULL;
                     DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
 
-                    // Block mode (no IPs) should block ALL query types
-                    if (!pEntries) {
-                        DNS_LogBlocked(L"DnsQuery_UTF8 Blocked", wName, wType, L"No IP configured (block mode)");
+                    DNS_STATUS status;
+                    if (DNSAPI_FilterDnsQuery(wName, wType, pEntries, type_filter, DnsCharSetUtf8,
+                                              L"DnsQuery_UTF8 Intercepted", ppQueryResults, &status)) {
                         Dll_Free(wName);
-                        return DNS_ERROR_RCODE_NAME_ERROR;
+                        return status;
                     }
 
-                    // Filter mode (with IPs) - check if this type should be filtered
-                    BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
-                    
-                    if (!should_filter) {
-                        DNS_LogPassthroughAnsi(L"DnsQuery_UTF8 Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
-                        Dll_Free(wName);
-                        return __sys_DnsQuery_UTF8 ? __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved)
-                                                  : __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-                    }
-
-                    // Type is in filter list - check if we can synthesize
-                    if (DNS_CanSynthesizeResponse(wType)) {
-                        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries, DnsCharSetUtf8);
-                        
-                        if (pRecords) {
-                            *ppQueryResults = pRecords;
-                            DNS_LogDnsRecords(L"DnsQuery_UTF8 Intercepted", wName, wType, pRecords);
-                            Dll_Free(wName);  // Free after logging
-                            return 0;
-                        }
-                        Dll_Free(wName);
-                        return DNS_ERROR_RCODE_NAME_ERROR;
-                    } else {
-                        // Unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
-                        DNS_LogBlocked(L"DnsQuery_UTF8 Blocked", wName, wType, L"Returning NXDOMAIN");
-                        Dll_Free(wName);
-                        return DNS_ERROR_RCODE_NAME_ERROR;
-                    }
+                    // Not filtered - log passthrough and continue to real DNS
+                    DNS_LogPassthroughAnsi(L"DnsQuery_UTF8 Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
                 }
 
                 Dll_Free(wName);

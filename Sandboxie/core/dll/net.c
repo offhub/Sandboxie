@@ -1454,14 +1454,14 @@ _FX int WSA_ConnectEx(
 {
     // DNS tracking: Check if connecting to port 53 (must be declared before first use)
     extern BOOLEAN DNS_FilterEnabled;
-    extern BOOLEAN DNS_TraceFlag;
+    extern BOOLEAN DNS_DebugFlag;
     extern BOOLEAN Socket_GetRawDnsFilterEnabled();
     extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
     
     BOOLEAN DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled();
     
-    // Always log ConnectEx calls when DNS filtering is enabled (for debugging)
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_TraceFlag && name) {
+    // Debug log ConnectEx calls when DNS filtering is enabled (controlled by DnsDebug flag)
+    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
 
