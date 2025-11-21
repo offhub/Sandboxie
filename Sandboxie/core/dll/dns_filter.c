@@ -202,6 +202,14 @@ static PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
 // DNS Type Filter Helper Functions (internal use only)
 static BOOLEAN DNS_ParseTypeName(const WCHAR* name, USHORT* type_out);
 
+// DNS Logging Helper Functions (internal use only)
+static void DNS_LogDnsQueryResult(
+    const WCHAR*            sourceTag,
+    const WCHAR*            domain,
+    WORD                    wType,
+    DNS_STATUS              status,
+    PDNSAPI_DNS_RECORD*     ppQueryResults);
+
 // Shared utility functions (implemented in net.c)
 BOOLEAN WSA_GetIP(const short* addr, int addrlen, IP_ADDRESS* pIP);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
@@ -1545,7 +1553,7 @@ _FX void DNS_InitFilterRules(void)
 
         map_init(&WSA_LookupMap, Dll_Pool);
 
-        SCertInfo CertInfo = { 0 };
+        __declspec(align(8)) SCertInfo CertInfo = { 0 };
         if (!NT_SUCCESS(SbieApi_QueryDrvInfo(-1, &CertInfo, sizeof(CertInfo))) || !(CertInfo.active && CertInfo.opt_net)) {
 
             const WCHAR* strings[] = { L"NetworkDnsFilter" , NULL };
@@ -2227,7 +2235,14 @@ _FX int WSA_WSALookupServiceNextW(
 
     if (DNS_TraceFlag && ret == NO_ERROR) {
         WCHAR msg[2048];
-        USHORT query_type = WSA_IsIPv6Query(lpqsResults->lpServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+        // Use original query type from pLookup (if available), not from result structure
+        // Result structure may have different ServiceClassId if DNS returns partial results
+        USHORT query_type;
+        if (pLookup && pLookup->ServiceClassId) {
+            query_type = WSA_IsIPv6Query(pLookup->ServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+        } else {
+            query_type = WSA_IsIPv6Query(lpqsResults->lpServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+        }
         Sbie_snwprintf(msg, ARRAYSIZE(msg), L"DNS Request Found: %s (Type: %s, NS: %d, Hdl: %p)",
             lpqsResults->lpszServiceInstanceName, DNS_GetTypeName(query_type), lpqsResults->dwNameSpace, hLookup);
 
@@ -2513,6 +2528,13 @@ static BOOLEAN DNSAPI_ApplyWindows10DnsQueryExWorkaround(
         pOutcome->Status = status;
         pOutcome->IsAsync = FALSE;  // We completed synchronously
     }
+    
+    // Log the workaround query result (same as normal passthrough logging)
+    // Build tag with " Passthrough Result" suffix for consistency
+    WCHAR logTag[128];
+    Sbie_snwprintf(logTag, 128, L"%s Passthrough Result", sourceTag);
+    PDNSAPI_DNS_RECORD* ppRecords = (status == 0) ? &pRecords : NULL;
+    DNS_LogDnsQueryResult(logTag, queryName, queryType, status, ppRecords);
     
     return TRUE;  // We handled it
 }
@@ -2801,6 +2823,49 @@ static const WCHAR* DNS_GetBlockedTag(const WCHAR* sourceTag, WCHAR* buffer, siz
 }
 
 //---------------------------------------------------------------------------
+// DNS_LogDnsQueryResult
+//
+// Common logging for DnsQuery passthrough results - eliminates duplication
+// Logs query result status and IP addresses (if successful)
+// Note: Status 9501 (DNS_INFO_NO_RECORDS) is normal - means no records of this type exist
+//---------------------------------------------------------------------------
+
+static void DNS_LogDnsQueryResult(
+    const WCHAR*            sourceTag,
+    const WCHAR*            domain,
+    WORD                    wType,
+    DNS_STATUS              status,
+    PDNSAPI_DNS_RECORD*     ppQueryResults)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+
+    WCHAR msg[1024];
+    Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s, Status: %d)",
+        sourceTag, domain, DNS_GetTypeName(wType), status);
+    
+    // Log returned IP addresses if successful
+    if (status == 0 && ppQueryResults && *ppQueryResults) {
+        PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
+        while (pRec) {
+            if (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA) {
+                IP_ADDRESS ip;
+                if (pRec->wType == DNS_TYPE_AAAA) {
+                    memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
+                    WSA_DumpIP(AF_INET6, &ip, msg);
+                } else {
+                    ip.Data32[3] = pRec->Data.A.IpAddress;
+                    WSA_DumpIP(AF_INET, &ip, msg);
+                }
+            }
+            pRec = pRec->pNext;
+        }
+    }
+    
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+//---------------------------------------------------------------------------
 // DNSAPI_FilterDnsQuery
 //
 // Common filtering logic for DnsQuery_W/A/UTF8 - eliminates code duplication
@@ -2922,31 +2987,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
     // Call original DnsQuery_W
     DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
-    if (DNS_TraceFlag && pszName) {
-        WCHAR msg[1024];
-        Sbie_snwprintf(msg, 1024, L"DnsQuery_W Passthrough Result: %s (Type: %s, Status: %d)",
-            pszName, DNS_GetTypeName(wType), status);
-        
-        // Log returned IP addresses if successful
-        if (status == 0 && ppQueryResults && *ppQueryResults) {
-            PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
-            while (pRec) {
-                if (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA) {
-                    IP_ADDRESS ip;
-                    if (pRec->wType == DNS_TYPE_AAAA) {
-                        memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
-                        WSA_DumpIP(AF_INET6, &ip, msg);
-                    } else {
-                        ip.Data32[3] = pRec->Data.A.IpAddress;
-                        WSA_DumpIP(AF_INET, &ip, msg);
-                    }
-                }
-                pRec = pRec->pNext;
-            }
-        }
-        
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-    }
+    DNS_LogDnsQueryResult(L"DnsQuery_W Passthrough Result", pszName, wType, status, ppQueryResults);
 
     return status;
 }
@@ -3017,30 +3058,15 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
     // Call original DnsQuery_A
     DNS_STATUS status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
+    // Convert ANSI domain to wide for logging
     if (DNS_TraceFlag && pszName) {
-        WCHAR msg[1024];
-        Sbie_snwprintf(msg, 1024, L"DnsQuery_A Passthrough Result: %S (Type: %s, Status: %d)",
-            pszName, DNS_GetTypeName(wType), status);
-        
-        // Log returned IP addresses if successful
-        if (status == 0 && ppQueryResults && *ppQueryResults) {
-            PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
-            while (pRec) {
-                if (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA) {
-                    IP_ADDRESS ip;
-                    if (pRec->wType == DNS_TYPE_AAAA) {
-                        memcpy(ip.Data, pRec->Data.AAAA.Ip6Address, 16);
-                        WSA_DumpIP(AF_INET6, &ip, msg);
-                    } else {
-                        ip.Data32[3] = pRec->Data.A.IpAddress;
-                        WSA_DumpIP(AF_INET, &ip, msg);
-                    }
-                }
-                pRec = pRec->pNext;
+        int nameLen = MultiByteToWideChar(CP_ACP, 0, pszName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_ACP, 0, pszName, -1, wName, nameLen)) {
+                DNS_LogDnsQueryResult(L"DnsQuery_A Passthrough Result", wName, wType, status, ppQueryResults);
             }
         }
-        
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
     return status;
@@ -3108,10 +3134,24 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
         }
     }
 
+    DNS_STATUS status;
     if (__sys_DnsQuery_UTF8)
-        return __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+        status = __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+    else
+        status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
-    return __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+    // Convert UTF8 domain to wide for logging
+    if (DNS_TraceFlag && pszName) {
+        int nameLen = MultiByteToWideChar(CP_UTF8, 0, pszName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_UTF8, 0, pszName, -1, wName, nameLen)) {
+                DNS_LogDnsQueryResult(L"DnsQuery_UTF8 Passthrough Result", wName, wType, status, ppQueryResults);
+            }
+        }
+    }
+
+    return status;
 }
 
 //---------------------------------------------------------------------------
@@ -3127,13 +3167,21 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryEx(
     if (DNSAPI_HandleDnsQueryExRequestW(L"DnsQueryEx", pQueryRequest, pQueryResults, pCancelHandle, &outcome))
         return outcome.IsAsync ? DNS_REQUEST_PENDING : outcome.Status;
 
+    DNS_STATUS status = DNS_ERROR_RCODE_NAME_ERROR;
     if (__sys_DnsQueryEx)
-        return __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
+        status = __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
+    else if (__sys_DnsQueryExW)
+        status = __sys_DnsQueryExW(pQueryRequest, pQueryResults, pCancelHandle);
 
-    if (__sys_DnsQueryExW)
-        return __sys_DnsQueryExW(pQueryRequest, pQueryResults, pCancelHandle);
+    // Log result with records from pQueryResults
+    if (pQueryRequest && pQueryRequest->QueryName) {
+        PDNSAPI_DNS_RECORD* ppRecords = (pQueryResults && pQueryResults->QueryStatus == 0) 
+            ? &pQueryResults->pQueryRecords : NULL;
+        DNS_LogDnsQueryResult(L"DnsQueryEx Passthrough Result", 
+            pQueryRequest->QueryName, pQueryRequest->QueryType, status, ppRecords);
+    }
 
-    return DNS_ERROR_RCODE_NAME_ERROR;
+    return status;
 }
 
 _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExW(
@@ -3145,19 +3193,21 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExW(
     if (DNSAPI_HandleDnsQueryExRequestW(L"DnsQueryExW", pQueryRequest, pQueryResults, pCancelHandle, &outcome))
         return outcome.IsAsync ? DNS_REQUEST_PENDING : outcome.Status;
 
-    // Log passthrough to real DNS
+    DNS_STATUS status = DNS_ERROR_RCODE_NAME_ERROR;
+    if (__sys_DnsQueryExW)
+        status = __sys_DnsQueryExW(pQueryRequest, pQueryResults, pCancelHandle);
+    else if (__sys_DnsQueryEx)
+        status = __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
+
+    // Log result with records from pQueryResults
     if (pQueryRequest && pQueryRequest->QueryName) {
-        DNS_LogPassthrough(L"DnsQueryExW Passthrough", pQueryRequest->QueryName, 
-            pQueryRequest->QueryType, L"Forwarding to real DNS");
+        PDNSAPI_DNS_RECORD* ppRecords = (pQueryResults && pQueryResults->QueryStatus == 0) 
+            ? &pQueryResults->pQueryRecords : NULL;
+        DNS_LogDnsQueryResult(L"DnsQueryExW Passthrough Result", 
+            pQueryRequest->QueryName, pQueryRequest->QueryType, status, ppRecords);
     }
 
-    if (__sys_DnsQueryExW)
-        return __sys_DnsQueryExW(pQueryRequest, pQueryResults, pCancelHandle);
-
-    if (__sys_DnsQueryEx)
-        return __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
-
-    return DNS_ERROR_RCODE_NAME_ERROR;
+    return status;
 }
 
 _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExA(
@@ -3176,18 +3226,31 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExA(
     if (DNSAPI_HandleDnsQueryExRequestMultiByte(L"DnsQueryExA", pQueryRequest, pQueryResults, pCancelHandle, CP_ACP, &outcome))
         return outcome.IsAsync ? DNS_REQUEST_PENDING : outcome.Status;
 
-    // Don't log here - already logged in HandleDnsQueryExRequestMultiByte on passthrough path
-
     if (DNS_DebugFlag && pQueryRequest) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"DnsQueryExA CALLING REAL API: pQueryRequest=%p", pQueryRequest);
         DNS_LogDebug(msg);
     }
 
+    DNS_STATUS status = DNS_ERROR_RCODE_NAME_ERROR;
     if (__sys_DnsQueryExA)
-        return __sys_DnsQueryExA(pQueryRequest, pQueryResults, pCancelHandle);
+        status = __sys_DnsQueryExA(pQueryRequest, pQueryResults, pCancelHandle);
 
-    return DNS_ERROR_RCODE_NAME_ERROR;
+    // Convert ANSI domain to wide for logging
+    if (pQueryRequest && pQueryRequest->QueryName) {
+        int nameLen = MultiByteToWideChar(CP_ACP, 0, pQueryRequest->QueryName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_ACP, 0, pQueryRequest->QueryName, -1, wName, nameLen)) {
+                PDNSAPI_DNS_RECORD* ppRecords = (pQueryResults && pQueryResults->QueryStatus == 0) 
+                    ? &pQueryResults->pQueryRecords : NULL;
+                DNS_LogDnsQueryResult(L"DnsQueryExA Passthrough Result", 
+                    wName, pQueryRequest->QueryType, status, ppRecords);
+            }
+        }
+    }
+
+    return status;
 }
 
 _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExUTF8(
@@ -3204,18 +3267,31 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryExUTF8(
     if (DNSAPI_HandleDnsQueryExRequestMultiByte(L"DnsQueryExUTF8", pQueryRequest, pQueryResults, pCancelHandle, CP_UTF8, &outcome))
         return outcome.IsAsync ? DNS_REQUEST_PENDING : outcome.Status;
 
-    // Don't log here - already logged in HandleDnsQueryExRequestMultiByte on passthrough path
-
     if (DNS_DebugFlag && pQueryRequest) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"DnsQueryExUTF8 CALLING REAL API: pQueryRequest=%p", pQueryRequest);
         DNS_LogDebug(msg);
     }
 
+    DNS_STATUS status = DNS_ERROR_RCODE_NAME_ERROR;
     if (__sys_DnsQueryExUTF8)
-        return __sys_DnsQueryExUTF8(pQueryRequest, pQueryResults, pCancelHandle);
+        status = __sys_DnsQueryExUTF8(pQueryRequest, pQueryResults, pCancelHandle);
 
-    return DNS_ERROR_RCODE_NAME_ERROR;
+    // Convert UTF8 domain to wide for logging
+    if (pQueryRequest && pQueryRequest->QueryName) {
+        int nameLen = MultiByteToWideChar(CP_UTF8, 0, pQueryRequest->QueryName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_UTF8, 0, pQueryRequest->QueryName, -1, wName, nameLen)) {
+                PDNSAPI_DNS_RECORD* ppRecords = (pQueryResults && pQueryResults->QueryStatus == 0) 
+                    ? &pQueryResults->pQueryRecords : NULL;
+                DNS_LogDnsQueryResult(L"DnsQueryExUTF8 Passthrough Result", 
+                    wName, pQueryRequest->QueryType, status, ppRecords);
+            }
+        }
+    }
+
+    return status;
 }
 
 //---------------------------------------------------------------------------
