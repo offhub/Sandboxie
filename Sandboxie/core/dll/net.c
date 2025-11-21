@@ -439,7 +439,7 @@ _FX int WSA_WSAStartup(
 
         WSA_ProxyEnabled = TRUE;
 
-        SCertInfo CertInfo = { 0 }; // experimental not yet for public
+        __declspec(align(8)) SCertInfo CertInfo = { 0 }; // experimental not yet for public
         if (NT_SUCCESS(SbieApi_QueryDrvInfo(-1, &CertInfo, sizeof(CertInfo))) && (CertInfo.type == eCertDeveloper || CERT_IS_TYPE(CertInfo, eCertEternal)))
             WSA_ProxyThread = SbieApi_QueryConfBool(NULL, L"UseProxyThreads", FALSE);
 

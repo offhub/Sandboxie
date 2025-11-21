@@ -108,6 +108,26 @@ typedef struct _DNS_RR {
 #define DNS_RESPONSE_SIZE 512  // Maximum DNS response size (RFC 1035)
 
 //---------------------------------------------------------------------------
+// Socket Option Constants (for getsockopt)
+//---------------------------------------------------------------------------
+
+#ifndef SOL_SOCKET
+#define SOL_SOCKET 0xffff
+#endif
+
+#ifndef SO_TYPE
+#define SO_TYPE 0x1008
+#endif
+
+#ifndef SOCK_STREAM
+#define SOCK_STREAM 1
+#endif
+
+#ifndef SOCK_DGRAM
+#define SOCK_DGRAM 2
+#endif
+
+//---------------------------------------------------------------------------
 // Fake Response Queue for Direct DNS Response Injection
 // Per-Socket FIFO Architecture - O(1) enqueue/dequeue, reduced lock contention
 //---------------------------------------------------------------------------
@@ -155,6 +175,7 @@ static BOOLEAN DNS_DebugFlag = FALSE;  // Verbose debug logging (requires DnsTra
 // Track sockets connected to DNS servers (port 53)
 static BOOLEAN Socket_IsDnsSocket(SOCKET s);
 void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);  // Non-static: called from net.c
+static BOOLEAN Socket_IsTcpSocket(SOCKET s);  // Helper to detect TCP vs UDP sockets
 
 // Simple hash table for tracking DNS sockets
 #define DNS_SOCKET_TABLE_SIZE 256
@@ -184,6 +205,10 @@ static P_getpeername __sys_getpeername = NULL;
 
 // select/poll support for TCP DNS local-response mode (P_select is defined in wsa_defs.h)
 static P_select __sys_select = NULL;
+
+// getsockopt function pointer (not hooked, used for socket type detection)
+typedef int (WINAPI *P_getsockopt)(SOCKET s, int level, int optname, char* optval, int* optlen);
+static P_getsockopt __sys_getsockopt = NULL;
 
 //---------------------------------------------------------------------------
 // Forward Declarations
@@ -466,6 +491,11 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module)
     P_recv recv;
     P_recvfrom recvfrom;
 
+    // Initialize getsockopt early (needed for Socket_IsTcpSocket even if hooking is disabled)
+    if (!__sys_getsockopt) {
+        __sys_getsockopt = (P_getsockopt)GetProcAddress(module, "getsockopt");
+    }
+
     // Load FilterRawDns setting
     DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled();
 
@@ -584,6 +614,40 @@ _FX void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns)
 }
 
 //---------------------------------------------------------------------------
+// Socket_IsTcpSocket
+//
+// Check if a socket is TCP (SOCK_STREAM) or UDP (SOCK_DGRAM)
+// Uses getsockopt(SO_TYPE) to query the actual socket type
+//
+// Returns: TRUE if TCP, FALSE if UDP or error
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN Socket_IsTcpSocket(SOCKET s)
+{
+    // Load getsockopt on first use (lazy initialization)
+    if (!__sys_getsockopt) {
+        HMODULE ws2_32 = GetModuleHandleA("ws2_32.dll");
+        if (ws2_32) {
+            __sys_getsockopt = (P_getsockopt)GetProcAddress(ws2_32, "getsockopt");
+        }
+        if (!__sys_getsockopt) {
+            return FALSE;  // Can't detect type, assume UDP
+        }
+    }
+    
+    int sockType = 0;
+    int optLen = sizeof(sockType);
+    
+    // Query socket type using getsockopt
+    if (__sys_getsockopt(s, SOL_SOCKET, SO_TYPE, (char*)&sockType, &optLen) == 0) {
+        return (sockType == SOCK_STREAM);  // TRUE for TCP, FALSE for UDP
+    }
+    
+    // If query fails, assume UDP (safer default for DNS)
+    return FALSE;
+}
+
+//---------------------------------------------------------------------------
 // Socket_connect
 //
 // Hook for connect() - track connections to DNS servers (port 53)
@@ -641,11 +705,12 @@ _FX int Socket_connect(
                 g_DnsServerAddrLens[index] = namelen;
             }
             
-            // Log DNS connection detection
+            // Log DNS connection detection with protocol type
             if (DNS_TraceFlag) {
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"TCP DNS: Connection detected to port 53, socket=%p marked as DNS",
-                    (void*)(ULONG_PTR)s);
+                BOOLEAN isTcp = Socket_IsTcpSocket(s);
+                Sbie_snwprintf(msg, 256, L"%s DNS: Connection detected to port 53, socket=%p marked as DNS",
+                    isTcp ? L"TCP" : L"UDP", (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
         } else {
@@ -719,11 +784,12 @@ _FX int Socket_WSAConnect(
                 g_DnsServerAddrLens[index] = namelen;
             }
             
-            // Log DNS connection detection
+            // Log DNS connection detection with protocol type
             if (DNS_TraceFlag) {
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"TCP DNS: WSAConnect detected port 53, socket=%p marked as DNS",
-                    (void*)(ULONG_PTR)s);
+                BOOLEAN isTcp = Socket_IsTcpSocket(s);
+                Sbie_snwprintf(msg, 256, L"%s DNS: WSAConnect detected port 53, socket=%p marked as DNS",
+                    isTcp ? L"TCP" : L"UDP", (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
         } else {
@@ -1777,7 +1843,7 @@ _FX int Socket_BuildDnsResponse(
         need_ipv4_mapping = !has_native_ipv6;
     }
     
-    while (entry && offset + (int)sizeof(DNS_RR) + 16 < response_size) {
+    while (entry) {
         BOOLEAN match = FALSE;
         int rdata_len = 0;
         USHORT record_type = 0;  // Actual type for this record (A or AAAA)
@@ -1806,6 +1872,13 @@ _FX int Socket_BuildDnsResponse(
         }
         
         if (match) {
+            // Check if we have enough space BEFORE writing (bounds check)
+            // Need: sizeof(DNS_RR) + rdata_len bytes, must fit within response_size
+            if (offset + (int)sizeof(DNS_RR) + rdata_len > response_size) {
+                // Not enough space - stop adding records
+                break;
+            }
+            
             // Build DNS resource record
             DNS_RR* rr = (DNS_RR*)(response + offset);
             

@@ -255,6 +255,10 @@ static P_DnsQueryExUTF8 __sys_DnsQueryExUTF8 = NULL;
 static P_DnsQueryRaw __sys_DnsQueryRaw = NULL;
 static P_DnsQueryRawResultFree __sys_DnsQueryRawResultFree = NULL;
 
+// Windows version detection for DnsQueryEx workaround
+// -1 = not checked, 0 = workaround not needed, 1 = workaround needed
+static int DNS_NeedsDnsQueryExWorkaround = -1;
+
 typedef struct _DNSAPI_EX_FILTER_RESULT {
     DNS_STATUS Status;
     BOOLEAN    IsAsync;
@@ -1565,8 +1569,14 @@ _FX void DNS_InitFilterRules(void)
 
     // If there are any DnsTrace options set, then output this debug string
     WCHAR wsTraceOptions[4];
-    if (SbieApi_QueryConf(NULL, L"DnsTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0')
+    if (SbieApi_QueryConf(NULL, L"DnsTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0') {
         DNS_TraceFlag = TRUE;
+        // Enable DNS filtering infrastructure even without filter rules to allow logging
+        if (!DNS_FilterEnabled) {
+            DNS_FilterEnabled = TRUE;
+            map_init(&WSA_LookupMap, Dll_Pool);
+        }
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -2471,6 +2481,99 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
 }
 
 //---------------------------------------------------------------------------
+// DNS_CheckIfDnsQueryExWorkaroundNeeded
+//
+// Detects if current Windows version needs the DnsQueryEx synchronous bug workaround.
+// Bug exists in: Windows 10 all builds, Server 2016 (1607), Server 2019 (1809)
+// Bug fixed in: Windows 11 (22000+), Server 2022 (20348+)
+//
+// Returns: TRUE if workaround needed, FALSE if OS has fix
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNS_CheckIfDnsQueryExWorkaroundNeeded(void)
+{
+    // Check cache first
+    if (DNS_NeedsDnsQueryExWorkaround >= 0) {
+        return (DNS_NeedsDnsQueryExWorkaround == 1);
+    }
+
+    // Get Windows version (RtlGetVersion always returns real version, unlike GetVersionEx)
+    typedef LONG (WINAPI *P_RtlGetVersion)(PRTL_OSVERSIONINFOW);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) {
+        DNS_NeedsDnsQueryExWorkaround = 1;  // Assume workaround needed if can't detect
+        return TRUE;
+    }
+
+    P_RtlGetVersion pRtlGetVersion = (P_RtlGetVersion)GetProcAddress(ntdll, "RtlGetVersion");
+    if (!pRtlGetVersion) {
+        DNS_NeedsDnsQueryExWorkaround = 1;  // Assume workaround needed if can't detect
+        return TRUE;
+    }
+
+    RTL_OSVERSIONINFOW osvi;
+    ZeroMemory(&osvi, sizeof(osvi));
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    
+    if (pRtlGetVersion(&osvi) != 0) {
+        DNS_NeedsDnsQueryExWorkaround = 1;  // Assume workaround needed if can't detect
+        return TRUE;
+    }
+
+    // Windows 11 is version 10.0 build 22000+
+    // Server 2022 is version 10.0 build 20348+
+    // Windows 10 is version 10.0 build < 22000
+    // Server 2016/2019 are version 10.0 build < 20348
+    
+    if (osvi.dwMajorVersion > 10) {
+        // Future Windows versions (12+) - assume bug is fixed
+        DNS_NeedsDnsQueryExWorkaround = 0;
+        if (DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"DnsQueryEx workaround: Not needed (Windows %d.%d build %d)",
+                osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
+            DNS_LogDebug(msg);
+        }
+        return FALSE;
+    }
+    
+    if (osvi.dwMajorVersion == 10 && osvi.dwMinorVersion == 0) {
+        // Windows 11 (22000+) or Server 2022 (20348+) have the fix
+        if (osvi.dwBuildNumber >= 22000 || osvi.dwBuildNumber >= 20348) {
+            DNS_NeedsDnsQueryExWorkaround = 0;
+            if (DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"DnsQueryEx workaround: Not needed (Windows 10.0 build %d - bug fixed)",
+                    osvi.dwBuildNumber);
+                DNS_LogDebug(msg);
+            }
+            return FALSE;
+        }
+        
+        // Windows 10 or Server 2016/2019 - needs workaround
+        DNS_NeedsDnsQueryExWorkaround = 1;
+        if (DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"DnsQueryEx workaround: NEEDED (Windows 10.0 build %d - has bug)",
+                osvi.dwBuildNumber);
+            DNS_LogDebug(msg);
+        }
+        return TRUE;
+    }
+    
+    // Older Windows (Vista, 7, 8, 8.1) - DnsQueryEx might not exist or behave differently
+    // Apply workaround to be safe
+    DNS_NeedsDnsQueryExWorkaround = 1;
+    if (DNS_DebugFlag) {
+        WCHAR msg[256];
+        Sbie_snwprintf(msg, 256, L"DnsQueryEx workaround: NEEDED (Windows %d.%d build %d - legacy OS)",
+            osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber);
+        DNS_LogDebug(msg);
+    }
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
 // DNSAPI_ApplyWindows10DnsQueryExWorkaround
 //
 // Workaround for Windows 10 DnsQueryEx bug where queries without callbacks
@@ -2479,7 +2582,7 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
 // See: https://dblohm7.ca/blog/2022/05/06/dnsqueryex-needs-love/
 //
 // This function uses DnsQuery_W synchronously instead, which doesn't have
-// the bug. Works on all Windows versions (10/11/Server).
+// the bug. Only called on Windows versions with the bug (Win10, Server 2016/2019).
 //---------------------------------------------------------------------------
 
 static BOOLEAN DNSAPI_ApplyWindows10DnsQueryExWorkaround(
@@ -2501,17 +2604,63 @@ static BOOLEAN DNSAPI_ApplyWindows10DnsQueryExWorkaround(
         return FALSE;  // Can't apply workaround, let caller use real DnsQueryEx
     }
     
+    // Calculate masked options first (before debug logging)
+    // Mask = 0x007E3FFF = bits 0-13 (standard flags) + bits 17-22 (multicast/encoding flags)
+    DWORD dwOptions = (DWORD)(queryOptions & 0x007E3FFF);
+    
     if (DNS_DebugFlag) {
         WCHAR msg[512];
         Sbie_snwprintf(msg, 512, L"%s: No callback provided, using DnsQuery_W to avoid Windows 10 bug", sourceTag);
+        DNS_LogDebug(msg);
+        Sbie_snwprintf(msg, 512, L"%s: queryOptions=0x%I64X, dwOptions=0x%08X, queryType=%d", 
+            sourceTag, queryOptions, dwOptions, queryType);
         DNS_LogDebug(msg);
     }
     
     // Call DnsQuery_W synchronously (this always works correctly)
     // Note: DnsQuery_W uses DWORD for options, DnsQueryEx uses ULONG64
+    // DnsQuery_W only supports a subset of options - unsupported options cause Error 87
+    //
+    // Analysis from logs: queryOptions like 0x800040006000 contain:
+    //   High 32 bits (0x80004000xxxx): DnsQueryEx-specific extended flags (DoH/DoT/Async)
+    //   Low 32 bits (0x00006000/0x26000): Mixed legacy + DnsQueryEx-specific flags
+    //   Example: 0x6000 = DUAL_ADDR (0x4000) | ADDRCONFIG (0x2000)
+    //
+    // Flags shared by DnsQuery and DnsQueryEx (safe to pass - per Microsoft docs):
+    // 0x00000001 DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE
+    // 0x00000002 DNS_QUERY_USE_TCP_ONLY
+    // 0x00000004 DNS_QUERY_NO_RECURSION
+    // 0x00000008 DNS_QUERY_BYPASS_CACHE
+    // 0x00000010 DNS_QUERY_NO_WIRE_QUERY
+    // 0x00000020 DNS_QUERY_NO_LOCAL_NAME
+    // 0x00000040 DNS_QUERY_NO_HOSTS_FILE
+    // 0x00000080 DNS_QUERY_NO_NETBT
+    // 0x00000100 DNS_QUERY_WIRE_ONLY
+    // 0x00000200 DNS_QUERY_RETURN_MESSAGE
+    // 0x00000400 DNS_QUERY_MULTICAST_ONLY (Vista+)
+    // 0x00000800 DNS_QUERY_NO_MULTICAST
+    // 0x00001000 DNS_QUERY_TREAT_AS_FQDN
+    // 0x00002000 DNS_QUERY_ADDRCONFIG (Win7+)
+    // 0x00020000 DNS_QUERY_MULTICAST_WAIT (Vista+)
+    // 0x00040000 DNS_QUERY_MULTICAST_VERIFY (Vista+)
+    // 0x00100000 DNS_QUERY_DONT_RESET_TTL_VALUES
+    // 0x00200000 DNS_QUERY_DISABLE_IDN_ENCODING (Win8+)
+    // 0x00800000 DNS_QUERY_APPEND_MULTILABEL
+    //
+    // DnsQueryEx-only flags (Windows 10+, MUST be stripped for DnsQuery_W):
+    // 0x00004000  DNS_QUERY_DUAL_ADDR (Win7+ DnsQueryEx-specific, queries both A+AAAA)
+    // 0x00008000+ DNS_QUERY_DOH, DNS_QUERY_DOT, etc.
+    // 0x01000000+ High byte extended flags (async, validation, SNI, etc.)
+    //
+    // Safe mask strategy: Include ONLY legacy DnsQuery flags (bits 0-13, 17-22)
+    // Exclude: bit 14 (DUAL_ADDR), bits 15-16 (reserved/DnsQueryEx), bits 23+ (extended)
+    // 
+    // Based on Microsoft official documentation (learn.microsoft.com/en-us/windows/win32/dns/dns-constants):
+    // dwOptions already calculated above with mask 0x007E3FFF
+    
     PDNSAPI_DNS_RECORD pRecords = NULL;
     DNS_STATUS status = __sys_DnsQuery_W(queryName, queryType, 
-        (DWORD)queryOptions, NULL, &pRecords, NULL);
+        dwOptions, NULL, &pRecords, NULL);
     
     // Populate DnsQueryEx result structure
     if (pQueryResults->Version == 0)
@@ -2546,6 +2695,23 @@ static BOOLEAN DNSAPI_HandleDnsQueryExRequestW(
     PDNS_QUERY_CANCEL        pCancelHandle,
     DNSAPI_EX_FILTER_RESULT* pOutcome)
 {
+    // CRITICAL: Apply Windows 10 workaround FIRST for all synchronous calls (no callback)
+    // Only on Windows versions with the bug (Win10, Server 2016/2019).
+    // Windows 11+ and Server 2022+ have the fix, so let async APIs work naturally.
+    if (pQueryRequest && pQueryResults && pQueryRequest->QueryName && 
+        pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1 &&
+        pQueryRequest->pQueryCompletionCallback == NULL &&
+        DNS_CheckIfDnsQueryExWorkaroundNeeded()) {
+        return DNSAPI_ApplyWindows10DnsQueryExWorkaround(
+            sourceTag,
+            pQueryRequest->QueryName,
+            pQueryRequest->QueryType,
+            pQueryRequest->QueryOptions,
+            pQueryResults,
+            pCancelHandle,
+            pOutcome);
+    }
+
     if (!DNS_FilterEnabled || !pQueryRequest || !pQueryResults)
         return FALSE;
 
@@ -2567,26 +2733,6 @@ static BOOLEAN DNSAPI_HandleDnsQueryExRequestW(
         DnsCharSetUnicode,
         pOutcome);
     
-    // If we're not handling this query (passthrough), but there's NO callback,
-    // we MUST handle it ourselves to work around Windows 10 DnsQueryEx bug.
-    // The bug: DnsQueryEx without callback can return ERROR_IO_PENDING instead
-    // of completing synchronously, leaving async operation running that will
-    // crash when it tries to access stack memory after caller returns.
-    // See: https://dblohm7.ca/blog/2022/05/06/dnsqueryex-needs-love/
-    //
-    // Apply workaround for all passthrough cases without callback to be safe.
-    // The overhead is minimal (one DnsQuery_W call instead of DnsQueryEx call).
-    if (!result && pQueryRequest->pQueryCompletionCallback == NULL && pQueryRequest->QueryName) {
-        return DNSAPI_ApplyWindows10DnsQueryExWorkaround(
-            sourceTag,
-            pQueryRequest->QueryName,
-            pQueryRequest->QueryType,
-            pQueryRequest->QueryOptions,
-            pQueryResults,
-            pCancelHandle,
-            pOutcome);
-    }
-    
     return result;
 }
 
@@ -2598,11 +2744,33 @@ static BOOLEAN DNSAPI_HandleDnsQueryExRequestMultiByte(
     UINT                     codePage,
     DNSAPI_EX_FILTER_RESULT* pOutcome)
 {
-    if (!DNS_FilterEnabled || !pQueryRequest || !pQueryResults)
-        return FALSE;
-
     // Cast to ANSI structure (both ANSI and UTF8 have identical layouts)
     PDNS_QUERY_REQUEST_A pReq = (PDNS_QUERY_REQUEST_A)pQueryRequest;
+
+    // CRITICAL: Apply Windows 10 workaround FIRST for all synchronous calls (no callback)
+    // Only on Windows versions with the bug (Win10, Server 2016/2019).
+    // Windows 11+ and Server 2022+ have the fix, so let async APIs work naturally.
+    if (pReq && pQueryResults && pReq->QueryName && 
+        pReq->Version >= DNS_QUERY_REQUEST_VERSION1 &&
+        pReq->pQueryCompletionCallback == NULL &&
+        DNS_CheckIfDnsQueryExWorkaroundNeeded()) {
+        
+        int nameLen = MultiByteToWideChar(codePage, 0, pReq->QueryName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen <= 512) {
+            PWSTR wName = (PWSTR)Dll_Alloc(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(codePage, 0, pReq->QueryName, -1, wName, nameLen)) {
+                BOOLEAN workaround_result = DNSAPI_ApplyWindows10DnsQueryExWorkaround(
+                    sourceTag, wName, pReq->QueryType, pReq->QueryOptions,
+                    pQueryResults, pCancelHandle, pOutcome);
+                Dll_Free(wName);
+                return workaround_result;
+            }
+            if (wName) Dll_Free(wName);
+        }
+    }
+
+    if (!DNS_FilterEnabled || !pQueryRequest || !pQueryResults)
+        return FALSE;
     
     if (!pReq->QueryName)
         return FALSE;
@@ -2637,29 +2805,6 @@ static BOOLEAN DNSAPI_HandleDnsQueryExRequestMultiByte(
         sourceTag,
         CharSet,
         pOutcome);
-    
-    // If we're not handling this query (passthrough), but there's NO callback,
-    // we MUST handle it ourselves to work around Windows 10 DnsQueryEx bug.
-    // The bug: DnsQueryEx without callback can return ERROR_IO_PENDING instead
-    // of completing synchronously, leaving async operation running that will
-    // crash when it tries to access stack memory after caller returns.
-    // See: https://dblohm7.ca/blog/2022/05/06/dnsqueryex-needs-love/
-    //
-    // Apply workaround for all passthrough cases without callback to be safe.
-    // The overhead is minimal (one DnsQuery_W call instead of DnsQueryEx call).
-    if (!result && pReq->pQueryCompletionCallback == NULL) {
-        BOOLEAN workaroundResult = DNSAPI_ApplyWindows10DnsQueryExWorkaround(
-            sourceTag,
-            wName,
-            pReq->QueryType,
-            pReq->QueryOptions,
-            pQueryResults,
-            pCancelHandle,
-            pOutcome);
-        
-        Dll_Free(wName);
-        return workaroundResult;
-    }
     
     // Free the allocated wide string
     Dll_Free(wName);
@@ -2841,8 +2986,33 @@ static void DNS_LogDnsQueryResult(
         return;
 
     WCHAR msg[1024];
-    Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s, Status: %d)",
-        sourceTag, domain, DNS_GetTypeName(wType), status);
+    
+    // Check what types were actually returned (for type mismatch detection)
+    BOOLEAN hasA = FALSE, hasAAAA = FALSE;
+    if (status == 0 && ppQueryResults && *ppQueryResults) {
+        PDNSAPI_DNS_RECORD pRec = *ppQueryResults;
+        while (pRec) {
+            if (pRec->wType == DNS_TYPE_A) hasA = TRUE;
+            if (pRec->wType == DNS_TYPE_AAAA) hasAAAA = TRUE;
+            pRec = pRec->pNext;
+        }
+    }
+    
+    // Build status message - show returned type if different from requested
+    if (status == 0 && ppQueryResults && *ppQueryResults) {
+        WORD returnedType = (*ppQueryResults)->wType;
+        if (returnedType != wType && (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA)) {
+            // Type mismatch: requested AAAA but got A, or vice versa
+            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s, Status: %d, Returned: %s)",
+                sourceTag, domain, DNS_GetTypeName(wType), status, DNS_GetTypeName(returnedType));
+        } else {
+            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s, Status: %d)",
+                sourceTag, domain, DNS_GetTypeName(wType), status);
+        }
+    } else {
+        Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s, Status: %d)",
+            sourceTag, domain, DNS_GetTypeName(wType), status);
+    }
     
     // Log returned IP addresses if successful
     if (status == 0 && ppQueryResults && *ppQueryResults) {

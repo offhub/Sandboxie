@@ -107,14 +107,109 @@ typedef LONG DNS_STATUS;
 
 //---------------------------------------------------------------------------
 // DNS Query Options
+//
+// Flags shared by both DnsQuery and DnsQueryEx (safe for DnsQuery_W workaround):
+// These flags are compatible with legacy DnsQuery API and can be passed through
+// when converting DnsQueryEx calls to DnsQuery_W on Windows 10 (bug workaround).
 //---------------------------------------------------------------------------
 
 #ifndef DNS_QUERY_STANDARD
-#define DNS_QUERY_STANDARD          0x00000000
+#define DNS_QUERY_STANDARD                    0x00000000
+#endif
+
+#ifndef DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE
+#define DNS_QUERY_ACCEPT_TRUNCATED_RESPONSE   0x00000001
+#endif
+
+#ifndef DNS_QUERY_USE_TCP_ONLY
+#define DNS_QUERY_USE_TCP_ONLY                0x00000002
+#endif
+
+#ifndef DNS_QUERY_NO_RECURSION
+#define DNS_QUERY_NO_RECURSION                0x00000004
 #endif
 
 #ifndef DNS_QUERY_BYPASS_CACHE
-#define DNS_QUERY_BYPASS_CACHE      0x00000008
+#define DNS_QUERY_BYPASS_CACHE                0x00000008
+#endif
+
+#ifndef DNS_QUERY_NO_WIRE_QUERY
+#define DNS_QUERY_NO_WIRE_QUERY               0x00000010
+#endif
+
+#ifndef DNS_QUERY_NO_LOCAL_NAME
+#define DNS_QUERY_NO_LOCAL_NAME               0x00000020
+#endif
+
+#ifndef DNS_QUERY_NO_HOSTS_FILE
+#define DNS_QUERY_NO_HOSTS_FILE               0x00000040
+#endif
+
+#ifndef DNS_QUERY_NO_NETBT
+#define DNS_QUERY_NO_NETBT                    0x00000080
+#endif
+
+#ifndef DNS_QUERY_WIRE_ONLY
+#define DNS_QUERY_WIRE_ONLY                   0x00000100  // Legacy flag
+#endif
+
+#ifndef DNS_QUERY_RETURN_MESSAGE
+#define DNS_QUERY_RETURN_MESSAGE              0x00000200
+#endif
+
+#ifndef DNS_QUERY_TREAT_AS_FQDN
+#define DNS_QUERY_TREAT_AS_FQDN               0x00001000
+#endif
+
+#ifndef DNS_QUERY_DONT_RESET_TTL_VALUES
+#define DNS_QUERY_DONT_RESET_TTL_VALUES       0x00002000
+#endif
+
+#ifndef DNS_QUERY_DISABLE_IDN_ENCODING
+#define DNS_QUERY_DISABLE_IDN_ENCODING        0x00004000
+#endif
+
+#ifndef DNS_QUERY_MULTICAST_ONLY
+#define DNS_QUERY_MULTICAST_ONLY              0x00000400
+#endif
+
+#ifndef DNS_QUERY_NO_MULTICAST
+#define DNS_QUERY_NO_MULTICAST                0x00000800
+#endif
+
+#ifndef DNS_QUERY_ADDRCONFIG
+#define DNS_QUERY_ADDRCONFIG                  0x00002000  // Windows 7+
+#endif
+
+#ifndef DNS_QUERY_DUAL_ADDR
+#define DNS_QUERY_DUAL_ADDR                   0x00004000  // Windows 7+ DnsQueryEx only
+#endif
+
+#ifndef DNS_QUERY_MULTICAST_WAIT
+#define DNS_QUERY_MULTICAST_WAIT              0x00020000
+#endif
+
+#ifndef DNS_QUERY_MULTICAST_VERIFY
+#define DNS_QUERY_MULTICAST_VERIFY            0x00040000
+#endif
+
+#ifndef DNS_QUERY_DONT_RESET_TTL_VALUES
+#define DNS_QUERY_DONT_RESET_TTL_VALUES       0x00100000
+#endif
+
+#ifndef DNS_QUERY_DISABLE_IDN_ENCODING
+#define DNS_QUERY_DISABLE_IDN_ENCODING        0x00200000
+#endif
+
+#ifndef DNS_QUERY_APPEND_MULTILABEL
+#define DNS_QUERY_APPEND_MULTILABEL           0x00800000
+#endif
+
+// Safe mask for DnsQuery_W compatibility (bits 0-13, 17-22)
+// Excludes DnsQueryEx-specific flags: bit 14 (DUAL_ADDR), bits 15-16, bits 23+
+// Based on Microsoft documentation: learn.microsoft.com/en-us/windows/win32/dns/dns-constants
+#ifndef DNS_QUERY_W_SAFE_MASK
+#define DNS_QUERY_W_SAFE_MASK                 0x007E3FFF
 #endif
 
 //---------------------------------------------------------------------------
