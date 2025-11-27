@@ -461,8 +461,18 @@ int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst, USHORT *type)
 	tmp[src_len] = L'\0';
 	
 	USHORT af = wcschr(tmp, L':') != NULL ? AF_INET6 : AF_INET;
-	//dst->Type = af
-    int ret = _inet_pton(af, tmp, dst->Data);
+	
+	// For IPv4, store at Data[12-15] to maintain consistent format with IPv4-mapped IPv6
+	// IPv6 uses full Data[0-15], IPv4 uses Data[12-15] (same as Data32[3])
+    int ret;
+	if (af == AF_INET) {
+		// Clear first 12 bytes for consistency
+		memset(dst->Data, 0, 12);
+		ret = _inet_pton(af, tmp, &dst->Data[12]);
+	} else {
+		ret = _inet_pton(af, tmp, dst->Data);
+	}
+	
 	if (type) *type = af;
     return ret;
 }
@@ -702,16 +712,9 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 	const wchar_t *p, *op;
 
 	if (af == AF_INET) {
-		struct in_addr temp;
-		int ret = _inet_aton(src, &temp);
-		// IPv4-mapped IPv6 addresses, eg. ::FFFF:192.168.0.1
-		ULONG* Data32 = (ULONG*)dst;
-        Data32[0] = 0;
-        Data32[1] = 0;
-        Data32[2] = 0xFFFF0000;
-		Data32[3] = temp.S_un.S_addr;
-		return ret;
-		//return _inet_aton(src, dst);
+		// Store raw IPv4 address (4 bytes) at dst
+		// Note: dst may point to Data[12] for IPv4-in-IPv6 format, so don't write IPv4-mapped format here
+		return _inet_aton(src, dst);
 	}
 
 	if(af != AF_INET6){

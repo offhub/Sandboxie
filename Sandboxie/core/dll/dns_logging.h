@@ -1,0 +1,169 @@
+/*
+ * Copyright 2022 David Xanatos, xanasoft.com
+ *
+ * This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _DNS_LOGGING_H
+#define _DNS_LOGGING_H
+
+#include <windows.h>
+#include <windns.h>
+#include "dnsapi_defs.h"
+#include "common/my_wsa.h"
+
+//---------------------------------------------------------------------------
+// DNS Logging Module
+//
+// Provides centralized logging functionality for DNS filtering operations.
+// All DNS-related logging functions have been moved here to separate
+// concerns and improve code organization.
+//---------------------------------------------------------------------------
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+//---------------------------------------------------------------------------
+// External dependencies (must be provided by caller)
+//---------------------------------------------------------------------------
+
+// Forward declare types used in signatures to avoid heavy includes
+typedef struct _IP_ADDRESS IP_ADDRESS;
+struct _IP_ENTRY;
+
+// DNS filter state flags (from dns_filter.c)
+extern BOOLEAN DNS_TraceFlag;
+extern BOOLEAN DNS_DebugFlag;
+
+// DNS query type name resolver (from dns_filter.c)
+const WCHAR* DNS_GetTypeName(WORD wType);
+
+// Utility functions (from net.c)
+void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
+
+//---------------------------------------------------------------------------
+// Duplicate log suppression
+//---------------------------------------------------------------------------
+
+// Initialize and check if a domain/type combination should be suppressed
+BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, USHORT wType);
+
+// Initialize suppression settings (called during DNS filter initialization)
+void DNS_InitSuppressLogSettings(BOOLEAN enabled, ULONGLONG windowMs);
+
+// Get current suppression settings
+void DNS_GetSuppressLogSettings(BOOLEAN* enabled, ULONGLONG* windowMs);
+
+//---------------------------------------------------------------------------
+// General DNS logging functions
+//---------------------------------------------------------------------------
+
+// Log a simple DNS message with domain and type
+void DNS_LogSimple(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* suffix);
+
+// Log DNS domain matched exclusion list
+void DNS_LogExclusion(const WCHAR* domain);
+
+// Log DNS request with IP addresses (intercepted)
+void DNS_LogIntercepted(const WCHAR* prefix, const WCHAR* domain, WORD wType, LIST* pEntries);
+
+// Log DNS request blocked
+void DNS_LogBlocked(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
+
+// Log passthrough to real DNS
+void DNS_LogPassthrough(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
+
+// Log type filter passthrough (negated types)
+void DNS_LogTypeFilterPassthrough(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
+
+// Log passthrough for ANSI domain names
+void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WORD wType, const WCHAR* reason);
+
+// Log DNS response from DNS_RECORD list
+void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType, 
+                       PDNSAPI_DNS_RECORD pRecords, const WCHAR* suffix, BOOLEAN is_passthrough);
+
+//---------------------------------------------------------------------------
+// DnsQuery-specific logging
+//---------------------------------------------------------------------------
+
+// Log DnsQuery passthrough results
+void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
+                           DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults);
+
+// Log DnsQueryEx status (PENDING, error, no records)
+void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status);
+
+// Log DNS_RECORD results with IP addresses (async callbacks)
+void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* domain, WORD wType,
+                                      DNS_STATUS status, PDNSAPI_DNS_RECORD pRecords);
+
+//---------------------------------------------------------------------------
+// Raw socket DNS logging (used by socket_hooks.c)
+//---------------------------------------------------------------------------
+
+void DNS_LogRawSocketIntercepted(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                                  LIST* pEntries, const WCHAR* func_suffix);
+
+void DNS_LogRawSocketBlocked(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                             const WCHAR* reason, const WCHAR* func_suffix);
+
+void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                           int query_len, int response_len, const WCHAR* func_suffix, 
+                           SOCKET s);
+
+//---------------------------------------------------------------------------
+// WSALookupService-specific logging
+//---------------------------------------------------------------------------
+
+void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, 
+                       HANDLE handle, BOOLEAN is_blocked, LIST* pEntries);
+
+void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, 
+                       HANDLE handle, int errCode, WORD actualQueryType);
+
+void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type);
+
+void WSA_FormatGuid(LPGUID lpGuid, WCHAR* buffer, SIZE_T bufferSize);
+
+BOOLEAN WSA_IsIPv6Query(LPGUID lpServiceClassId);
+
+//---------------------------------------------------------------------------
+// Debug logging helpers
+//---------------------------------------------------------------------------
+
+void DNS_LogDebug(const WCHAR* message);
+
+void DNS_FormatIPv4(WCHAR* buffer, size_t bufSize, const BYTE* ipData);
+
+void DNS_LogIPEntry(const struct _IP_ENTRY* entry);
+
+void DNS_LogWSAFillStart(BOOLEAN isIPv6, SIZE_T ipCount, void* listHead);
+
+void DNS_LogWSALookupCall(HANDLE hLookup, DWORD bufSize, BOOLEAN noMore, void* pEntries);
+
+void DNS_LogWSAFillFailure(HANDLE hLookup, DWORD error, DWORD bufSize);
+
+void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQueryResults,
+                            DWORD version, void* queryName);
+
+// Exclusion initialization logging (avoid dependency on internal struct)
+void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // _DNS_LOGGING_H
