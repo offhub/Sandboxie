@@ -25,10 +25,19 @@
 #include "dll.h"
 #include "dns_logging.h"
 #include "dns_filter.h"
+#include <windows.h>
+#include <wchar.h>
+#include <windns.h>
+#include "common/my_wsa.h"
+#include "wsa_defs.h"
 #include <SvcGuid.h>
 
 // External timing function
 ULONGLONG GetTickCount64();
+
+// External functions from net.c/dns_filter.c
+BOOLEAN WSA_GetIP(const SOCKADDR* addr, int addrlen, IP_ADDRESS* pIP);
+void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
 // Suppression state (moved from dns_filter.c)
 static BOOLEAN DNS_SuppressLogEnabled = TRUE;
@@ -732,5 +741,131 @@ _FX void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value)
         Sbie_snwprintf(msg, 512, L"DNS Exclusion Init: Global, Patterns='%s'", value);
 
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+//---------------------------------------------------------------------------
+// DnsQueryEx Debug Logging
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogQueryExInvalidVersion(DWORD version)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: Invalid Version=%d (expected 1-3), passing through", version);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExVersion3(BOOLEAN isNetworkQueryRequired, DWORD networkIndex, DWORD cServers, void* pServers)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: VERSION3 detected - IsNetworkQueryRequired=%d, RequiredNetworkIndex=%u, cCustomServers=%u, pCustomServers=%p",
+        isNetworkQueryRequired, networkIndex, cServers, pServers);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExEntry(const WCHAR* queryName, WORD queryType, DWORD version, ULONG64 options, DWORD interfaceIndex, BOOLEAN hasCallback)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx Entry: QueryName=%s, Type=%s, Version=%d, Options=0x%llX, InterfaceIndex=%u, HasCallback=%d",
+        queryName, DNS_GetTypeName(queryType), version, options, interfaceIndex, hasCallback);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExCorruptOptions(ULONG64 corruptOptions)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: CORRUPT QueryOptions detected: 0x%I64X (looks like user-mode pointer, treating as 0)", corruptOptions);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExStrippedFlags(const WCHAR* context, ULONG64 before, ULONG64 after)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: %s - stripped flags (0x%I64X -> 0x%I64X)", context, before, after);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExProactiveSanitize(ULONG64 original, ULONG64 sanitized)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: Proactive sanitization - QueryOptions reduced before call (0x%I64X -> 0x%I64X)", original, sanitized);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExErrorRetryReduction(const WCHAR* reason, ULONG64 before, ULONG64 after)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: %s, retrying with reduced QueryOptions (0x%I64X -> 0x%I64X)", reason, before, after);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExRetryInterface(DWORD originalIndex)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: ERROR_INVALID_PARAMETER with InterfaceIndex=%u, retrying with 0", originalIndex);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQueryResults, void* pQueryRecords, DWORD version)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx Debug: status=%d, asyncCtx=%p, pQueryResults=%p, pQueryRecords=%p, Version=%d",
+        status, asyncCtx, pQueryResults, pQueryRecords, version);
+    DNS_LogDebug(msg);
+}
+
+//---------------------------------------------------------------------------
+// WSALookupService Debug Logging
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN isIPv6, HANDLE handle,
+                                 DWORD addrCount, DWORD blobSize, void* csaBuffer, DWORD csaBufferCount)
+{
+    if (!DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[2048];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"  WSA Debug Response: %s (NS: %d, Type: %s, Hdl: %p, AddrCount: %d, BlobSize: %d)",
+        domain, nameSpace, isIPv6 ? L"IPv6" : L"IPv4", handle, addrCount, blobSize);
+    
+    // Log IP addresses if available
+    if (csaBuffer && csaBufferCount > 0) {
+        PCSADDR_INFO csaInfo = (PCSADDR_INFO)csaBuffer;
+        for (DWORD i = 0; i < csaBufferCount; i++) {
+            IP_ADDRESS ip;
+            if (csaInfo[i].RemoteAddr.lpSockaddr &&
+                WSA_GetIP(csaInfo[i].RemoteAddr.lpSockaddr,
+                    csaInfo[i].RemoteAddr.iSockaddrLength, &ip))
+                WSA_DumpIP(csaInfo[i].RemoteAddr.lpSockaddr->sa_family, &ip, msg);
+        }
+    }
+    
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogWSADebugRequestEnd(HANDLE handle, BOOLEAN filtered)
+{
+    if (!DNS_DebugFlag)
+        return;
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"  WSA Debug: %s Request End (Hdl: %p)", filtered ? L"" : L"Unfiltered", handle);
+    DNS_LogDebug(msg);
 }
 

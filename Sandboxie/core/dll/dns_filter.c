@@ -2194,24 +2194,11 @@ _FX int WSA_WSALookupServiceNextW(
                 pLookup->NoMore = TRUE;
 
                 // Verbose debug logging only
-                if (DNS_DebugFlag) {
-                    WCHAR msg[2048];
-                    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"  WSA Debug Response: %s (NS: %d, Type: %s, Hdl: %p, AddrCount: %d, BlobSize: %d)",
-                        pLookup->DomainName, lpqsResults->dwNameSpace,
-                        WSA_IsIPv6Query(pLookup->ServiceClassId) ? L"IPv6" : L"IPv4", hLookup,
-                        lpqsResults->dwNumberOfCsAddrs,
-                        lpqsResults->lpBlob ? lpqsResults->lpBlob->cbSize : 0);
-
-                    for (DWORD i = 0; i < lpqsResults->dwNumberOfCsAddrs; i++) {
-                        IP_ADDRESS ip;
-                        if (lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr &&
-                            WSA_GetIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr,
-                                lpqsResults->lpcsaBuffer[i].RemoteAddr.iSockaddrLength, &ip))
-                            WSA_DumpIP(lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr->sa_family, &ip, msg);
-                    }
-
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                }
+                DNS_LogWSADebugResponse(pLookup->DomainName, lpqsResults->dwNameSpace,
+                    WSA_IsIPv6Query(pLookup->ServiceClassId), hLookup,
+                    lpqsResults->dwNumberOfCsAddrs,
+                    lpqsResults->lpBlob ? lpqsResults->lpBlob->cbSize : 0,
+                    lpqsResults->lpcsaBuffer, lpqsResults->dwNumberOfCsAddrs);
 
                 return NO_ERROR;
             }
@@ -2381,11 +2368,7 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
 
             Dll_Free(hLookup);
 
-            if (DNS_DebugFlag) {
-                WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"  WSA Debug: Request End (Hdl: %p)", hLookup);
-                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-            }
+            DNS_LogWSADebugRequestEnd(hLookup, TRUE);
 
             return NO_ERROR;
         }
@@ -2393,11 +2376,7 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
         map_remove(&WSA_LookupMap, hLookup);
     }
 
-    if (DNS_DebugFlag) {
-        WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"  WSA Debug: Unfiltered Request End (Hdl: %p)", hLookup);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-    }
+    DNS_LogWSADebugRequestEnd(hLookup, FALSE);
 
     return __sys_WSALookupServiceEnd(hLookup);
 }
@@ -3106,38 +3085,25 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     PDNS_QUERY_REQUEST3 pQueryRequest3 = NULL;  // VERSION3 structure pointer (when Version==3)
     
     if (requestVersion < DNS_QUERY_REQUEST_VERSION1 || requestVersion > DNS_QUERY_REQUEST_VERSION3) {
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: Invalid Version=%d (expected 1-3), passing through",
-                requestVersion);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExInvalidVersion(requestVersion);
         return __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
     }
 
     // Cast to appropriate structure type based on Version
     if (requestVersion == DNS_QUERY_REQUEST_VERSION3) {
         pQueryRequest3 = (PDNS_QUERY_REQUEST3)pQueryRequest;
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: VERSION3 detected - IsNetworkQueryRequired=%d, RequiredNetworkIndex=%u, cCustomServers=%u, pCustomServers=%p",
-                pQueryRequest3->IsNetworkQueryRequired, pQueryRequest3->RequiredNetworkIndex, 
-                pQueryRequest3->cCustomServers, pQueryRequest3->pCustomServers);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExVersion3(pQueryRequest3->IsNetworkQueryRequired, pQueryRequest3->RequiredNetworkIndex,
+            pQueryRequest3->cCustomServers, pQueryRequest3->pCustomServers);
     }
     // For VERSION1/2, continue using base PDNS_QUERY_REQUEST (8 fields)
 
     // Debug: Log entry parameters (including InterfaceIndex)
     ULONG originalInterfaceIndex = 0;
     if (DNS_DebugFlag && pQueryRequest->QueryName) {
-        WCHAR debug_msg[512];
         originalInterfaceIndex = (pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1) ? pQueryRequest->InterfaceIndex : 0;
-        Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx Entry: QueryName=%s, Type=%s, Version=%d, Options=0x%llX, InterfaceIndex=%u, HasCallback=%d",
-            pQueryRequest->QueryName, DNS_GetTypeName(pQueryRequest->QueryType),
-            pQueryRequest->Version, pQueryRequest->QueryOptions, originalInterfaceIndex,
-            (pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1 && pQueryRequest->pQueryCompletionCallback) ? 1 : 0);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
+        DNS_LogQueryExEntry(pQueryRequest->QueryName, pQueryRequest->QueryType, pQueryRequest->Version,
+            pQueryRequest->QueryOptions, originalInterfaceIndex,
+            (pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1 && pQueryRequest->pQueryCompletionCallback) ? TRUE : FALSE);
     } else {
         originalInterfaceIndex = (pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1) ? pQueryRequest->InterfaceIndex : 0;
     }
@@ -3218,12 +3184,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     BOOLEAN looksLikePointer = (bits_47_63 >= 0x0FF80 && bits_47_63 <= 0x0FFFF);  // 0x00007F8... to 0x00007FFF...
     
     if (looksLikePointer) {
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: CORRUPT QueryOptions detected: 0x%I64X (looks like user-mode pointer, treating as 0)",
-                           originalQueryOptions);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExCorruptOptions(originalQueryOptions);
         // Treat pointer-like values as 0 (safest default)
         originalQueryOptions = 0;
         pQueryRequest->QueryOptions = 0;
@@ -3242,35 +3203,22 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             if (sanitizedQueryOptions & PROBLEMATIC_FLAGS) {
                 ULONG64 beforeStrip = sanitizedQueryOptions;
                 sanitizedQueryOptions &= ~PROBLEMATIC_FLAGS;
-                if (DNS_DebugFlag) {
-                    WCHAR debug_msg[512];
-                    Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: VERSION3 A query - stripped DUAL_ADDR/ADDRCONFIG flags (0x%I64X -> 0x%I64X)",
-                                   beforeStrip, sanitizedQueryOptions);
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-                }
+                DNS_LogQueryExStrippedFlags(L"VERSION3 A query - stripped DUAL_ADDR/ADDRCONFIG flags",
+                    beforeStrip, sanitizedQueryOptions);
             }
         } else if (pQueryRequest->QueryType != DNS_TYPE_AAAA) {
             // For non-AAAA queries, strip DUAL_ADDR unconditionally (it is invalid outside AAAA scenarios)
             if (sanitizedQueryOptions & DNS_QUERY_DUAL_ADDR) {
                 ULONG64 beforeStrip = sanitizedQueryOptions;
                 sanitizedQueryOptions &= ~DNS_QUERY_DUAL_ADDR;
-                if (DNS_DebugFlag) {
-                    WCHAR debug_msg[512];
-                    Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: VERSION3 non-AAAA query - stripped DUAL_ADDR flag (0x%I64X -> 0x%I64X)",
-                                   beforeStrip, sanitizedQueryOptions);
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-                }
+                DNS_LogQueryExStrippedFlags(L"VERSION3 non-AAAA query - stripped DUAL_ADDR flag",
+                    beforeStrip, sanitizedQueryOptions);
             }
         }
     }
     
     if (sanitizedQueryOptions != originalQueryOptions) {
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: Sanitizing QueryOptions from 0x%I64X to 0x%I64X (removed invalid bits)",
-                           originalQueryOptions, sanitizedQueryOptions);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExProactiveSanitize(originalQueryOptions, sanitizedQueryOptions);
         pQueryRequest->QueryOptions = sanitizedQueryOptions;
     }
 
@@ -3300,12 +3248,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
         fallbackPrepared = TRUE;
 
         if (fallbackOptions != beforeFallback) {
-            if (DNS_DebugFlag) {
-                WCHAR debug_msg[512];
-                Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: ERROR_INVALID_PARAMETER, retrying with reduced QueryOptions (0x%I64X -> 0x%I64X)",
-                               beforeFallback, fallbackOptions);
-                SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-            }
+            DNS_LogQueryExErrorRetryReduction(L"ERROR_INVALID_PARAMETER", beforeFallback, fallbackOptions);
             ULONG64 savedOptions = pQueryRequest->QueryOptions; // currently originalQueryOptions
             pQueryRequest->QueryOptions = fallbackOptions;
             status = __sys_DnsQueryEx(pQueryRequest, pQueryResults, pCancelHandle);
@@ -3319,12 +3262,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
         originalInterfaceIndex != 0 &&
         pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1)
     {
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx: ERROR_INVALID_PARAMETER with InterfaceIndex=%u, retrying with 0",
-                           originalInterfaceIndex);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExRetryInterface(originalInterfaceIndex);
 
         // Prefer the stricter fallbackOptions if prepared; else use sanitizedQueryOptions
         ULONG64 optionsForRetry = fallbackPrepared ? fallbackOptions : sanitizedQueryOptions;
@@ -3340,13 +3278,8 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     
     if (DNS_TraceFlag && pQueryRequest->QueryName) {
         // Debug: Log status and pQueryRecords pointer
-        if (DNS_DebugFlag) {
-            WCHAR debug_msg[512];
-            Sbie_snwprintf(debug_msg, 512, L"  DnsQueryEx Debug: status=%d, asyncCtx=%p, pQueryResults=%p, pQueryRecords=%p, Version=%d",
-                status, asyncCtx, pQueryResults, pQueryResults ? pQueryResults->pQueryRecords : NULL,
-                pQueryRequest->Version);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
-        }
+        DNS_LogQueryExDebugStatus(status, asyncCtx, pQueryResults,
+            pQueryResults ? pQueryResults->pQueryRecords : NULL, pQueryRequest->Version);
         
         if (status == DNS_REQUEST_PENDING && asyncCtx) {
             DNS_LogDnsQueryExStatus(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 

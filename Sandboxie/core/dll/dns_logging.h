@@ -162,6 +162,22 @@ void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQ
 // Exclusion initialization logging (avoid dependency on internal struct)
 void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value);
 
+// DnsQueryEx debug logging helpers
+void DNS_LogQueryExInvalidVersion(DWORD version);
+void DNS_LogQueryExVersion3(BOOLEAN isNetworkQueryRequired, DWORD networkIndex, DWORD cServers, void* pServers);
+void DNS_LogQueryExEntry(const WCHAR* queryName, WORD queryType, DWORD version, ULONG64 options, DWORD interfaceIndex, BOOLEAN hasCallback);
+void DNS_LogQueryExCorruptOptions(ULONG64 corruptOptions);
+void DNS_LogQueryExStrippedFlags(const WCHAR* context, ULONG64 before, ULONG64 after);
+void DNS_LogQueryExProactiveSanitize(ULONG64 original, ULONG64 sanitized);  // Pre-call sanitization
+void DNS_LogQueryExErrorRetryReduction(const WCHAR* reason, ULONG64 before, ULONG64 after);  // On-error retry
+void DNS_LogQueryExRetryInterface(DWORD originalIndex);
+void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQueryResults, void* pQueryRecords, DWORD version);
+
+// WSALookupService debug logging
+void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN isIPv6, HANDLE handle,
+                             DWORD addrCount, DWORD blobSize, void* csaBuffer, DWORD csaBufferCount);
+void DNS_LogWSADebugRequestEnd(HANDLE handle, BOOLEAN filtered);
+
 #ifdef __cplusplus
 }
 #endif
