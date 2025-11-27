@@ -123,14 +123,16 @@ bool PickWindowsIcon(QWidget* pParent, QString& Path, quint32& Index)
 	return !!Ret;
 }
 
-void ProtectWindow(void* hWnd)
+void ProtectWindow(void* hWnd, unsigned long affinity)
 {
     typedef BOOL(*LPSETWINDOWDISPLAYAFFINITY)(HWND, DWORD);
     static LPSETWINDOWDISPLAYAFFINITY pSetWindowDisplayAffinity = NULL;
+
     if (!pSetWindowDisplayAffinity)
         pSetWindowDisplayAffinity = (LPSETWINDOWDISPLAYAFFINITY)GetProcAddress(LoadLibraryA("user32.dll"), "SetWindowDisplayAffinity");
-    if (pSetWindowDisplayAffinity)
-        pSetWindowDisplayAffinity((HWND)hWnd, 0x00000011);
+
+	if (pSetWindowDisplayAffinity)
+        pSetWindowDisplayAffinity((HWND)hWnd, (DWORD)affinity);
 }
 
 QString GetProductVersion(const QString &filePath) 

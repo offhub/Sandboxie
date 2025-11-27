@@ -133,6 +133,15 @@ CSbieAPI::CSbieAPI(QObject* parent) : QThread(parent)
 {
 	m = new SSbieAPI();
 
+	// Create a dedicated thread-pool for box queries / driver I/O to avoid
+	// interfering with the global pool and to control concurrency and shutdown.
+	m_pBoxQueryPool = new QThreadPool(this);
+	// keep a small conservative limit for potentially blocking driver I/O
+	int threads = QThread::idealThreadCount();
+	if (threads <= 0)
+		threads = 2;
+	m_pBoxQueryPool->setMaxThreadCount(qMax(2, threads));
+
 	m_pGlobalSection = QSharedPointer<CSbieIni>(new CSbieIni("GlobalSettings", this));
 	m_pUserSection = QSharedPointer<CSbieIni>(new CSbieIni("UserSettings", this)); // dummy
 
@@ -361,6 +370,12 @@ SB_STATUS CSbieAPI::Disconnect()
 		FreeLibrary(m->SbieMsgDll);
 		m->SbieMsgDll = NULL;
 	}
+
+	// Wait a short time for any QRunnable tasks to finish to avoid shutdown races.
+	if (m_pBoxQueryPool)
+		m_pBoxQueryPool->waitForDone(5000);
+	else
+		QThreadPool::globalInstance()->waitForDone(5000);
 
 	m_SandBoxes.clear();
 	m_BoxedProxesses.clear();
@@ -1142,11 +1157,38 @@ SB_STATUS CSbieAPI::ReloadBoxes(bool bForceUpdate)
 			m_SandBoxes.insert(BoxName.toLower(), pBox);
 			emit BoxAdded(pBox);
 		}
-		UpdateBoxPaths(pBox.data());
+
+		// UpdateBoxPaths performs driver IO (m->IoControl) and can block the caller thread.
+		// Schedule the path query on the Qt thread-pool to avoid creating unmanaged threads,
+		// then invoke UpdateDetails on the box on the GUI thread when the paths are ready.
+		{
+			CSandBoxPtr pBoxRef = pBox; // copy shared pointer for runnable
+			class UpdateBoxPathsRunnable : public QRunnable {
+			public:
+				UpdateBoxPathsRunnable(CSbieAPI* api, CSandBoxPtr box)
+					: m_api(api), m_box(box) { setAutoDelete(true); }
+				void run() override {
+					// this runs on a worker thread from the pool
+					m_api->UpdateBoxPaths(m_box.data());
+
+					// schedule UpdateDetails to run on the box's thread (GUI) without blocking
+					QPointer<CSandBox> pThis(m_box.data());
+					if (!pThis)
+						return;
+					QMetaObject::invokeMethod(pThis, [pThis]() {
+						pThis->UpdateDetails();
+					}, Qt::QueuedConnection);
+				}
+			private:
+				CSbieAPI* m_api;
+				CSandBoxPtr m_box;
+			};
+
+			// use dedicated box-query pool (constructed in CSbieAPI ctor)
+			GetBoxQueryPool()->start(new UpdateBoxPathsRunnable(this, pBoxRef));
+		}
 
 		pBox->m_IsEnabled = bIsEnabled;
-
-		pBox->UpdateDetails();
 	}
 
 	foreach(const QString & BoxName, OldSandBoxes.keys()) {
