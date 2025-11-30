@@ -39,9 +39,10 @@
 //   NetworkDnsFilter=*.ads.com                # Block all ads.com subdomains (NXDOMAIN)
 //   NetworkDnsFilter=*,0.0.0.0                # Block everything else
 //
-// IPv4-to-IPv6 Mapping:
-//   - AAAA queries automatically use IPv4-mapped IPv6 (::ffff:a.b.c.d) if only IPv4 configured
-//   - Native IPv6 addresses preferred when available
+// IPv4-to-IPv6 Mapping (DnsMapIpv4ToIpv6 setting, default: off):
+//   - When enabled: AAAA queries automatically use IPv4-mapped IPv6 (::ffff:a.b.c.d) if only IPv4 configured
+//   - When disabled: AAAA queries return NXDOMAIN if no native IPv6 addresses available
+//   - Native IPv6 addresses always preferred when available
 //---------------------------------------------------------------------------
 
 #define NOGDI
@@ -55,6 +56,7 @@
 #include "common/netfw.h"
 #include "socket_hooks.h"
 #include "dns_filter.h"
+#include "dns_logging.h"
 
 //---------------------------------------------------------------------------
 // WSABUF Definition
@@ -67,17 +69,18 @@ typedef struct _WSABUF_REAL {
 
 //---------------------------------------------------------------------------
 // DNS Packet Structure (RFC 1035)
+// Using custom structure names to avoid conflicts with Windows SDK definitions
 //---------------------------------------------------------------------------
 
 #pragma pack(push, 1)
-typedef struct _DNS_HEADER {
+typedef struct _DNS_WIRE_HEADER {
     USHORT TransactionID;
     USHORT Flags;
     USHORT Questions;
     USHORT AnswerRRs;
     USHORT AuthorityRRs;
     USHORT AdditionalRRs;
-} DNS_HEADER;
+} DNS_WIRE_HEADER;
 #pragma pack(pop)
 
 // DNS Header Flags (network byte order - big endian)
@@ -103,8 +106,16 @@ typedef struct _DNS_RR {
 } DNS_RR;
 #pragma pack(pop)
 
+// DNS_TYPE_A and DNS_TYPE_AAAA are already defined in windns.h
+// (windns.h is included via dns_logging.h -> dnsapi_defs.h)
+#ifndef DNS_TYPE_A
 #define DNS_TYPE_A     1
+#endif
+
+#ifndef DNS_TYPE_AAAA
 #define DNS_TYPE_AAAA  28
+#endif
+
 #define DNS_RESPONSE_SIZE 512  // Maximum DNS response size (RFC 1035)
 
 //---------------------------------------------------------------------------
@@ -217,7 +228,7 @@ static P_getsockopt __sys_getsockopt = NULL;
 // External utility functions (from dns_filter.c / net.c)
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
-BOOLEAN Socket_GetRawDnsFilterEnabled();  // Non-static: called from net.c
+BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);  // Non-static: called from net.c
 
 static int Socket_connect(
     SOCKET         s,
@@ -370,7 +381,7 @@ static void Socket_LogInterceptedResponse(const WCHAR* protocol, const WCHAR* do
     // qtype_host is already in host byte order from Socket_ParseDnsQuery
     
     // Check actual response flags to determine if it's NXDOMAIN or success
-    DNS_HEADER* resp_hdr = (DNS_HEADER*)response;
+    DNS_WIRE_HEADER* resp_hdr = (DNS_WIRE_HEADER*)response;
     USHORT resp_flags = _ntohs(resp_hdr->Flags);
     USHORT rcode = resp_flags & 0x000F;  // Response code in lower 4 bits
     BOOLEAN is_nxdomain = (rcode == 3);  // RCODE 3 = NXDOMAIN
@@ -410,17 +421,24 @@ static void Socket_LogForwarded(const WCHAR* protocol, const WCHAR* domain, USHO
     if (!DNS_TraceFlag || !domain)
         return;
     
+    // Detect actual protocol if socket is valid
+    const WCHAR* actual_protocol = protocol;
+    if (s != INVALID_SOCKET && Socket_IsDnsSocket(s)) {
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
+        actual_protocol = isTcp ? L"TCP" : L"UDP";
+    }
+    
     // qtype_host is already in host byte order from Socket_ParseDnsQuery
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"%s DNS Passthrough: %s (Type: %s) - Forwarding to real DNS",
-        protocol, domain, DNS_GetTypeName(qtype_host));
+        actual_protocol, domain, DNS_GetTypeName(qtype_host));
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     
     // Verbose debug info
-    if (DNS_DebugFlag) {
+    if (DNS_DebugFlag && func_name) {
         WCHAR debug_msg[256];
         Sbie_snwprintf(debug_msg, 256, L"  Raw Socket Debug: Function=%s, Socket=%p",
-            func_name ? func_name : L"direct", (void*)(ULONG_PTR)s);
+            func_name, (void*)(ULONG_PTR)s);
         SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
     }
 }
@@ -467,21 +485,21 @@ static int Socket_HandleDnsQuery(
 // Socket_GetRawDnsFilterEnabled
 //
 // Query the FilterRawDns setting to control raw socket DNS filtering
-// Default: FALSE (disabled by default)
+// Default: Enabled if valid certificate, disabled otherwise (certificate-based default)
 //---------------------------------------------------------------------------
 
-_FX BOOLEAN Socket_GetRawDnsFilterEnabled()
+_FX BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate)
 {
     // Query FilterRawDns with per-process matching support
-    // Default: FALSE (disabled by default)
-    return Config_GetSettingsForImageName_bool(L"FilterRawDns", FALSE);
+    // Default: Certificate-based (enabled with valid cert, disabled without cert)
+    return Config_GetSettingsForImageName_bool(L"FilterRawDns", has_valid_certificate);
 }
 
 //---------------------------------------------------------------------------
 // Socket_InitHooks
 //---------------------------------------------------------------------------
 
-_FX BOOLEAN Socket_InitHooks(HMODULE module)
+_FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
 {
     P_connect connect;
     P_WSAConnect WSAConnect;
@@ -497,11 +515,21 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module)
         __sys_getsockopt = (P_getsockopt)GetProcAddress(module, "getsockopt");
     }
 
-    // Load FilterRawDns setting
-    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled();
+    // Load FilterRawDns setting (default: enabled with valid cert, disabled without cert)
+    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate);
 
-    // If raw DNS filtering is disabled, skip hooking entirely
-    if (!DNS_RawSocketFilterEnabled) {
+    // Certificate validation logic has been moved to filtering time (in send hooks)
+    // Here we only control whether hooks are installed at all
+    // Install hooks when:
+    // - FilterRawDns=y (explicit enable) OR
+    // - DnsTrace=y (logging mode)
+    // This allows logging to work without certificate, while filtering requires certificate
+    extern LIST DNS_FilterList;
+    extern BOOLEAN DNS_TraceFlag;
+    
+    // If FilterRawDns explicitly disabled by user, skip hooking
+    // But allow hooks if DnsTrace is enabled even when FilterRawDns=n (logging-only mode)
+    if (!DNS_RawSocketFilterEnabled && !DNS_TraceFlag) {
         return TRUE;
     }
 
@@ -663,19 +691,21 @@ _FX int Socket_connect(
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
+        const WCHAR* protocol = isTcp ? L"TCP" : L"UDP";
 
         if (addrFamily == AF_INET && namelen >= sizeof(struct sockaddr_in)) {
             destPort = _ntohs(((struct sockaddr_in*)name)->sin_port);
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"TCP: connect() called, AF_INET, port=%d, socket=%p",
-                destPort, (void*)(ULONG_PTR)s);
+            Sbie_snwprintf(msg, 256, L"%s: connect() called, AF_INET, port=%d, socket=%p",
+                protocol, destPort, (void*)(ULONG_PTR)s);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
         else if (addrFamily == AF_INET6 && namelen >= sizeof(struct sockaddr_in6)) {
             destPort = _ntohs(((struct sockaddr_in6*)name)->sin6_port);
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"TCP: connect() called, AF_INET6, port=%d, socket=%p",
-                destPort, (void*)(ULONG_PTR)s);
+            Sbie_snwprintf(msg, 256, L"%s: connect() called, AF_INET6, port=%d, socket=%p",
+                protocol, destPort, (void*)(ULONG_PTR)s);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
@@ -742,19 +772,21 @@ _FX int Socket_WSAConnect(
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
+        const WCHAR* protocol = isTcp ? L"TCP" : L"UDP";
 
         if (addrFamily == AF_INET && namelen >= sizeof(struct sockaddr_in)) {
             destPort = _ntohs(((struct sockaddr_in*)name)->sin_port);
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"TCP: WSAConnect() called, AF_INET, port=%d, socket=%p",
-                destPort, (void*)(ULONG_PTR)s);
+            Sbie_snwprintf(msg, 256, L"%s: WSAConnect() called, AF_INET, port=%d, socket=%p",
+                protocol, destPort, (void*)(ULONG_PTR)s);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
         else if (addrFamily == AF_INET6 && namelen >= sizeof(struct sockaddr_in6)) {
             destPort = _ntohs(((struct sockaddr_in6*)name)->sin6_port);
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"TCP: WSAConnect() called, AF_INET6, port=%d, socket=%p",
-                destPort, (void*)(ULONG_PTR)s);
+            Sbie_snwprintf(msg, 256, L"%s: WSAConnect() called, AF_INET6, port=%d, socket=%p",
+                protocol, destPort, (void*)(ULONG_PTR)s);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
@@ -824,21 +856,22 @@ _FX int Socket_send(
     
     // Debug: Log send() calls on DNS sockets
     if (DNS_DebugFlag && Socket_IsDnsSocket(s)) {
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"TCP DNS: send() called on DNS socket=%p, len=%d",
-            (void*)(ULONG_PTR)s, len);
+        Sbie_snwprintf(msg, 256, L"%s DNS: send() called on DNS socket=%p, len=%d",
+            isTcp ? L"TCP" : L"UDP", (void*)(ULONG_PTR)s, len);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
     // Only inspect if this is a DNS socket and filtering is enabled
     // Minimum check: at least enough for DNS header (with or without TCP length prefix)
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_HEADER)) {
+    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         // TCP DNS packets MAY have a 2-byte length prefix before the DNS payload
         // However, many implementations send the length and payload in separate send() calls
         // So we need to handle three cases:
-        // 1. Length prefix + DNS payload together (len >= DNS_HEADER + 2)
-        // 2. DNS payload only (len >= DNS_HEADER, starts with valid DNS header)
+        // 1. Length prefix + DNS payload together (len >= DNS_WIRE_HEADER + 2)
+        // 2. DNS payload only (len >= DNS_WIRE_HEADER, starts with valid DNS header)
         // 3. Length prefix only (len == 2) - ignore this case
         
         const BYTE* dns_payload = (const BYTE*)buf;
@@ -852,15 +885,15 @@ _FX int Socket_send(
         // 2. The remaining bytes look like a valid DNS header
         // 3. Length is within reasonable DNS bounds (12 to 512 bytes)
         // 4. QR bit is 0 (query, not response)
-        if (len >= 2 + sizeof(DNS_HEADER)) {
+        if (len >= 2 + sizeof(DNS_WIRE_HEADER)) {
             USHORT tcp_length = _ntohs(*(USHORT*)buf);
             // If the length prefix matches (payload = total - 2), this is TCP DNS format
             if (tcp_length + 2 == len && 
-                tcp_length >= sizeof(DNS_HEADER) && 
+                tcp_length >= sizeof(DNS_WIRE_HEADER) && 
                 tcp_length <= 512) {  // Reasonable DNS max size
                 
                 // Additional validation: check if bytes after prefix look like DNS header
-                DNS_HEADER* potential_header = (DNS_HEADER*)(buf + 2);
+                DNS_WIRE_HEADER* potential_header = (DNS_WIRE_HEADER*)(buf + 2);
                 USHORT flags = _ntohs(potential_header->Flags);
                 USHORT qr = (flags >> 15) & 0x1;
                 
@@ -913,6 +946,15 @@ _FX int Socket_send(
                 PVOID* aux = Pattern_Aux(found);
                 if (!aux || !*aux) {
                     // No aux data - shouldn't happen, but be safe
+                    Dll_Free(domain_lwr);
+                    return __sys_send(s, buf, len, flags);
+                }
+
+                // Certificate required for actual filtering (interception/blocking)
+                extern BOOLEAN DNS_HasValidCertificate;
+                if (!DNS_HasValidCertificate) {
+                    // Domain matches filter but no cert - log as passthrough
+                    Socket_LogForwarded(L"TCP", domainName, qtype, L"send", s);
                     Dll_Free(domain_lwr);
                     return __sys_send(s, buf, len, flags);
                 }
@@ -1020,9 +1062,10 @@ _FX int Socket_WSASend(
     
     // Debug: Log WSASend() calls on DNS sockets
     if (DNS_DebugFlag && Socket_IsDnsSocket(s)) {
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"TCP DNS: WSASend() called on DNS socket=%p, buffers=%d",
-            (void*)(ULONG_PTR)s, dwBufferCount);
+        Sbie_snwprintf(msg, 256, L"%s DNS: WSASend() called on DNS socket=%p, buffers=%d",
+            isTcp ? L"TCP" : L"UDP", (void*)(ULONG_PTR)s, dwBufferCount);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
@@ -1033,7 +1076,7 @@ _FX int Socket_WSASend(
         LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpBuffers;
         
         // Check if first buffer has enough data for DNS header
-        if (buffers[0].len >= sizeof(DNS_HEADER)) {
+        if (buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
             const BYTE* buf = (const BYTE*)buffers[0].buf;
             int len = buffers[0].len;
             
@@ -1042,14 +1085,14 @@ _FX int Socket_WSASend(
             BOOLEAN has_length_prefix = FALSE;
             
             // Check for TCP DNS length prefix (with validation to avoid false positives)
-            if (len >= 2 + sizeof(DNS_HEADER)) {
+            if (len >= 2 + sizeof(DNS_WIRE_HEADER)) {
                 USHORT tcp_length = _ntohs(*(USHORT*)buf);
                 if (tcp_length + 2 == len && 
-                    tcp_length >= sizeof(DNS_HEADER) && 
+                    tcp_length >= sizeof(DNS_WIRE_HEADER) && 
                     tcp_length <= 512) {  // Reasonable DNS max size
                     
                     // Validate: check if bytes after prefix look like DNS header
-                    DNS_HEADER* potential_header = (DNS_HEADER*)(buf + 2);
+                    DNS_WIRE_HEADER* potential_header = (DNS_WIRE_HEADER*)(buf + 2);
                     USHORT flags = _ntohs(potential_header->Flags);
                     USHORT qr = (flags >> 15) & 0x1;
                     
@@ -1100,6 +1143,15 @@ _FX int Socket_WSASend(
                     // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
                     if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+                    }
+
+                    // Certificate required for actual filtering (interception/blocking)
+                    extern BOOLEAN DNS_HasValidCertificate;
+                    if (!DNS_HasValidCertificate) {
+                        // Domain matches filter but no cert - log as passthrough
+                        Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASend", s);
                         Dll_Free(domain_lwr);
                         return __sys_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
                     }
@@ -1196,7 +1248,7 @@ _FX int Socket_sendto(
     int            tolen)
 {
     // Only inspect if DNS filtering is enabled and we have a valid destination
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && to && buf && len >= sizeof(DNS_HEADER)) {
+    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         // Check if destination is DNS port 53
         USHORT destPort = 0;
@@ -1232,6 +1284,15 @@ _FX int Socket_sendto(
                     // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
                     if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_sendto(s, buf, len, flags, to, tolen);
+                    }
+
+                    // Certificate required for actual filtering (interception/blocking)
+                    extern BOOLEAN DNS_HasValidCertificate;
+                    if (!DNS_HasValidCertificate) {
+                        // Domain matches filter but no cert - log as passthrough
+                        Socket_LogForwarded(L"UDP", domainName, qtype, L"sendto", s);
                         Dll_Free(domain_lwr);
                         return __sys_sendto(s, buf, len, flags, to, tolen);
                     }
@@ -1328,7 +1389,7 @@ _FX int Socket_WSASendTo(
         }
 
         // Port 53 = DNS
-        if (destPort == 53 && buffers[0].len >= sizeof(DNS_HEADER)) {
+        if (destPort == 53 && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
             WCHAR domainName[256];
             USHORT qtype = 0;
 
@@ -1350,6 +1411,15 @@ _FX int Socket_WSASendTo(
                     // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
                     if (!aux || !*aux) {
+                        Dll_Free(domain_lwr);
+                        return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
+                    }
+
+                    // Certificate required for actual filtering (interception/blocking)
+                    extern BOOLEAN DNS_HasValidCertificate;
+                    if (!DNS_HasValidCertificate) {
+                        // Domain matches filter but no cert - log as passthrough
+                        Socket_LogForwarded(L"UDP", domainName, qtype, L"WSASendTo", s);
                         Dll_Free(domain_lwr);
                         return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
                     }
@@ -1431,10 +1501,10 @@ _FX BOOLEAN Socket_ParseDnsQuery(
     int            domainOutSize,
     USHORT*        qtype)
 {
-    if (!packet || len < sizeof(DNS_HEADER) || !domainOut || domainOutSize < 1)
+    if (!packet || len < sizeof(DNS_WIRE_HEADER) || !domainOut || domainOutSize < 1)
         return FALSE;
 
-    DNS_HEADER* header = (DNS_HEADER*)packet;
+    DNS_WIRE_HEADER* header = (DNS_WIRE_HEADER*)packet;
 
     // Verify this is a DNS query (QR bit = 0)
     // Flags are in network byte order (big-endian)
@@ -1453,7 +1523,7 @@ _FX BOOLEAN Socket_ParseDnsQuery(
     }
 
     // Parse the first question (domain name starts after header)
-    int offset = sizeof(DNS_HEADER);
+    int offset = sizeof(DNS_WIRE_HEADER);
     int nameLen = Socket_DecodeDnsName(packet, len, offset, domainOut, domainOutSize);
     
     if (nameLen <= 0) {
@@ -1735,7 +1805,7 @@ _FX int Socket_BuildDnsResponse(
     USHORT         qtype,
     struct _DNS_TYPE_FILTER* type_filter)
 {
-    if (!query || !response || query_len < sizeof(DNS_HEADER) || response_size < 512)
+    if (!query || !response || query_len < sizeof(DNS_WIRE_HEADER) || response_size < 512)
         return -1;
 
     // qtype is now in host byte order (Socket_ParseDnsQuery converts it)
@@ -1767,7 +1837,7 @@ _FX int Socket_BuildDnsResponse(
     int copy_len = (query_len < response_size) ? query_len : response_size;
     memcpy(response, query, copy_len);
 
-    DNS_HEADER* resp_header = (DNS_HEADER*)response;
+    DNS_WIRE_HEADER* resp_header = (DNS_WIRE_HEADER*)response;
     
     // Set response flags
     if (block || !pEntries) {
@@ -1794,15 +1864,15 @@ _FX int Socket_BuildDnsResponse(
                 } else if ((qtype_host == DNS_TYPE_AAAA || is_any_query) && entry->Type == AF_INET6) {
                     answer_count++;
                     has_ipv6 = TRUE;
-                } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET) {
-                    // AAAA query but only IPv4 available - we'll map it
+                } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET && DNS_MapIpv4ToIpv6) {
+                    // AAAA query but only IPv4 available - we'll map it (if DnsMapIpv4ToIpv6=y)
                     has_ipv4 = TRUE;
                 }
                 entry = (IP_ENTRY*)List_Next(entry);
             }
             
-            // Fallback: if AAAA query but no IPv6, use IPv4-mapped IPv6
-            if (qtype_host == DNS_TYPE_AAAA && !has_ipv6 && has_ipv4) {
+            // Fallback: if DnsMapIpv4ToIpv6=y and AAAA query but no IPv6, use IPv4-mapped IPv6
+            if (qtype_host == DNS_TYPE_AAAA && DNS_MapIpv4ToIpv6 && !has_ipv6 && has_ipv4) {
                 // Count IPv4 addresses to map
                 entry = (IP_ENTRY*)List_Head(pEntries);
                 while (entry) {
@@ -1831,7 +1901,7 @@ _FX int Socket_BuildDnsResponse(
     BOOLEAN need_ipv4_mapping = FALSE;
     BOOLEAN has_native_ipv6 = FALSE;
     
-    if (qtype_host == DNS_TYPE_AAAA) {
+    if (qtype_host == DNS_TYPE_AAAA && DNS_MapIpv4ToIpv6) {
         // Check if we have any native IPv6 addresses
         IP_ENTRY* check = (IP_ENTRY*)List_Head(pEntries);
         while (check) {
@@ -1859,7 +1929,7 @@ _FX int Socket_BuildDnsResponse(
             rdata_len = 16;  // IPv6 address
             record_type = DNS_TYPE_AAAA;
         } else if (qtype_host == DNS_TYPE_AAAA && entry->Type == AF_INET && need_ipv4_mapping) {
-            // AAAA query but only IPv4 available - create IPv4-mapped IPv6 address
+            // AAAA query but only IPv4 available - create IPv4-mapped IPv6 address (when DnsMapIpv4ToIpv6=y)
             // Format: ::ffff:a.b.c.d (RFC 4291 section 2.5.5.2)
             match = TRUE;
             rdata_len = 16;
@@ -1927,10 +1997,10 @@ _FX BOOLEAN Socket_ValidateDnsResponse(
     const BYTE*    response,
     int            len)
 {
-    if (!response || len < sizeof(DNS_HEADER))
+    if (!response || len < sizeof(DNS_WIRE_HEADER))
         return FALSE;
     
-    DNS_HEADER* header = (DNS_HEADER*)response;
+    DNS_WIRE_HEADER* header = (DNS_WIRE_HEADER*)response;
     
     // Basic sanity checks
     USHORT questions = _ntohs(header->Questions);
@@ -2496,3 +2566,4 @@ _FX int Socket_getpeername(
     // Not a DNS socket or no stored address - pass through to real getpeername
     return __sys_getpeername(s, name, namelen);
 }
+

@@ -54,19 +54,6 @@ const WCHAR* DNS_GetTypeName(WORD wType);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
 //---------------------------------------------------------------------------
-// Duplicate log suppression
-//---------------------------------------------------------------------------
-
-// Initialize and check if a domain/type combination should be suppressed
-BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, USHORT wType);
-
-// Initialize suppression settings (called during DNS filter initialization)
-void DNS_InitSuppressLogSettings(BOOLEAN enabled, ULONGLONG windowMs);
-
-// Get current suppression settings
-void DNS_GetSuppressLogSettings(BOOLEAN* enabled, ULONGLONG* windowMs);
-
-//---------------------------------------------------------------------------
 // General DNS logging functions
 //---------------------------------------------------------------------------
 
@@ -162,6 +149,27 @@ void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQ
 // Exclusion initialization logging (avoid dependency on internal struct)
 void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value);
 
+// Configuration/initialization logging (replaces direct SbieApi_MonitorPutMsg calls)
+void DNS_LogConfigNoMatchingFilter(const WCHAR* domain);
+void DNS_LogConfigWildcardFound(const WCHAR* domain);
+void DNS_LogConfigNegatedWildcard(const WCHAR* domain);
+void DNS_LogConfigNegatedType(const WCHAR* type, const WCHAR* domain);
+void DNS_LogConfigInvalidType(const WCHAR* type, const WCHAR* domain);
+void DNS_LogConfigTypeFilterApplied(const WCHAR* domain, const WCHAR* types_str, USHORT type_count, ULONG applied_count, BOOLEAN has_wildcard);
+void DNS_LogConfigDnsTraceEnabled(void);
+void DNS_LogConfigFilterError(const WCHAR* domain);
+
+// Internal debug logging
+void DNS_LogDebugCleanupStaleHandle(ULONGLONG age);
+void DNS_LogDebugExclusionCheck(const WCHAR* domain, const WCHAR* image, ULONG count);
+void DNS_LogDebugExclusionPerImageList(const WCHAR* image, ULONG pattern_count);
+void DNS_LogDebugExclusionGlobalList(ULONG pattern_count);
+void DNS_LogDebugExclusionTestPattern(ULONG index, const WCHAR* pattern);
+void DNS_LogDebugExclusionMatch(const WCHAR* domain, const WCHAR* pattern);
+void DNS_LogDebugExclusionFromQueryEx(const WCHAR* sourceTag, const WCHAR* domain);
+void DNS_LogDebugDnsApiRecordFree(PVOID pRecordList, INT FreeType, BOOLEAN isSbie);
+void DNS_LogDebugDnsApiRawResultFree(PVOID pQueryResults);
+
 // DnsQueryEx debug logging helpers
 void DNS_LogQueryExInvalidVersion(DWORD version);
 void DNS_LogQueryExVersion3(BOOLEAN isNetworkQueryRequired, DWORD networkIndex, DWORD cServers, void* pServers);
@@ -177,6 +185,13 @@ void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQueryRe
 void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN isIPv6, HANDLE handle,
                              DWORD addrCount, DWORD blobSize, void* csaBuffer, DWORD csaBufferCount);
 void DNS_LogWSADebugRequestEnd(HANDLE handle, BOOLEAN filtered);
+
+// WSALookupService passthrough result logging
+void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD queryType, 
+                                  void* lpqsResults);
+void DNS_LogWSAPassthroughCSADDR(int index, ADDRESS_FAMILY got_af, ADDRESS_FAMILY expect_af, BOOLEAN match);
+void DNS_LogWSAPassthroughHOSTENT(ADDRESS_FAMILY h_addrtype, ADDRESS_FAMILY expect_af, BOOLEAN match);
+void DNS_LogWSAPassthroughInvalidHostent(ADDRESS_FAMILY h_addrtype);
 
 #ifdef __cplusplus
 }

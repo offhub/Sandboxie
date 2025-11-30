@@ -41,10 +41,10 @@ struct _DNS_TYPE_FILTER;
 //---------------------------------------------------------------------------
 
 // Initialize socket hooks (called from WSA_InitNetDnsFilter)
-BOOLEAN Socket_InitHooks(HMODULE module);
+BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate);
 
 // Check if FilterRawDns setting is enabled (for external use)
-BOOLEAN Socket_GetRawDnsFilterEnabled();
+BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
 
 // Mark a socket as DNS connection (for external use by ConnectEx hook)
 void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);

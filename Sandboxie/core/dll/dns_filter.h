@@ -28,7 +28,7 @@ extern "C" {
 
 extern LIST    DNS_FilterList;
 extern BOOLEAN DNS_FilterEnabled;
-extern BOOLEAN DNS_TraceFlag;
+extern BOOLEAN DNS_MapIpv4ToIpv6;  // DnsMapIpv4ToIpv6 setting (default: disabled)
 
 typedef struct _IP_ENTRY
 {

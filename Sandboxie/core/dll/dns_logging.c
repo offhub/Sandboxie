@@ -39,92 +39,24 @@ ULONGLONG GetTickCount64();
 BOOLEAN WSA_GetIP(const SOCKADDR* addr, int addrlen, IP_ADDRESS* pIP);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
-// Suppression state (moved from dns_filter.c)
-static BOOLEAN DNS_SuppressLogEnabled = TRUE;
-static ULONGLONG DNS_SuppressLogWindowMs = 1000;
-
-#define DNS_DUPLOG_CACHE_SIZE 64
-typedef struct _DNS_RECENT_LOG_ENTRY {
-    WCHAR       domain[256];
-    USHORT      type;
-    ULONGLONG   tick;
-} DNS_RECENT_LOG_ENTRY;
-static DNS_RECENT_LOG_ENTRY DNS_RecentLogs[DNS_DUPLOG_CACHE_SIZE];
-static BOOLEAN DNS_RecentLogsInitialized = FALSE;
+// DNS trace and debug flags (moved from dns_filter.c)
+BOOLEAN DNS_TraceFlag = FALSE;
+BOOLEAN DNS_DebugFlag = FALSE;
 
 //---------------------------------------------------------------------------
-// Suppression functions
+// Helper Functions
 //---------------------------------------------------------------------------
 
-_FX void DNS_InitSuppressLogSettings(BOOLEAN enabled, ULONGLONG windowMs)
+// Check if an IPv6 address is IPv4-mapped (::ffff:a.b.c.d)
+// Format: Bytes 0-9 must be 0x00, bytes 10-11 must be 0xFF
+BOOLEAN DNS_IsIPv4Mapped(const IP_ADDRESS* pIP)
 {
-    DNS_SuppressLogEnabled = enabled;
-    DNS_SuppressLogWindowMs = windowMs;
-}
-
-_FX void DNS_GetSuppressLogSettings(BOOLEAN* enabled, ULONGLONG* windowMs)
-{
-    if (enabled) *enabled = DNS_SuppressLogEnabled;
-    if (windowMs) *windowMs = DNS_SuppressLogWindowMs;
-}
-
-_FX BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, USHORT wType)
-{
-    if (!DNS_TraceFlag || !domain || !*domain)
-        return FALSE;
-    
-    if (!DNS_SuppressLogEnabled)
-        return FALSE;
-
-    WCHAR norm[256];
-    size_t len = wcslen(domain);
-    if (len >= ARRAYSIZE(norm)) len = ARRAYSIZE(norm) - 1;
-    wmemcpy(norm, domain, len);
-    norm[len] = L'\0';
-    _wcslwr(norm);
-
-    if (!DNS_RecentLogsInitialized) {
-        memset(DNS_RecentLogs, 0, sizeof(DNS_RecentLogs));
-        DNS_RecentLogsInitialized = TRUE;
-    }
-
-    ULONGLONG now = GetTickCount64();
-    ULONGLONG window = DNS_SuppressLogWindowMs;
-
-    int insertIndex = -1;
-    ULONGLONG oldestTick = (ULONGLONG)-1;
-    
-    for (int i = 0; i < DNS_DUPLOG_CACHE_SIZE; ++i) {
-        DNS_RECENT_LOG_ENTRY* e = &DNS_RecentLogs[i];
-        
-        if (e->tick != 0 && (now - e->tick) <= window) {
-            if (e->type == wType && _wcsicmp(e->domain, norm) == 0) {
-                return TRUE;
-            }
-        } else {
-            if (insertIndex == -1 || e->tick < oldestTick) {
-                oldestTick = e->tick;
-                insertIndex = i;
-            }
-        }
-    }
-    
-    if (insertIndex == -1) {
-        insertIndex = 0;
-        oldestTick = DNS_RecentLogs[0].tick;
-        for (int i = 1; i < DNS_DUPLOG_CACHE_SIZE; ++i) {
-            if (DNS_RecentLogs[i].tick < oldestTick) {
-                oldestTick = DNS_RecentLogs[i].tick;
-                insertIndex = i;
-            }
-        }
-    }
-    
-    wcsncpy(DNS_RecentLogs[insertIndex].domain, norm, ARRAYSIZE(DNS_RecentLogs[insertIndex].domain) - 1);
-    DNS_RecentLogs[insertIndex].domain[ARRAYSIZE(DNS_RecentLogs[insertIndex].domain) - 1] = L'\0';
-    DNS_RecentLogs[insertIndex].type = wType;
-    DNS_RecentLogs[insertIndex].tick = now;
-    return FALSE;
+    return (pIP->Data32[0] == 0 && 
+            pIP->Data32[1] == 0 && 
+            pIP->Data[8] == 0 && 
+            pIP->Data[9] == 0 &&
+            pIP->Data[10] == 0xFF && 
+            pIP->Data[11] == 0xFF);
 }
 
 //---------------------------------------------------------------------------
@@ -134,9 +66,6 @@ _FX BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, USHORT wType)
 _FX void DNS_LogSimple(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* suffix)
 {
     if (!DNS_TraceFlag || !domain)
-        return;
-    
-    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[512];
@@ -160,9 +89,6 @@ _FX void DNS_LogExclusion(const WCHAR* domain)
 _FX void DNS_LogIntercepted(const WCHAR* prefix, const WCHAR* domain, WORD wType, LIST* pEntries)
 {
     if (!DNS_TraceFlag || !domain)
-        return;
-    
-    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[1024];
@@ -190,9 +116,6 @@ _FX void DNS_LogBlocked(const WCHAR* prefix, const WCHAR* domain, WORD wType, co
     if (!DNS_TraceFlag || !domain)
         return;
     
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
-    
     WCHAR msg[1024];
     Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - %s",
         prefix, domain, DNS_GetTypeName(wType), reason);
@@ -201,17 +124,12 @@ _FX void DNS_LogBlocked(const WCHAR* prefix, const WCHAR* domain, WORD wType, co
 
 _FX void DNS_LogPassthrough(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason)
 {
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
     DNS_LogSimple(prefix, domain, wType, reason);
 }
 
 _FX void DNS_LogTypeFilterPassthrough(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason)
 {
     if (!DNS_TraceFlag)
-        return;
-
-    if (DNS_ShouldSuppressLog(domain, wType))
         return;
 
     WCHAR msg[512];
@@ -224,13 +142,6 @@ _FX void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WOR
 {
     if (!DNS_TraceFlag || !domainAnsi)
         return;
-    
-    WCHAR domain[256];
-    int nameLen = MultiByteToWideChar(CP_ACP, 0, domainAnsi, -1, domain, ARRAYSIZE(domain));
-    if (nameLen > 0 && nameLen < (int)ARRAYSIZE(domain)) {
-        if (DNS_ShouldSuppressLog(domain, wType))
-            return;
-    }
     
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"%s: %S (Type: %s)%s%s",
@@ -251,8 +162,13 @@ _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
     if (!DNS_TraceFlag || !domain)
         return;
     
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
+    // Debug: Log entry to DNS_LogDnsRecords
+    if (DNS_DebugFlag) {
+        WCHAR debug_entry[256];
+        Sbie_snwprintf(debug_entry, 256, L"  DNS_LogDnsRecords ENTRY: prefix=%s domain=%s wType=%s pRecords=%p passthrough=%d",
+            prefix, domain, DNS_GetTypeName(wType), pRecords, is_passthrough);
+        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_entry);
+    }
     
     WCHAR msg[1024];
     if (suffix) {
@@ -266,11 +182,61 @@ _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
     BOOLEAN is_any_query = (wType == 255);
     PDNSAPI_DNS_RECORD pRec = pRecords;
     int record_count = 0;
+    
+    // Debug: Count total records
+    if (DNS_DebugFlag) {
+        int total_records = 0;
+        PDNSAPI_DNS_RECORD pCount = pRecords;
+        while (pCount) {
+            total_records++;
+            pCount = pCount->pNext;
+        }
+        WCHAR debug_count[256];
+        Sbie_snwprintf(debug_count, 256, L"  DNS_LogDnsRecords: Total records in chain: %d", total_records);
+        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_count);
+    }
+    
+        // Import setting for passthrough filtering
+        extern BOOLEAN DNS_MapIpv4ToIpv6;
+    
+    // For AAAA queries: check if native IPv6 exists first
+    BOOLEAN has_native_ipv6 = FALSE;
+    if (wType == DNS_TYPE_AAAA) {
+        PDNSAPI_DNS_RECORD pCheckRec = pRecords;
+        while (pCheckRec) {
+            if (pCheckRec->wType == DNS_TYPE_AAAA) {
+                IP_ADDRESS check_ip;
+                memset(&check_ip, 0, sizeof(check_ip));
+                memcpy(check_ip.Data, &pCheckRec->Data.AAAA.Ip6Address, 16);
+                if (!DNS_IsIPv4Mapped(&check_ip)) {
+                    has_native_ipv6 = TRUE;
+                    break;
+                }
+            }
+            pCheckRec = pCheckRec->pNext;
+        }
+    }
+    
     while (pRec && record_count < MAX_DNS_RECORDS_TO_LOG) {
         BOOLEAN type_matches = (pRec->wType == wType) || is_any_query;
         BOOLEAN is_loggable_type = (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA);
         
+        // Debug: Log each record being examined
+        if (DNS_DebugFlag) {
+            WCHAR debug_rec[256];
+            Sbie_snwprintf(debug_rec, 256, L"  DNS_LogDnsRecords: Record #%d type=%s type_matches=%d loggable=%d",
+                record_count, DNS_GetTypeName(pRec->wType), type_matches, is_loggable_type);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, debug_rec);
+        }
+        
         if (type_matches && is_loggable_type) {
+                // Skip A records in AAAA passthrough queries when mapping is disabled
+                if (is_passthrough && wType == DNS_TYPE_AAAA && pRec->wType == DNS_TYPE_A && !DNS_MapIpv4ToIpv6) {
+                    pRec = pRec->pNext;
+                    record_count++;
+                    continue;
+                }
+            
             if (DNS_DebugFlag) {
                 WCHAR debug_msg[256];
                 Sbie_snwprintf(debug_msg, 256, L"  DNS_LogDnsRecords: Processing record type=%s for query type=%s",
@@ -282,13 +248,41 @@ _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
             if (pRec->wType == DNS_TYPE_AAAA) {
                 memcpy(ip.Data, &pRec->Data.AAAA.Ip6Address, 16);
                 
-                BOOLEAN is_ipv4_mapped = (ip.Data32[0] == 0 && ip.Data32[1] == 0 && ip.Data32[2] == 0xFFFF0000);
-                if (!is_ipv4_mapped) {
+                    // Skip IPv4-mapped addresses:
+                    // - For passthrough AAAA queries when mapping disabled: always skip
+                    // - For filtered responses: skip only if native IPv6 exists
+                    BOOLEAN should_skip_mapped = FALSE;
+                    BOOLEAN is_ipv4_mapped = DNS_IsIPv4Mapped(&ip);
+                    
+                    if (DNS_DebugFlag) {
+                        WCHAR debug_ipv4mapped[512];
+                        Sbie_snwprintf(debug_ipv4mapped, 512, 
+                            L"    IPv6 bytes: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x - IsIPv4Mapped=%d",
+                            ip.Data[0], ip.Data[1], ip.Data[2], ip.Data[3],
+                            ip.Data[4], ip.Data[5], ip.Data[6], ip.Data[7],
+                            ip.Data[8], ip.Data[9], ip.Data[10], ip.Data[11],
+                            ip.Data[12], ip.Data[13], ip.Data[14], ip.Data[15],
+                            is_ipv4_mapped);
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_ipv4mapped);
+                    }
+                    
+                    if (is_ipv4_mapped) {
+                        if (is_passthrough && wType == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6) {
+                            should_skip_mapped = TRUE;
+                        } else if (has_native_ipv6) {
+                            should_skip_mapped = TRUE;
+                        }
+                    }
+                
+                    if (should_skip_mapped) {
+                    if (DNS_DebugFlag) {
+                        WCHAR debug_msg[256];
+                            Sbie_snwprintf(debug_msg, 256, L"    Skipping IPv4-mapped IPv6 (passthrough=%d mapping=%d native=%d)",
+                                is_passthrough, DNS_MapIpv4ToIpv6, has_native_ipv6);
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
+                    }
+                } else {
                     WSA_DumpIP(AF_INET6, &ip, msg);
-                } else if (DNS_DebugFlag) {
-                    WCHAR debug_msg[256];
-                    Sbie_snwprintf(debug_msg, 256, L"    Skipping IPv4-mapped IPv6 address for AAAA query");
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
                 }
             } else if (pRec->wType == DNS_TYPE_A) {
                 ip.Data32[3] = pRec->Data.A.IpAddress;
@@ -314,9 +308,6 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
     if (!DNS_TraceFlag || !domain)
         return;
 
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
-
     WCHAR msg[1024];
     
     if (status == 0 && ppQueryResults && *ppQueryResults) {
@@ -339,13 +330,29 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
         int record_count = 0;
         
         while (pRec && record_count < MAX_DNS_RECORDS_TO_LOG) {
+            // Log only records matching the requested query type (or all types for ANY queries)
             if ((is_any_query || pRec->wType == wType) && 
                 (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA)) {
+                
+                // Skip unexpected A records in AAAA responses unless DnsMapIpv4ToIpv6 is enabled.
+                extern BOOLEAN DNS_MapIpv4ToIpv6;
+                if (wType == DNS_TYPE_AAAA && pRec->wType == DNS_TYPE_A && !DNS_MapIpv4ToIpv6) {
+                    pRec = pRec->pNext;
+                    continue;
+                }
                 
                 IP_ADDRESS ip;
                 memset(&ip, 0, sizeof(ip));
                 if (pRec->wType == DNS_TYPE_AAAA) {
                     memcpy(ip.Data, &pRec->Data.AAAA.Ip6Address, 16);
+                    
+                    // Skip IPv4-mapped IPv6 for AAAA queries when mapping is disabled
+                    // This matches the filtering behavior in DNS_LogDnsRecords for consistency
+                    if (wType == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6 && DNS_IsIPv4Mapped(&ip)) {
+                        pRec = pRec->pNext;
+                        continue;
+                    }
+                    
                     WSA_DumpIP(AF_INET6, &ip, msg);
                 } else {
                     ip.Data32[3] = pRec->Data.A.IpAddress;
@@ -363,9 +370,6 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
 _FX void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status)
 {
     if (!DNS_TraceFlag || !domain)
-        return;
-    
-    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[512];
@@ -396,8 +400,7 @@ _FX void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* doma
     if (!DNS_TraceFlag || !domain)
         return;
     
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
+    extern BOOLEAN DNS_MapIpv4ToIpv6;
     
     WCHAR msg[1024];
     Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - Status: %d",
@@ -408,20 +411,48 @@ _FX void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* doma
         BOOLEAN is_any_query = (wType == 255);
         int record_count = 0;
         
+        // For AAAA queries: check if native IPv6 exists first
+        BOOLEAN has_native_ipv6 = FALSE;
+        if (wType == DNS_TYPE_AAAA) {
+            PDNSAPI_DNS_RECORD pCheckRec = pRecords;
+            while (pCheckRec) {
+                if (pCheckRec->wType == DNS_TYPE_AAAA) {
+                    IP_ADDRESS check_ip;
+                    memset(&check_ip, 0, sizeof(check_ip));
+                    memcpy(check_ip.Data, &pCheckRec->Data.AAAA.Ip6Address, 16);
+                    if (!DNS_IsIPv4Mapped(&check_ip)) {
+                        has_native_ipv6 = TRUE;
+                        break;
+                    }
+                }
+                pCheckRec = pCheckRec->pNext;
+            }
+        }
+        
         while (pRec && record_count < 10) {
+            // Log only records matching the requested query type (or all types for ANY queries)
             if ((is_any_query || pRec->wType == wType) && 
                 (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA)) {
+                
+                // Skip unexpected A records in AAAA responses unless DnsMapIpv4ToIpv6 is enabled
+                if (wType == DNS_TYPE_AAAA && pRec->wType == DNS_TYPE_A && !DNS_MapIpv4ToIpv6) {
+                    pRec = pRec->pNext;
+                    continue;
+                }
                 
                 IP_ADDRESS ip;
                 memset(&ip, 0, sizeof(ip));
                 if (pRec->wType == DNS_TYPE_AAAA) {
                     memcpy(ip.Data, &pRec->Data.AAAA.Ip6Address, 16);
                     
-                    BOOLEAN is_ipv4_mapped = (ip.Data32[0] == 0 && ip.Data32[1] == 0 && ip.Data32[2] == 0xFFFF0000);
-                    if (!is_ipv4_mapped) {
-                        WSA_DumpIP(AF_INET6, &ip, msg);
-                        record_count++;
+                    // Skip IPv4-mapped addresses when DnsMapIpv4ToIpv6 is disabled OR if native IPv6 exists
+                    if (DNS_IsIPv4Mapped(&ip) && (!DNS_MapIpv4ToIpv6 || has_native_ipv6)) {
+                        pRec = pRec->pNext;
+                        continue;
                     }
+                    
+                    WSA_DumpIP(AF_INET6, &ip, msg);
+                    record_count++;
                 } else {
                     ip.Data32[3] = pRec->Data.A.IpAddress;
                     WSA_DumpIP(AF_INET, &ip, msg);
@@ -439,13 +470,14 @@ static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status)
 {
     switch (status) {
         case 0:                             return L"Success";
-        case 9001:                          return L"RCODE_FORMAT_ERROR: DNS server unable to interpret format";
-        case 9002:                          return L"RCODE_SERVER_FAILURE: DNS server internal error";
-        case 9003:                          return L"RCODE_NAME_ERROR: Domain name does not exist";
-        case 9004:                          return L"RCODE_NOT_IMPLEMENTED: DNS server does not support this query type";
-        case 9005:                          return L"RCODE_REFUSED: DNS server refused query";
-        case 9501:                          return L"No records found (domain exists but no records of this type)";
-        case 9502:                          return L"NO_DNS_DATA: Valid name but no data of requested type";
+        case 9001:                          return L"DNS_ERROR_RCODE_FORMAT_ERROR: DNS server unable to interpret format";
+        case 9002:                          return L"DNS_ERROR_RCODE_SERVER_FAILURE: DNS server internal error";
+        case 9003:                          return L"DNS_ERROR_RCODE_NAME_ERROR: Domain name does not exist";
+        case 9004:                          return L"DNS_ERROR_RCODE_NOT_IMPLEMENTED: DNS server does not support this query type";
+        case 9005:                          return L"DNS_ERROR_RCODE_REFUSED: DNS server refused query";
+        case 9501:                          return L"DNS_INFO_NO_RECORDS: No records found (domain exists but no records of this type)";
+        case 9502:                          return L"DNS_ERROR_BAD_PACKET: Bad DNS packet";
+        case 9701:                          return L"DNS_ERROR_RECORD_DOES_NOT_EXIST: DNS record does not exist";
         case ERROR_TIMEOUT:                 return L"Timeout";
         case ERROR_INVALID_PARAMETER:       return L"Invalid parameter";
         default:                            return NULL;
@@ -460,9 +492,6 @@ _FX void DNS_LogRawSocketIntercepted(const WCHAR* protocol, const WCHAR* domain,
                                       LIST* pEntries, const WCHAR* func_suffix)
 {
     if (!DNS_TraceFlag || !domain)
-        return;
-    
-    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[1024];
@@ -497,9 +526,6 @@ _FX void DNS_LogRawSocketBlocked(const WCHAR* protocol, const WCHAR* domain, WOR
     if (!DNS_TraceFlag || !domain)
         return;
     
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
-    
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"%s DNS Blocked: %s (Type: %s) - %s",
         protocol, domain, DNS_GetTypeName(wType), reason);
@@ -516,7 +542,7 @@ _FX void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD 
                                 int query_len, int response_len, const WCHAR* func_suffix, 
                                 SOCKET s)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[512];
@@ -559,9 +585,6 @@ _FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
         return;
     
     WORD wType = WSA_IsIPv6Query(lpGuid) ? DNS_TYPE_AAAA : DNS_TYPE_A;
-    
-    if (DNS_ShouldSuppressLog(domain, wType))
-        return;
     
     WCHAR msg[1024];
     if (is_blocked) {
@@ -614,14 +637,11 @@ _FX void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
     
     WORD wType = actualQueryType;
     
-    if (domain && DNS_ShouldSuppressLog(domain, wType))
-        return;
-    
     if (errCode != 0 || DNS_DebugFlag) {
         WCHAR msg[512];
         if (errCode != 0) {
-            Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (Type: %s) - Error %d",
-                domain ? domain : L"(unknown)", DNS_GetTypeName(wType), errCode);
+            Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (NS: %d, Type: %s) - Error %d",
+                domain ? domain : L"(unknown)", dwNameSpace, DNS_GetTypeName(wType), errCode);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
         
@@ -643,12 +663,9 @@ _FX void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type)
     if (!DNS_TraceFlag || !domain)
         return;
     
-    if (DNS_ShouldSuppressLog(domain, query_type))
-        return;
-    
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (Type: %s) - Type not in filter list, forwarding to real DNS",
-        domain, query_type == DNS_TYPE_AAAA ? L"AAAA" : L"A");
+        domain, DNS_GetTypeName(query_type));
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
@@ -687,7 +704,7 @@ _FX void DNS_LogIPEntry(const IP_ENTRY* entry)
 
 _FX void DNS_LogWSAFillStart(BOOLEAN isIPv6, SIZE_T ipCount, void* listHead)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[512];
@@ -698,7 +715,7 @@ _FX void DNS_LogWSAFillStart(BOOLEAN isIPv6, SIZE_T ipCount, void* listHead)
 
 _FX void DNS_LogWSALookupCall(HANDLE hLookup, DWORD bufSize, BOOLEAN noMore, void* pEntries)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[512];
@@ -709,7 +726,7 @@ _FX void DNS_LogWSALookupCall(HANDLE hLookup, DWORD bufSize, BOOLEAN noMore, voi
 
 _FX void DNS_LogWSAFillFailure(HANDLE hLookup, DWORD error, DWORD bufSize)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[512];
@@ -720,7 +737,7 @@ _FX void DNS_LogWSAFillFailure(HANDLE hLookup, DWORD error, DWORD bufSize)
 
 _FX void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQueryResults, DWORD version, void* queryName)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[512];
@@ -749,7 +766,7 @@ _FX void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value)
 
 _FX void DNS_LogQueryExInvalidVersion(DWORD version)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: Invalid Version=%d (expected 1-3), passing through", version);
@@ -758,7 +775,7 @@ _FX void DNS_LogQueryExInvalidVersion(DWORD version)
 
 _FX void DNS_LogQueryExVersion3(BOOLEAN isNetworkQueryRequired, DWORD networkIndex, DWORD cServers, void* pServers)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: VERSION3 detected - IsNetworkQueryRequired=%d, RequiredNetworkIndex=%u, cCustomServers=%u, pCustomServers=%p",
@@ -768,7 +785,7 @@ _FX void DNS_LogQueryExVersion3(BOOLEAN isNetworkQueryRequired, DWORD networkInd
 
 _FX void DNS_LogQueryExEntry(const WCHAR* queryName, WORD queryType, DWORD version, ULONG64 options, DWORD interfaceIndex, BOOLEAN hasCallback)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx Entry: QueryName=%s, Type=%s, Version=%d, Options=0x%llX, InterfaceIndex=%u, HasCallback=%d",
@@ -778,7 +795,7 @@ _FX void DNS_LogQueryExEntry(const WCHAR* queryName, WORD queryType, DWORD versi
 
 _FX void DNS_LogQueryExCorruptOptions(ULONG64 corruptOptions)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: CORRUPT QueryOptions detected: 0x%I64X (looks like user-mode pointer, treating as 0)", corruptOptions);
@@ -787,7 +804,7 @@ _FX void DNS_LogQueryExCorruptOptions(ULONG64 corruptOptions)
 
 _FX void DNS_LogQueryExStrippedFlags(const WCHAR* context, ULONG64 before, ULONG64 after)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: %s - stripped flags (0x%I64X -> 0x%I64X)", context, before, after);
@@ -796,7 +813,7 @@ _FX void DNS_LogQueryExStrippedFlags(const WCHAR* context, ULONG64 before, ULONG
 
 _FX void DNS_LogQueryExProactiveSanitize(ULONG64 original, ULONG64 sanitized)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: Proactive sanitization - QueryOptions reduced before call (0x%I64X -> 0x%I64X)", original, sanitized);
@@ -805,7 +822,7 @@ _FX void DNS_LogQueryExProactiveSanitize(ULONG64 original, ULONG64 sanitized)
 
 _FX void DNS_LogQueryExErrorRetryReduction(const WCHAR* reason, ULONG64 before, ULONG64 after)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: %s, retrying with reduced QueryOptions (0x%I64X -> 0x%I64X)", reason, before, after);
@@ -814,7 +831,7 @@ _FX void DNS_LogQueryExErrorRetryReduction(const WCHAR* reason, ULONG64 before, 
 
 _FX void DNS_LogQueryExRetryInterface(DWORD originalIndex)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx: ERROR_INVALID_PARAMETER with InterfaceIndex=%u, retrying with 0", originalIndex);
@@ -823,7 +840,7 @@ _FX void DNS_LogQueryExRetryInterface(DWORD originalIndex)
 
 _FX void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQueryResults, void* pQueryRecords, DWORD version)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"  DnsQueryEx Debug: status=%d, asyncCtx=%p, pQueryResults=%p, pQueryRecords=%p, Version=%d",
@@ -838,7 +855,7 @@ _FX void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQue
 _FX void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN isIPv6, HANDLE handle,
                                  DWORD addrCount, DWORD blobSize, void* csaBuffer, DWORD csaBufferCount)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     
     WCHAR msg[2048];
@@ -862,10 +879,287 @@ _FX void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN i
 
 _FX void DNS_LogWSADebugRequestEnd(HANDLE handle, BOOLEAN filtered)
 {
-    if (!DNS_DebugFlag)
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[256];
     Sbie_snwprintf(msg, 256, L"  WSA Debug: %s Request End (Hdl: %p)", filtered ? L"" : L"Unfiltered", handle);
     DNS_LogDebug(msg);
 }
 
+//---------------------------------------------------------------------------
+// WSALookupService Passthrough Result Logging
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD queryType,
+                                     void* lpqsResults)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    extern BOOLEAN DNS_MapIpv4ToIpv6;
+    
+    WCHAR msg[1024];
+    Sbie_snwprintf(msg, 1024, L"WSALookupService Passthrough Result: %s (NS: %d, Type: %s)",
+        domain, nameSpace, DNS_GetTypeName(queryType));
+    
+    // Log IP addresses from CSADDR_INFO array if available
+    if (lpqsResults) {
+        LPWSAQUERYSETW pResults = (LPWSAQUERYSETW)lpqsResults;
+        if (pResults->lpcsaBuffer && pResults->dwNumberOfCsAddrs > 0) {
+            for (DWORD i = 0; i < pResults->dwNumberOfCsAddrs && i < 10; i++) {
+                PCSADDR_INFO csaInfo = &pResults->lpcsaBuffer[i];
+                if (csaInfo->RemoteAddr.lpSockaddr) {
+                    IP_ADDRESS ip;
+                    if (WSA_GetIP(csaInfo->RemoteAddr.lpSockaddr,
+                        csaInfo->RemoteAddr.iSockaddrLength, &ip)) {
+                        
+                        // Skip IPv4 addresses (AF_INET) in AAAA query results unless mapping is enabled
+                        if (queryType == DNS_TYPE_AAAA && 
+                            csaInfo->RemoteAddr.lpSockaddr->sa_family == AF_INET && 
+                            !DNS_MapIpv4ToIpv6) {
+                            continue;
+                        }
+                        
+                        // Skip IPv4-mapped IPv6 in AAAA query results unless mapping is enabled
+                        if (queryType == DNS_TYPE_AAAA && 
+                            csaInfo->RemoteAddr.lpSockaddr->sa_family == AF_INET6) {
+                            if (DNS_IsIPv4Mapped(&ip) && !DNS_MapIpv4ToIpv6) {
+                                continue;
+                            }
+                        }
+                        
+                        WSA_DumpIP(csaInfo->RemoteAddr.lpSockaddr->sa_family, &ip, msg);
+                    }
+                }
+            }
+        }
+    }
+    
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogWSAPassthroughCSADDR(int index, ADDRESS_FAMILY got_af, ADDRESS_FAMILY expect_af, BOOLEAN match)
+{
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"  CSADDR[%d]: got_af=%d expect_af=%d match=%d",
+        index, got_af, expect_af, match);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogWSAPassthroughHOSTENT(ADDRESS_FAMILY h_addrtype, ADDRESS_FAMILY expect_af, BOOLEAN match)
+{
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"  HOSTENT: h_addrtype=%d expect_af=%d match=%d",
+        h_addrtype, expect_af, match);
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogWSAPassthroughInvalidHostent(ADDRESS_FAMILY h_addrtype)
+{
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"  HOSTENT: Skipping invalid h_addrtype=%d (not AF_INET or AF_INET6)",
+        h_addrtype);
+    DNS_LogDebug(msg);
+}
+
+//---------------------------------------------------------------------------
+// Configuration/initialization logging functions
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogConfigNoMatchingFilter(const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: No matching NetworkDnsFilter for domain='%s', ignoring", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigWildcardFound(const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Wildcard '*' found for domain '%s' - will filter ALL types", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigNegatedWildcard(const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Negated wildcard '!*' found for domain '%s' - will passthrough ALL types", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigNegatedType(const WCHAR* type, const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Negated type '%s' for domain '%s' - will passthrough", type, domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigInvalidType(const WCHAR* type, const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Invalid type name '%s' for domain '%s'", type, domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigTypeFilterApplied(const WCHAR* domain, const WCHAR* types_str, USHORT type_count, ULONG applied_count, BOOLEAN has_wildcard)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    if (has_wildcard) {
+        Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Domain='%s' types=[* (wildcard - all types)] applied to %d patterns",
+            domain, applied_count);
+    } else {
+        Sbie_snwprintf(msg, 512, L"NetworkDnsFilterType: Domain='%s' types=[%s] (%d types) applied to %d patterns",
+            domain, types_str, type_count, applied_count);
+    }
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigDnsTraceEnabled(void)
+{
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"DNS Trace: DNS filtering activity logging enabled");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogConfigFilterError(const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS Filter: Error loading filter for domain '%s'", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+//---------------------------------------------------------------------------
+// Internal debug logging functions
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDebugCleanupStaleHandle(ULONGLONG age)
+{
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"  WSA Debug: Cleaned up stale handle (Age: %llu ms)", age);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionCheck(const WCHAR* domain, const WCHAR* image, ULONG count)
+{
+    if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking domain='%s', image='%s', ExclusionListCount=%d",
+        domain, image ? image : L"(null)", count);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionPerImageList(const WCHAR* image, ULONG pattern_count)
+{
+    if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking per-image list for '%s' (%d patterns)",
+        image, pattern_count);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionGlobalList(ULONG pattern_count)
+{
+    if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking global list (%d patterns)", pattern_count);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionTestPattern(ULONG index, const WCHAR* pattern)
+{
+    if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Testing pattern[%d]='%s'", index, pattern);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionMatch(const WCHAR* domain, const WCHAR* pattern)
+{
+    if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: MATCH! Domain='%s' matched pattern='%s'",
+        domain, pattern);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugExclusionFromQueryEx(const WCHAR* sourceTag, const WCHAR* domain)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s Exclusion: Domain '%s' matched exclusion list, skipping filter", sourceTag, domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugDnsApiRecordFree(PVOID pRecordList, INT FreeType, BOOLEAN isSbie)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[256];
+    const WCHAR* freeTypeName = (FreeType == 0) ? L"DnsFreeFlat" : 
+                                 (FreeType == 1) ? L"DnsFreeRecordList" : 
+                                 (FreeType == 2) ? L"DnsFreeParsedMessageFields" : 
+                                 L"Unknown";
+    
+    if (isSbie) {
+        Sbie_snwprintf(msg, 256, L"DnsApi RecordListFree: Freeing SBIE record (List: %p, Type: %s)", pRecordList, freeTypeName);
+    } else {
+        Sbie_snwprintf(msg, 256, L"DnsApi RecordListFree: Calling real API (List: %p, Type: %s)", pRecordList, freeTypeName);
+    }
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDebugDnsApiRawResultFree(PVOID pQueryResults)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, 256, L"DnsApi QueryRawResultFree: Freeing result (ptr: %p)", pQueryResults);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}

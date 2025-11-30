@@ -1061,13 +1061,24 @@ _FX void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr)
 {
     pStr = wcschr(pStr, L'\0');
 
-    if (af == AF_INET6 && pIP->Data32[0] == 0 && pIP->Data32[1] == 0 && pIP->Data32[2] == 0xFFFF0000)
-        af = AF_INET; // print mapped ipv4 addresses natively
+    // Check for IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+    // Bytes 0-9 must be zero, bytes 10-11 must be 0xFF
+    BOOLEAN is_mapped_ipv4 = (af == AF_INET6 && 
+                              pIP->Data32[0] == 0 && pIP->Data32[1] == 0 && 
+                              pIP->Data[10] == 0xFF && pIP->Data[11] == 0xFF &&
+                              pIP->Data[8] == 0 && pIP->Data[9] == 0);
 
     if (af == AF_INET6) {
-		Sbie_snwprintf(pStr, 45+10, L"; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-			pIP->Data[0], pIP->Data[1], pIP->Data[2], pIP->Data[3], pIP->Data[4], pIP->Data[5], pIP->Data[6], pIP->Data[7],
-			pIP->Data[8], pIP->Data[9], pIP->Data[10], pIP->Data[11], pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        if (is_mapped_ipv4) {
+            // Display IPv4-mapped IPv6 address clearly
+            Sbie_snwprintf(pStr, 30+10, L"; IPv4-mapped-IPv6: %d.%d.%d.%d",
+                pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        } else {
+            // Native IPv6 address
+            Sbie_snwprintf(pStr, 45+10, L"; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                pIP->Data[0], pIP->Data[1], pIP->Data[2], pIP->Data[3], pIP->Data[4], pIP->Data[5], pIP->Data[6], pIP->Data[7],
+                pIP->Data[8], pIP->Data[9], pIP->Data[10], pIP->Data[11], pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        }
 	}
 	else if (af == AF_INET) {
 		Sbie_snwprintf(pStr, 15+10, L"; IPv4: %d.%d.%d.%d",
@@ -1455,10 +1466,11 @@ _FX int WSA_ConnectEx(
     // DNS tracking: Check if connecting to port 53 (must be declared before first use)
     extern BOOLEAN DNS_FilterEnabled;
     extern BOOLEAN DNS_DebugFlag;
-    extern BOOLEAN Socket_GetRawDnsFilterEnabled();
+    extern BOOLEAN DNS_HasValidCertificate;
+    extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
     extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
     
-    BOOLEAN DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled();
+    BOOLEAN DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(DNS_HasValidCertificate);
     
     // Debug log ConnectEx calls when DNS filtering is enabled (controlled by DnsDebug flag)
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
