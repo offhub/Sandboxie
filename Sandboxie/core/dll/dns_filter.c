@@ -61,19 +61,25 @@
 //        - Negated wildcard (!*): Passthrough ALL types (explicit passthrough for all)
 //
 //      Block Mode (domain without IPs) Behavior:
-//        - ALL types are blocked (returns NXDOMAIN)
+//        - ALL types are blocked (returns NXDOMAIN per RFC 2308 - domain doesn't exist)
 //        - NetworkDnsFilterType has no effect in block mode
+//
+//      Filter Mode (domain with IPs) DNS Response Behavior (RFC 2308):
+//        - Supported types (A/AAAA) with matching IPs: NOERROR with answers
+//        - Supported types with no matching IPs: NOERROR + NODATA (0 answers)
+//        - Unsupported types (MX/TXT/CNAME/etc.): NOERROR + NODATA (domain exists, no records of this type)
+//        - Passthrough types: Forward to real DNS (depends on NetworkDnsFilterType setting)
 //
 //      Examples:
 //        * NetworkDnsFilter=example.com:1.0.0.1
 //          (no NetworkDnsFilterType set)
 //          → A/AAAA/ANY: Intercept (return 1.0.0.1)
-//          → HTTPS/MX/TXT/CNAME: Block (unsupported types, no explicit type filter)
+//          → HTTPS/MX/TXT/CNAME: NOERROR + NODATA (unsupported types, domain exists)
 //
 //        * NetworkDnsFilter=example.com:1.0.0.1
 //          NetworkDnsFilterType=example.com:A;AAAA;MX
 //          → A/AAAA: Intercept (return 1.0.0.1)
-//          → MX: Block (unsupported type)
+//          → MX: NOERROR + NODATA (unsupported type, domain exists)
 //          → CNAME/TXT/HTTPS: Passthrough (not in list)
 //
 //        * NetworkDnsFilter=example.com:1.0.0.1
@@ -86,16 +92,16 @@
 //          NetworkDnsFilterType=example.com:*;!CNAME;!MX
 //          → A/AAAA: Intercept (in wildcard, supported)
 //          → MX/CNAME: Passthrough (explicitly negated)
-//          → TXT/SRV/HTTPS: Block (in wildcard, unsupported, not negated)
+//          → TXT/SRV/HTTPS: NOERROR + NODATA (in wildcard, unsupported, domain exists)
 //
 //        * NetworkDnsFilter=example.com:1.0.0.1
 //          NetworkDnsFilterType=example.com:!*
 //          → ALL types: Passthrough (complete filtering bypass)
 //
 //      IMPORTANT: Only A and AAAA (or ANY) records can be synthesized from IP addresses.
-//                 - NO type filter: A/AAAA/ANY intercepted, all others BLOCKED by default.
+//                 - NO type filter: A/AAAA/ANY intercepted, all others return NOERROR + NODATA.
 //                 - WITH type filter: Only listed types filtered; unlisted types PASSTHROUGH.
-//                 - Unsupported types in filter list (without negation) will be BLOCKED.
+//                 - Unsupported types in filter list (without negation) return NOERROR + NODATA.
 //
 //    NetworkDnsFilterExclude=<patterns>
 //      - Exclusion/whitelist patterns (higher priority than NetworkDnsFilter)
@@ -120,7 +126,7 @@
 //    DnsMapIpv4ToIpv6=[process,]y|n
 //      - Boolean: Enable/disable IPv4-mapped IPv6 for AAAA queries (default: n)
 //      - Per-process support: DnsMapIpv4ToIpv6=firefox.exe,y
-//      - When disabled: AAAA queries return NXDOMAIN if no native IPv6 available
+//      - When disabled: AAAA queries return NOERROR + NODATA if no native IPv6 available
 //      - When enabled: AAAA queries return IPv4-mapped IPv6 (::ffff:a.b.c.d) for IPv4-only entries
 //      - Use case: Enable for apps that expect IPv6 responses for all AAAA queries
 //
@@ -367,6 +373,7 @@ static DNS_EXCLUSION_LIST* DNS_GetOrCreateExclusionList(const WCHAR* image_name,
 static void DNS_ParseExclusionPatterns(DNS_EXCLUSION_LIST* excl, const WCHAR* value);
 static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR* domain);
 static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level);
+static BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain);
 static BOOLEAN DNS_LoadFilterEntries(void);
 
 // WSALookupService specific state tracking
@@ -599,6 +606,10 @@ _FX BOOLEAN WSA_FillResponseStructure(
     }
 
     if (ipCount == 0) {
+        // No matching IPs for this query type
+        // This is NOERROR + NODATA (domain exists, no records of this type)
+        // Don't return FALSE here - let caller handle NODATA case
+        // Note: Caller will check ipCount == 0 and return WSA_E_NO_MORE appropriately
         SetLastError(WSA_E_NO_MORE);
         return FALSE;
     }
@@ -1699,6 +1710,38 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
 }
 
 //---------------------------------------------------------------------------
+// DNS_DomainMatchesFilter
+//
+// Helper to check if a domain matches any filter pattern (without type checking)
+// Used for "Monitored" log detection in passthrough scenarios
+// Returns TRUE if domain is in filter list, FALSE otherwise
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain)
+{
+    if (!DNS_FilterEnabled || !domain)
+        return FALSE;
+
+    size_t path_len = wcslen(domain);
+    if (path_len == 0)
+        return FALSE;
+
+    WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
+    if (!path_lwr)
+        return FALSE;
+
+    wmemcpy(path_lwr, domain, path_len);
+    path_lwr[path_len] = L'\0';
+    _wcslwr(path_lwr);
+
+    PATTERN* found;
+    BOOLEAN matches = (Pattern_MatchPathList(path_lwr, (ULONG)path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0);
+
+    Dll_Free(path_lwr);
+    return matches;
+}
+
+//---------------------------------------------------------------------------
 // DNS_CheckFilter
 //
 // Simple filter check matching 1.16.8 pattern.
@@ -2419,9 +2462,13 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
         pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries, CharSet);
         if (!pRecords)
             status = DNS_ERROR_RCODE_NAME_ERROR;
-    } else {
-        // Block mode OR unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
+    } else if (!pEntries) {
+        // Block mode: return NXDOMAIN (domain doesn't exist)
         status = DNS_ERROR_RCODE_NAME_ERROR;
+    } else {
+        // Filter mode but unsupported type (MX/CNAME/TXT/etc.)
+        // Domain exists (we're filtering it), return NOERROR + NODATA (RFC 2308)
+        status = 0;  // DNS_ERROR_RCODE = 0 = NOERROR, pRecords = NULL = NODATA
     }
 
     if (pQueryResults->Version == 0)
@@ -2440,10 +2487,17 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
         Sbie_snwprintf(prefix, 128, L"%s Intercepted", sourceTag);
         DNS_LogDnsRecords(prefix, pszName, wType, pRecords, NULL, FALSE);
     }
+    else if (status == 0 && !pRecords) {
+        // NOERROR + NODATA (unsupported type in intercept mode)
+        WCHAR prefix[128];
+        Sbie_snwprintf(prefix, 128, L"%s", sourceTag);
+        DNS_LogBlocked(prefix, pszName, wType, L"Returning NOERROR + NODATA (unsupported type, domain exists)");
+    }
     else {
+        // NXDOMAIN (block mode)
         WCHAR prefix[128];
         Sbie_snwprintf(prefix, 128, L"%s Blocked", sourceTag);
-        DNS_LogBlocked(prefix, pszName, wType, L"Returning NXDOMAIN");
+        DNS_LogBlocked(prefix, pszName, wType, L"Returning NXDOMAIN (block mode)");
     }
 
     if (pOutcome) {
@@ -2695,19 +2749,19 @@ static BOOLEAN DNSAPI_FilterDnsQuery(
             *pStatus = 0;
             return TRUE;
         } else {
-            // No matching entries, return name error
-            WCHAR blockTag[128];
-            DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
-                           wName, wType, L"Returning NXDOMAIN");
-            *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
+            // No matching entries for this type (e.g., AAAA query but only IPv4 available)
+            // Return NOERROR + NODATA (domain exists, no records of this type)
+            DNS_LogBlocked(sourceTag, wName, wType, L"Returning NOERROR + NODATA (no matching records)");
+            *ppQueryResults = NULL;
+            *pStatus = 0;  // NOERROR
             return TRUE;
         }
     } else {
-        // Unsupported type (MX/CNAME/TXT/etc.): return NXDOMAIN
-        WCHAR blockTag[128];
-        DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
-                       wName, wType, L"Returning NXDOMAIN");
-        *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
+        // Unsupported type (MX/CNAME/TXT/etc.) in intercept mode
+        // Domain exists (we're filtering it), return NOERROR + NODATA (RFC 2308)
+        DNS_LogBlocked(sourceTag, wName, wType, L"Returning NOERROR + NODATA (unsupported type, domain exists)");
+        *ppQueryResults = NULL;
+        *pStatus = 0;  // NOERROR
         return TRUE;
     }
 }
@@ -2937,8 +2991,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
                         return status;
                     }
 
-                    // Not filtered - log passthrough and continue to real DNS
-                    DNS_LogPassthroughAnsi(L"DnsQuery_UTF8 Passthrough", pszName, wType, L"Type not in filter list, forwarding to real DNS");
+                    // Not filtered by type - call real DNS and return unmodified result
+                    DNS_LogPassthroughAnsi(L"DnsQuery_UTF8 Monitored", pszName, wType, L"Type not in filter list, returning real DNS result");
                 }
 
                 Dll_Free(wName);
@@ -3070,7 +3124,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
 
     // Use centralized filtering logic
     DNSAPI_EX_FILTER_RESULT outcome = { 0 };
-    if (DNSAPI_FilterDnsQueryExForName(
+    BOOLEAN filterMatched = DNSAPI_FilterDnsQueryExForName(
             pQueryRequest->QueryName,
             pQueryRequest->QueryType,
             pQueryRequest->QueryOptions,
@@ -3080,10 +3134,19 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             NULL,  // No completion context
             L"DnsQueryEx",
             DnsCharSetUnicode,
-            &outcome))
+            &outcome);
+    
+    if (filterMatched)
     {
         // Filter handled the request - return the status
         return outcome.Status;
+    }
+    else if (pQueryRequest->QueryName && DNS_DomainMatchesFilter(pQueryRequest->QueryName))
+    {
+        // Domain matched filter but type not in filter list - log as monitored passthrough
+        // This creates parity with DnsQuery_W behavior
+        DNS_LogPassthrough(L"DnsQueryEx Monitored", pQueryRequest->QueryName, 
+                          pQueryRequest->QueryType, L"Type not in filter list, returning real DNS result");
     }
 
     // Check if this is an async call (has completion callback)

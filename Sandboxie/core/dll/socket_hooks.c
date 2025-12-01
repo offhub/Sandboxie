@@ -26,7 +26,7 @@
 //   - Parses DNS query packets (RFC 1035)
 //   - Extracts domain names from question section
 //   - Matches against NetworkDnsFilter rules using hierarchical wildcard matching
-//   - Blocks filtered queries by returning NXDOMAIN or configured IP
+//   - Returns filtered responses per RFC 2308 semantics
 //
 // Hierarchical Wildcard Matching:
 //   - Tries exact match first: "www.sub.example.com"
@@ -39,9 +39,17 @@
 //   NetworkDnsFilter=*.ads.com                # Block all ads.com subdomains (NXDOMAIN)
 //   NetworkDnsFilter=*,0.0.0.0                # Block everything else
 //
+// DNS Response Behavior (RFC 2308):
+//   Block Mode (no IPs configured):
+//     - ALL types: NXDOMAIN (RCODE 3) - domain does not exist
+//   Intercept Mode (with IPs):
+//     - Supported types (A/AAAA) with matching IPs: NOERROR with answers
+//     - Supported types with no matching IPs: NOERROR + NODATA (0 answers)
+//     - Unsupported types (MX/TXT/etc.): NOERROR + NODATA (domain exists, no records of this type)
+//
 // IPv4-to-IPv6 Mapping (DnsMapIpv4ToIpv6 setting, default: off):
 //   - When enabled: AAAA queries automatically use IPv4-mapped IPv6 (::ffff:a.b.c.d) if only IPv4 configured
-//   - When disabled: AAAA queries return NXDOMAIN if no native IPv6 addresses available
+//   - When disabled: AAAA queries return NOERROR + NODATA if no native IPv6 addresses available
 //   - Native IPv6 addresses always preferred when available
 //---------------------------------------------------------------------------
 
@@ -1811,7 +1819,10 @@ _FX int Socket_BuildDnsResponse(
     // qtype is now in host byte order (Socket_ParseDnsQuery converts it)
     USHORT qtype_host = qtype;
     
-    // Block mode (no IPs) should block ALL query types
+    // Track if we're returning NODATA (domain exists, no records) vs NXDOMAIN (domain doesn't exist)
+    BOOLEAN return_nodata = FALSE;
+    
+    // Block mode (no IPs) should block ALL query types with NXDOMAIN
     if (!pEntries) {
         // In block mode, intercept everything regardless of type filter
         block = TRUE;
@@ -1828,8 +1839,11 @@ _FX int Socket_BuildDnsResponse(
         BOOLEAN can_synthesize = DNS_CanSynthesizeResponse(qtype_host);
         
         if (!can_synthesize) {
-            // Filter mode but unsupported type (MX/CNAME/etc.) - return NXDOMAIN
+            // Filter mode but unsupported type (MX/CNAME/etc.)
+            // Domain exists (we're filtering it), but no records of this type
+            // RFC 2308: Return NOERROR + NODATA (not NXDOMAIN)
             block = TRUE;
+            return_nodata = TRUE;
         }
     }
 
@@ -1840,8 +1854,18 @@ _FX int Socket_BuildDnsResponse(
     DNS_WIRE_HEADER* resp_header = (DNS_WIRE_HEADER*)response;
     
     // Set response flags
-    if (block || !pEntries) {
-        // NXDOMAIN response (domain doesn't exist OR type blocked)
+    if (block) {
+        if (return_nodata) {
+            // NOERROR + NODATA (domain exists, no records of this type)
+            resp_header->Flags = _htons(0x8180);  // Response, No error
+            resp_header->AnswerRRs = _htons(0);
+        } else {
+            // NXDOMAIN (domain doesn't exist - block mode)
+            resp_header->Flags = _htons(0x8183);  // Response, NXDOMAIN
+            resp_header->AnswerRRs = _htons(0);
+        }
+    } else if (!pEntries) {
+        // Fallback: no entries at all (shouldn't reach here, but handle gracefully)
         resp_header->Flags = _htons(0x8183);  // Response, NXDOMAIN
         resp_header->AnswerRRs = _htons(0);
     } else {
@@ -1887,7 +1911,7 @@ _FX int Socket_BuildDnsResponse(
         resp_header->AnswerRRs = _htons(answer_count);
     }
 
-    // If blocking or no IPs, return just the header
+    // If blocking (or no IPs), return just the header (NXDOMAIN or NOERROR + NODATA)
     if (block || !pEntries) {
         return copy_len;
     }
