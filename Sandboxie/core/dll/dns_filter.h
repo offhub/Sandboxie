@@ -67,6 +67,7 @@ BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries);
 
 // DNS Type Filter Helper Functions (used by socket_hooks.c)
 BOOLEAN DNS_IsTypeInFilterList(const DNS_TYPE_FILTER* type_filter, USHORT query_type);
+BOOLEAN DNS_IsTypeNegated(const DNS_TYPE_FILTER* type_filter, USHORT query_type);
 BOOLEAN DNS_CanSynthesizeResponse(USHORT query_type);
 const WCHAR* DNS_GetTypeName(WORD wType);
 void DNS_ExtractFilterAux(PVOID* aux, LIST** pEntries, DNS_TYPE_FILTER** type_filter);

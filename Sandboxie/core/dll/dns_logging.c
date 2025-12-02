@@ -43,6 +43,115 @@ void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 BOOLEAN DNS_TraceFlag = FALSE;
 BOOLEAN DNS_DebugFlag = FALSE;
 
+// External configuration function
+extern BOOLEAN Config_GetSettingsForImageName_bool(const WCHAR* setting, BOOLEAN default_value);
+
+//---------------------------------------------------------------------------
+// DNS Log Suppression Cache
+//
+// Prevents duplicate logging when the same DNS query is resolved through
+// multiple APIs (e.g., DnsQueryEx → WSALookupService, DnsQuery_A → DnsQuery_W)
+// within a short time window (5 seconds).
+//---------------------------------------------------------------------------
+
+#define DNS_SUPPRESS_CACHE_SIZE 64
+#define DNS_SUPPRESS_EXPIRY_MS 5000
+
+typedef struct _DNS_SUPPRESS_ENTRY {
+    WCHAR     domain[256];
+    WORD      query_type;
+    ULONGLONG timestamp;
+    BOOLEAN   valid;
+} DNS_SUPPRESS_ENTRY;
+
+static DNS_SUPPRESS_ENTRY g_DnsSuppressCache[DNS_SUPPRESS_CACHE_SIZE];
+static CRITICAL_SECTION g_DnsSuppressLock;
+static BOOLEAN g_DnsSuppressInitialized = FALSE;
+static BOOLEAN g_SuppressDnsLogEnabled = TRUE;  // SuppressDnsLog setting (default: enabled)
+
+// Initialize suppression cache
+static void DNS_InitSuppressCache(void)
+{
+    if (g_DnsSuppressInitialized)
+        return;
+    
+    InitializeCriticalSection(&g_DnsSuppressLock);
+    memset(g_DnsSuppressCache, 0, sizeof(g_DnsSuppressCache));
+    g_DnsSuppressInitialized = TRUE;
+}
+
+// Simple string hash (djb2)
+static ULONG DNS_HashString(const WCHAR* str)
+{
+    ULONG hash = 5381;
+    while (*str) {
+        hash = ((hash << 5) + hash) + (*str++);
+    }
+    return hash;
+}
+
+// Check if query was recently logged (returns TRUE if should suppress)
+static BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, WORD query_type)
+{
+    if (!domain || !DNS_TraceFlag || !g_SuppressDnsLogEnabled)
+        return FALSE;
+    
+    if (!g_DnsSuppressInitialized)
+        DNS_InitSuppressCache();
+    
+    ULONGLONG now = GetTickCount64();
+    ULONG hash = DNS_HashString(domain) ^ query_type;
+    ULONG index = hash % DNS_SUPPRESS_CACHE_SIZE;
+    
+    EnterCriticalSection(&g_DnsSuppressLock);
+    
+    DNS_SUPPRESS_ENTRY* entry = &g_DnsSuppressCache[index];
+    
+    // Check if entry is valid and not expired
+    if (entry->valid && (now - entry->timestamp) < DNS_SUPPRESS_EXPIRY_MS) {
+        // Check if domain and type match
+        if (entry->query_type == query_type && 
+            _wcsicmp(entry->domain, domain) == 0) {
+            LeaveCriticalSection(&g_DnsSuppressLock);
+            
+            // Debug log when suppression occurs
+            if (DNS_DebugFlag) {
+                WCHAR debug_msg[512];
+                Sbie_snwprintf(debug_msg, 512, L"  DNS Log Suppressed: '%s' (Type: %s) - already logged %llu ms ago",
+                    domain, DNS_GetTypeName(query_type), now - entry->timestamp);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
+            }
+            
+            return TRUE;  // Duplicate found
+        }
+    }
+    
+    // Not a duplicate - add to cache
+    wcsncpy(entry->domain, domain, 255);
+    entry->domain[255] = L'\0';
+    entry->query_type = query_type;
+    entry->timestamp = now;
+    entry->valid = TRUE;
+    
+    LeaveCriticalSection(&g_DnsSuppressLock);
+    return FALSE;
+}
+
+// Public initialization function to load SuppressDnsLog setting
+BOOLEAN DNS_LoadSuppressLogSetting(void)
+{
+    g_SuppressDnsLogEnabled = Config_GetSettingsForImageName_bool(L"SuppressDnsLog", TRUE);
+    
+    if (DNS_DebugFlag) {
+        WCHAR msg[256];
+        Sbie_snwprintf(msg, 256, L"DNS Log Suppression: Configuration loaded - SuppressDnsLog=%s (TTL=%d ms, CacheSize=%d)",
+            g_SuppressDnsLogEnabled ? L"Enabled" : L"Disabled", DNS_SUPPRESS_EXPIRY_MS, DNS_SUPPRESS_CACHE_SIZE);
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    }
+    
+    return g_SuppressDnsLogEnabled;
+}
+
 //---------------------------------------------------------------------------
 // Helper Functions
 //---------------------------------------------------------------------------
@@ -73,7 +182,7 @@ _FX void DNS_LogSimple(const WCHAR* prefix, const WCHAR* domain, WORD wType, con
         prefix, domain, DNS_GetTypeName(wType),
         suffix ? L" - " : L"",
         suffix ? suffix : L"");
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogExclusion(const WCHAR* domain)
@@ -89,6 +198,10 @@ _FX void DNS_LogExclusion(const WCHAR* domain)
 _FX void DNS_LogIntercepted(const WCHAR* prefix, const WCHAR* domain, WORD wType, LIST* pEntries)
 {
     if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[1024];
@@ -116,9 +229,30 @@ _FX void DNS_LogBlocked(const WCHAR* prefix, const WCHAR* domain, WORD wType, co
     if (!DNS_TraceFlag || !domain)
         return;
     
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
     WCHAR msg[1024];
     Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - %s",
         prefix, domain, DNS_GetTypeName(wType), reason);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+}
+
+_FX void DNS_LogInterceptedNoData(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[1024];
+    Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - %s",
+        prefix, domain, DNS_GetTypeName(wType), reason);
+    // NODATA for unsupported types uses MONITOR_DENY - we're blocking access to real data
+    // (returning fake empty response, not passthrough)
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
 }
 
@@ -135,7 +269,7 @@ _FX void DNS_LogTypeFilterPassthrough(const WCHAR* prefix, const WCHAR* domain, 
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - Type filter: %s", 
         prefix, domain, DNS_GetTypeName(wType), reason);
-    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_TRACE, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WORD wType, const WCHAR* reason)
@@ -148,7 +282,7 @@ _FX void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WOR
         prefix, domainAnsi, DNS_GetTypeName(wType),
         reason ? L" - " : L"",
         reason ? reason : L"");
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 //---------------------------------------------------------------------------
@@ -160,6 +294,10 @@ _FX void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WOR
 _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType, PDNSAPI_DNS_RECORD pRecords, const WCHAR* suffix, BOOLEAN is_passthrough)
 {
     if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression applies to both passthrough and intercepted)
+    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     // Debug: Log entry to DNS_LogDnsRecords
@@ -293,7 +431,7 @@ _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
         record_count++;
     }
     
-    SbieApi_MonitorPutMsg(is_passthrough ? MONITOR_DNS : (MONITOR_DNS | MONITOR_DENY), msg);
+    SbieApi_MonitorPutMsg(is_passthrough ? (MONITOR_DNS | MONITOR_OPEN) : (MONITOR_DNS | MONITOR_DENY), msg);
 }
 
 //---------------------------------------------------------------------------
@@ -306,6 +444,10 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
                                DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults)
 {
     if (!DNS_TraceFlag || !domain)
+        return;
+
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
         return;
 
     WCHAR msg[1024];
@@ -364,12 +506,16 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
         }
     }
     
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status)
 {
     if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[512];
@@ -391,7 +537,7 @@ _FX void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD 
             prefix, domain, DNS_GetTypeName(wType));
     }
     
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* domain, WORD wType,
@@ -463,7 +609,7 @@ _FX void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* doma
         }
     }
     
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status)
@@ -471,11 +617,11 @@ static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status)
     switch (status) {
         case 0:                             return L"Success";
         case 9001:                          return L"DNS_ERROR_RCODE_FORMAT_ERROR: DNS server unable to interpret format";
-        case 9002:                          return L"DNS_ERROR_RCODE_SERVER_FAILURE: DNS server internal error";
+        case 9002:                          return L"DNS_ERROR_RCODE_SERVER_FAILURE: DNS server failure";
         case 9003:                          return L"DNS_ERROR_RCODE_NAME_ERROR: Domain name does not exist";
-        case 9004:                          return L"DNS_ERROR_RCODE_NOT_IMPLEMENTED: DNS server does not support this query type";
+        case 9004:                          return L"DNS_ERROR_RCODE_NOT_IMPLEMENTED: DNS request not supported by name server";
         case 9005:                          return L"DNS_ERROR_RCODE_REFUSED: DNS server refused query";
-        case 9501:                          return L"DNS_INFO_NO_RECORDS: No records found (domain exists but no records of this type)";
+        case 9501:                          return L"DNS_INFO_NO_RECORDS: No records found for given DNS query";
         case 9502:                          return L"DNS_ERROR_BAD_PACKET: Bad DNS packet";
         case 9701:                          return L"DNS_ERROR_RECORD_DOES_NOT_EXIST: DNS record does not exist";
         case ERROR_TIMEOUT:                 return L"Timeout";
@@ -492,6 +638,10 @@ _FX void DNS_LogRawSocketIntercepted(const WCHAR* protocol, const WCHAR* domain,
                                       LIST* pEntries, const WCHAR* func_suffix)
 {
     if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
         return;
     
     WCHAR msg[1024];
@@ -526,9 +676,36 @@ _FX void DNS_LogRawSocketBlocked(const WCHAR* protocol, const WCHAR* domain, WOR
     if (!DNS_TraceFlag || !domain)
         return;
     
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"%s DNS Blocked: %s (Type: %s) - %s",
         protocol, domain, DNS_GetTypeName(wType), reason);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+    
+    if (DNS_DebugFlag && func_suffix) {
+        WCHAR debug_msg[256];
+        Sbie_snwprintf(debug_msg, 256, L"  Raw Socket Debug: Function=%s", func_suffix);
+        SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
+    }
+}
+
+_FX void DNS_LogRawSocketNoData(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                                 const WCHAR* func_suffix)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s DNS Intercepted: %s (Type: %s) - No records for this type (NODATA)",
+        protocol, domain, DNS_GetTypeName(wType));
+    // NODATA for unsupported types uses MONITOR_DENY - we're blocking access to real data
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
     
     if (DNS_DebugFlag && func_suffix) {
@@ -586,9 +763,13 @@ _FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
     
     WORD wType = WSA_IsIPv6Query(lpGuid) ? DNS_TYPE_AAAA : DNS_TYPE_A;
     
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
     WCHAR msg[1024];
     if (is_blocked) {
-        Sbie_snwprintf(msg, 1024, L"WSALookupService Blocked: %s (Type: %s) - Returning NXDOMAIN",
+        Sbie_snwprintf(msg, 1024, L"WSALookupService Blocked: %s (Type: %s) - Domain blocked (NXDOMAIN)",
             domain, DNS_GetTypeName(wType));
     } else {
         Sbie_snwprintf(msg, 1024, L"WSALookupService Intercepted: %s (Type: %s) - Using filtered response",
@@ -642,7 +823,7 @@ _FX void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
         if (errCode != 0) {
             Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (NS: %d, Type: %s) - Error %d",
                 domain ? domain : L"(unknown)", dwNameSpace, DNS_GetTypeName(wType), errCode);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         }
         
         if (DNS_DebugFlag) {
@@ -658,15 +839,15 @@ _FX void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
     }
 }
 
-_FX void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type)
+_FX void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type, const WCHAR* reason)
 {
     if (!DNS_TraceFlag || !domain)
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (Type: %s) - Type not in filter list, forwarding to real DNS",
-        domain, DNS_GetTypeName(query_type));
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (Type: %s) - %s",
+        domain, DNS_GetTypeName(query_type), reason ? reason : L"forwarding to real DNS");
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 //---------------------------------------------------------------------------
@@ -896,6 +1077,10 @@ _FX void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD 
     if (!DNS_TraceFlag)
         return;
     
+    // Skip if we've already logged this query recently (suppression)
+    if (domain && DNS_ShouldSuppressLog(domain, queryType))
+        return;
+    
     extern BOOLEAN DNS_MapIpv4ToIpv6;
     
     WCHAR msg[1024];
@@ -935,7 +1120,7 @@ _FX void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD 
         }
     }
     
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogWSAPassthroughCSADDR(int index, ADDRESS_FAMILY got_af, ADDRESS_FAMILY expect_af, BOOLEAN match)

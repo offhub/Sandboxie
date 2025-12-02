@@ -54,6 +54,13 @@ const WCHAR* DNS_GetTypeName(WORD wType);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
 //---------------------------------------------------------------------------
+// DNS Logging Configuration
+//---------------------------------------------------------------------------
+
+// Load SuppressDnsLog setting (called during initialization)
+BOOLEAN DNS_LoadSuppressLogSetting(void);
+
+//---------------------------------------------------------------------------
 // General DNS logging functions
 //---------------------------------------------------------------------------
 
@@ -68,6 +75,9 @@ void DNS_LogIntercepted(const WCHAR* prefix, const WCHAR* domain, WORD wType, LI
 
 // Log DNS request blocked
 void DNS_LogBlocked(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
+
+// Log DNS intercepted with NODATA (domain exists, no records for this type)
+void DNS_LogInterceptedNoData(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
 
 // Log passthrough to real DNS
 void DNS_LogPassthrough(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* reason);
@@ -107,6 +117,9 @@ void DNS_LogRawSocketIntercepted(const WCHAR* protocol, const WCHAR* domain, WOR
 void DNS_LogRawSocketBlocked(const WCHAR* protocol, const WCHAR* domain, WORD wType,
                              const WCHAR* reason, const WCHAR* func_suffix);
 
+void DNS_LogRawSocketNoData(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                            const WCHAR* func_suffix);
+
 void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD wType,
                            int query_len, int response_len, const WCHAR* func_suffix, 
                            SOCKET s);
@@ -121,7 +134,7 @@ void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace,
 void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, 
                        HANDLE handle, int errCode, WORD actualQueryType);
 
-void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type);
+void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type, const WCHAR* reason);
 
 void WSA_FormatGuid(LPGUID lpGuid, WCHAR* buffer, SIZE_T bufferSize);
 

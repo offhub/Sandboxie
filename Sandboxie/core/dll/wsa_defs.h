@@ -57,6 +57,18 @@ typedef int (*P_select)(
     void *exceptfds,
     const void *timeout);
 
+// WSAPOLLFD structure for WSAPoll
+typedef struct _WSAPOLLFD_COMPAT {
+    SOCKET  fd;
+    SHORT   events;
+    SHORT   revents;
+} WSAPOLLFD_COMPAT;
+
+typedef int (*P_WSAPoll)(
+    WSAPOLLFD_COMPAT *fdArray,
+    ULONG            nfds,
+    INT              timeout);
+
 typedef int (*P_WSAAsyncSelect)(
     SOCKET  s,
     HWND    hWnd,
@@ -169,6 +181,15 @@ typedef int (*P_recv)(
     char*       buf,
     int         len,
     int         flags);
+
+typedef int (*P_WSARecv)(
+    SOCKET                             s,
+    LPWSABUF                           lpBuffers,
+    DWORD                              dwBufferCount,
+    LPDWORD                            lpNumberOfBytesRecvd,
+    LPDWORD                            lpFlags,
+    LPWSAOVERLAPPED                    lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 
 typedef int (*P_send)(
     SOCKET      s,

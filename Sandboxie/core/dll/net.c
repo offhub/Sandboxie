@@ -32,6 +32,7 @@
 #include "common/str_util.h"
 #include "wsa_defs.h"
 #include "dns_filter.h"
+#include "socket_hooks.h"
 #include "core/svc/sbieiniwire.h"
 #include "common/base64.c"
 #include "core/drv/api_defs.h"
@@ -54,6 +55,10 @@
 
 #define WSAID_ACCEPTEX \
     {0xb5367df1,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
+
+// GUID for WSARecvMsg extension function (needed for Cygwin recvmsg support)
+#define WSAID_WSARECVMSG \
+    {0xf689d7c8,0x6f1f,0x436b,{0x8a,0x53,0xe5,0x4f,0xe3,0x51,0xc3,0x22}}
 
 //---------------------------------------------------------------------------
 // Types
@@ -502,6 +507,7 @@ _FX int WSA_WSAIoctl(
         && lpvInBuffer && cbInBuffer >= sizeof(GUID) && lpvOutBuffer && cbOutBuffer >= sizeof(void*)) {
 
         GUID guidConnectEx = WSAID_CONNECTEX;
+        GUID guidWSARecvMsg = WSAID_WSARECVMSG;
         //GUID guidAcceptEx = WSAID_ACCEPTEX;
 
         if (memcmp(lpvInBuffer, &guidConnectEx, sizeof(guidConnectEx)) == 0)
@@ -509,6 +515,17 @@ _FX int WSA_WSAIoctl(
             memcpy(&__sys_ConnectEx, lpvOutBuffer, sizeof(void*)); // save the original function address
             void* detour_func = WSA_ConnectEx;
             memcpy(lpvOutBuffer, &detour_func, sizeof(void*)); // and return our detour function instead
+        }
+        else if (memcmp(lpvInBuffer, &guidWSARecvMsg, sizeof(guidWSARecvMsg)) == 0)
+        {
+            // WSARecvMsg interception for Cygwin recvmsg support
+            // This allows DNS filtering for applications using POSIX recvmsg() via Cygwin
+            void* realWSARecvMsg;
+            memcpy(&realWSARecvMsg, lpvOutBuffer, sizeof(void*)); // get the real function address
+            void* wrapper_func = Socket_GetWSARecvMsgWrapper(realWSARecvMsg);
+            if (wrapper_func) {
+                memcpy(lpvOutBuffer, &wrapper_func, sizeof(void*)); // return our wrapper instead
+            }
         }
         /*else if (memcmp(lpvInBuffer, &guidAcceptEx, sizeof(guidAcceptEx)) == 0)
         {
@@ -604,6 +621,10 @@ _FX int WSA_WSAEnumNetworkEvents(
     LPWSANETWORKEVENTS lpNetworkEvents)
 {
     int ret = __sys_WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents);
+
+    // NOTE: DNS FD_READ injection is done in socket_hooks.c's Socket_WSAEnumNetworkEvents
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+    // socket_hooks.c version also handles the critical SetEvent re-signaling for Cygwin
 
     if (WSA_ProxyHack) {
         WSA_SOCK* pSock = WSA_GetSock(s, TRUE);
@@ -1382,6 +1403,9 @@ _FX int WSA_WSAConnect(
     LPQOS          lpSQOS,
     LPQOS          lpGQOS)
 {
+    // NOTE: DNS connection tracking is done in socket_hooks.c's Socket_WSAConnect
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
@@ -1721,6 +1745,9 @@ _FX int WSA_WSASendTo(
     LPWSAOVERLAPPED                    lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
+    // NOTE: DNS query interception is done in socket_hooks.c's Socket_WSASendTo
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     if (WSA_IsBlockedTraffic(lpTo, iTolen, IPPROTO_UDP))
         return SOCKET_ERROR;
 
@@ -1810,6 +1837,9 @@ _FX int WSA_WSARecvFrom(
     LPWSAOVERLAPPED                    lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
+    // NOTE: DNS response injection is done in socket_hooks.c's Socket_WSARecvFrom
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     // If BindIP is configured, try to bind the socket
     // With StrictBindIP=n, allow receiving even if adapter unavailable
     if (WSA_BindIP) {

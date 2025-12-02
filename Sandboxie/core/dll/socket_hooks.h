@@ -49,6 +49,27 @@ BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
 // Mark a socket as DNS connection (for external use by ConnectEx hook)
 void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
 
+// Track DNS connection (port 53) - called internally and may be useful for external hooks
+// Returns TRUE if this is a DNS connection
+BOOLEAN Socket_TrackDnsConnectionEx(SOCKET s, const void* name, int namelen);
+
+// Process DNS query in WSASendTo - available for external use if needed
+// Returns: 0 = passthrough, >0 = intercepted (return value), <0 = error
+int Socket_ProcessWSASendTo(
+    SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesSent, const void* lpTo, int iTolen);
+
+// Process DNS response in WSARecvFrom - available for external use if needed
+// Returns: 0 = no fake response, >0 = fake response returned
+int Socket_ProcessWSARecvFrom(
+    SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags,
+    void* lpFrom, LPINT lpFromlen);
+
+// Inject FD_READ in WSAEnumNetworkEvents - available for external use if needed
+// Returns TRUE if FD_READ was injected
+BOOLEAN Socket_InjectFdRead(SOCKET s, void* lpNetworkEvents);
+
 // DNS packet parsing/building functions (for DnsQueryRaw Phase 2)
 BOOLEAN Socket_ParseDnsQuery(
     const BYTE*    packet,
@@ -66,5 +87,11 @@ int Socket_BuildDnsResponse(
     int            response_size,
     USHORT         qtype,
     struct _DNS_TYPE_FILTER* type_filter);
+
+// WSARecvMsg interception for Cygwin UDP recv support
+// Called by WSA_WSAIoctl in net.c when WSARecvMsg extension is requested
+// Returns: Wrapper function pointer to use instead of real WSARecvMsg
+//          Also stores the real WSARecvMsg pointer for later use
+void* Socket_GetWSARecvMsgWrapper(void* realWSARecvMsg);
 
 #endif // _SOCKET_HOOKS_H
