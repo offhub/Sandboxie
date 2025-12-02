@@ -399,6 +399,8 @@ typedef struct _WSA_LOOKUP {
 } WSA_LOOKUP;
 
 static HASH_MAP   WSA_LookupMap;
+static CRITICAL_SECTION WSA_LookupMap_CritSec;
+static BOOLEAN WSA_LookupMap_Initialized = FALSE;
 
 
 //---------------------------------------------------------------------------
@@ -443,6 +445,11 @@ _FX void WSA_CleanupStaleHandles(void)
     
     lastCleanup = now;
     
+    if (!WSA_LookupMap_Initialized)
+        return;
+    
+    EnterCriticalSection(&WSA_LookupMap_CritSec);
+    
     // Iterate through all handles and remove stale ones
     map_iter_t iter = map_iter();
     while (map_next(&WSA_LookupMap, &iter)) {
@@ -458,18 +465,30 @@ _FX void WSA_CleanupStaleHandles(void)
             if (pLookup->ServiceClassId)
                 Dll_Free(pLookup->ServiceClassId);
             
-            // Remove from map (also frees the handle allocated with Dll_Alloc)
+            // For filtered entries, we allocated a fake handle with Dll_Alloc.
+            // iter.key points to the key storage inside the map node (which stores the handle VALUE).
+            // We need to extract the actual handle value BEFORE map_erase invalidates the node.
+            HANDLE fakeHandle = NULL;
             if (pLookup->Filtered && iter.key) {
-                Dll_Free((void*)iter.key);  // Free the HANDLE allocated in WSALookupServiceBeginW
+                // The key is stored as sizeof(void*) bytes at iter.key
+                // Dereference to get the actual handle value that was allocated
+                fakeHandle = *(HANDLE*)iter.key;
             }
             
-            // Erase from map iterator
+            // Erase from map iterator (this frees the node, invalidating iter.key)
             map_erase(&WSA_LookupMap, &iter);
+            
+            // Now free the fake handle AFTER map_erase (handle value was saved above)
+            if (fakeHandle) {
+                Dll_Free(fakeHandle);
+            }
             
             // Debug log
             DNS_LogDebugCleanupStaleHandle(now - pLookup->CreateTime);
         }
     }
+    
+    LeaveCriticalSection(&WSA_LookupMap_CritSec);
 }
 
 //---------------------------------------------------------------------------
@@ -485,10 +504,14 @@ _FX void WSA_CleanupStaleHandles(void)
 
 _FX WSA_LOOKUP* WSA_GetLookup(HANDLE h, BOOLEAN bCanAdd)
 {
+    if (!WSA_LookupMap_Initialized)
+        return NULL;
+    
+    EnterCriticalSection(&WSA_LookupMap_CritSec);
+    
     WSA_LOOKUP* pLookup = (WSA_LOOKUP*)map_get(&WSA_LookupMap, h);
     if (pLookup == NULL && bCanAdd) {
-        // Note: map_insert returns existing entry if another thread inserted first
-        // This provides race-safe behavior without explicit locking
+        // Note: Critical section protects against concurrent insert/resize
         pLookup = (WSA_LOOKUP*)map_insert(&WSA_LookupMap, h, NULL, sizeof(WSA_LOOKUP));
         if (pLookup) {
             // Initialize fields - safe because map_insert zeroes new entries
@@ -501,6 +524,8 @@ _FX WSA_LOOKUP* WSA_GetLookup(HANDLE h, BOOLEAN bCanAdd)
             pLookup->CreateTime = GetTickCount64();  // Track creation time for timeout cleanup
         }
     }
+    
+    LeaveCriticalSection(&WSA_LookupMap_CritSec);
     return pLookup;
 }
 
@@ -1425,7 +1450,11 @@ _FX void DNS_InitFilterRules(void)
     // Certificate will be checked at filtering time to determine if interception/blocking is allowed
     if (DNS_FilterList.count > 0) {
         DNS_FilterEnabled = TRUE;
-        map_init(&WSA_LookupMap, Dll_Pool);
+        if (!WSA_LookupMap_Initialized) {
+            InitializeCriticalSection(&WSA_LookupMap_CritSec);
+            map_init(&WSA_LookupMap, Dll_Pool);
+            WSA_LookupMap_Initialized = TRUE;
+        }
         
         if (!has_valid_certificate) {
             // Warn that filtering is disabled (will only log, not intercept/block)
@@ -1442,7 +1471,11 @@ _FX void DNS_InitFilterRules(void)
         // This allows pure logging mode even without certificate or filter rules
         if (!DNS_FilterEnabled) {
             DNS_FilterEnabled = TRUE;
-            map_init(&WSA_LookupMap, Dll_Pool);
+            if (!WSA_LookupMap_Initialized) {
+                InitializeCriticalSection(&WSA_LookupMap_CritSec);
+                map_init(&WSA_LookupMap, Dll_Pool);
+                WSA_LookupMap_Initialized = TRUE;
+            }
         }
     }
 }
@@ -2361,7 +2394,7 @@ _FX int WSA_WSALookupServiceNextW(
 
 _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
 {
-    if (DNS_FilterEnabled) {
+    if (DNS_FilterEnabled && WSA_LookupMap_Initialized) {
         WSA_LOOKUP* pLookup = WSA_GetLookup(hLookup, FALSE);
 
         if (pLookup && pLookup->Filtered) {
@@ -2371,7 +2404,9 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
             if (pLookup->ServiceClassId)
                 Dll_Free(pLookup->ServiceClassId);
 
+            EnterCriticalSection(&WSA_LookupMap_CritSec);
             map_remove(&WSA_LookupMap, hLookup);
+            LeaveCriticalSection(&WSA_LookupMap_CritSec);
 
             Dll_Free(hLookup);
 
@@ -2380,7 +2415,9 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
             return NO_ERROR;
         }
 
+        EnterCriticalSection(&WSA_LookupMap_CritSec);
         map_remove(&WSA_LookupMap, hLookup);
+        LeaveCriticalSection(&WSA_LookupMap_CritSec);
     }
 
     DNS_LogWSADebugRequestEnd(hLookup, FALSE);

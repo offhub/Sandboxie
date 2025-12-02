@@ -387,6 +387,8 @@ typedef struct _WSA_SOCK {
 } WSA_SOCK;
 
 static HASH_MAP   WSA_SockMap;
+static CRITICAL_SECTION WSA_SockMap_CritSec;
+static BOOLEAN WSA_SockMap_Initialized = FALSE;
 
 //---------------------------------------------------------------------------
 // Debug helpers (controlled by NetFwTrace setting)
@@ -412,9 +414,16 @@ static HASH_MAP   WSA_SockMap;
 
 _FX WSA_SOCK* WSA_GetSock(SOCKET s, BOOLEAN bCanAdd)
 {
+    if (!WSA_SockMap_Initialized)
+        return NULL;
+    
+    EnterCriticalSection(&WSA_SockMap_CritSec);
+    
     WSA_SOCK* pSock = (WSA_SOCK*)map_get(&WSA_SockMap, (void*)s);
     if (pSock == NULL && bCanAdd)
         pSock = (WSA_SOCK*)map_insert(&WSA_SockMap, (void*)s, NULL, sizeof(WSA_SOCK)); // returns a MemZero'ed object
+    
+    LeaveCriticalSection(&WSA_SockMap_CritSec);
     return pSock;
 }
 
@@ -467,7 +476,9 @@ _FX int WSA_WSAStartup(
 
     if (WSA_ProxyHack || WSA_BindIP) {
 
+        InitializeCriticalSection(&WSA_SockMap_CritSec);
         map_init(&WSA_SockMap, Dll_Pool);
+        WSA_SockMap_Initialized = TRUE;
     }
 
     return 0;
@@ -1882,8 +1893,11 @@ _FX int WSA_WSARecvFrom(
 
 _FX int WSA_closesocket(SOCKET s)
 {
-    if (WSA_ProxyHack || WSA_BindIP)
+    if ((WSA_ProxyHack || WSA_BindIP) && WSA_SockMap_Initialized) {
+        EnterCriticalSection(&WSA_SockMap_CritSec);
         map_remove(&WSA_SockMap, (void*)s);
+        LeaveCriticalSection(&WSA_SockMap_CritSec);
+    }
     return __sys_closesocket(s);
 }
 
