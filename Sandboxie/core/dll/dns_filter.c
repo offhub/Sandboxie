@@ -1792,7 +1792,7 @@ _FX BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain)
 //---------------------------------------------------------------------------
 // DNS_CheckFilter
 //
-// Simple filter check matching 1.16.8 pattern.
+// Simple filter check.
 // Returns LIST* of IP entries if domain matches, NULL otherwise.
 //---------------------------------------------------------------------------
 
@@ -2378,7 +2378,7 @@ _FX int WSA_WSALookupServiceNextW(
                     WSA_DumpIP(hp->h_addrtype, &ip, msg);
                 }
                 
-                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
             }
         }
     }
