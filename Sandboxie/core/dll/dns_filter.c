@@ -2133,6 +2133,11 @@ _FX int WSA_WSALookupServiceBeginW(
                                 ? L"Type filter: negated"
                                 : L"Type not in filter list, forwarding to real DNS";
                             WSA_LogTypeFilterPassthrough(lpqsRestrictions->lpszServiceInstanceName, query_type, reason);
+                            
+                            EnterCriticalSection(&WSA_LookupMap_CritSec);
+                            map_remove(&WSA_LookupMap, fakeHandle);
+                            LeaveCriticalSection(&WSA_LookupMap_CritSec);
+
                             Dll_Free(fakeHandle);
                             Dll_Free(path_lwr);
                             return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);

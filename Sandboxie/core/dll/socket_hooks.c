@@ -607,7 +607,7 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     USHORT rcode = flags & 0x000F;
     if (rcode != 0) {
         // Error response (NXDOMAIN, SERVFAIL, etc.) - log without IPs
-        const WCHAR* protocol = isTcp ? L"TCP" : L"UDP";
+        const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
         WCHAR msg[512];
         
         const WCHAR* rcode_str = L"Error";
@@ -619,7 +619,7 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
             case 5: rcode_str = L"Refused"; break;
         }
         
-        Sbie_snwprintf(msg, 512, L"%s DNS Passthrough: %s (Type: %s) - %s",
+        Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - %s",
             protocol, domain, DNS_GetTypeName(qtype), rcode_str);
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
@@ -630,18 +630,18 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     
     if (answer_count == 0) {
         // No answers (NODATA)
-        const WCHAR* protocol = isTcp ? L"TCP" : L"UDP";
+        const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
         WCHAR msg[512];
-        Sbie_snwprintf(msg, 512, L"%s DNS Passthrough: %s (Type: %s) - No records",
+        Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - No records",
             protocol, domain, DNS_GetTypeName(qtype));
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
     }
     
     // Build log message with IPs
-    const WCHAR* protocol = isTcp ? L"TCP" : L"UDP";
+    const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
     WCHAR msg[1024];
-    Sbie_snwprintf(msg, 1024, L"%s DNS Passthrough: %s (Type: %s)",
+    Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s)",
         protocol, domain, DNS_GetTypeName(qtype));
     
     // Skip to answer section (past header and question)
@@ -1511,8 +1511,11 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Check if type is negated (explicit passthrough)
     BOOLEAN is_negated = DNS_IsTypeNegated(type_filter, qtype);
     if (is_negated) {
-        // Type is negated (!type or !*) - log with "Type filter: negated" and passthrough
-        DNS_LogTypeFilterPassthrough(protocol, domainName, qtype, L"Type filter: negated");
+        // Type is negated (!type or !*) - log and passthrough
+        // Build "UDP DNS" or "TCP DNS" prefix for consistent log format
+        WCHAR dns_prefix[16];
+        Sbie_snwprintf(dns_prefix, 16, L"%s DNS", protocol);
+        DNS_LogTypeFilterPassthrough(dns_prefix, domainName, qtype, L"negated");
         Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
@@ -1679,8 +1682,10 @@ _FX int Socket_send(
     // Only inspect if this is a DNS socket and filtering is enabled
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
+
         // Skip length-only sends (TCP DNS fragments)
-        if (len == 2) {
+        if (isTcp && len == 2) {
             if (DNS_DebugFlag) {
                 SbieApi_MonitorPutMsg(MONITOR_DNS, L"TCP DNS: Skipping length-only send (len=2)");
             }
@@ -1691,12 +1696,12 @@ _FX int Socket_send(
         const BYTE* dns_payload = (const BYTE*)buf;
         int dns_payload_len = len;
         
-        if (Socket_DetectTcpLengthPrefix((const BYTE*)buf, len, &dns_payload, &dns_payload_len)) {
+        if (isTcp && Socket_DetectTcpLengthPrefix((const BYTE*)buf, len, &dns_payload, &dns_payload_len)) {
             // Length prefix detected - dns_payload now points to actual DNS data
         }
         
         // Process DNS query
-        DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, dns_payload, dns_payload_len, NULL, L"TCP", L"send");
+        DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, dns_payload, dns_payload_len, NULL, isTcp ? L"TCP" : L"UDP", L"send");
         
         if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
             return len;  // Return success (intercepted or error - don't send)
@@ -1747,10 +1752,11 @@ _FX int Socket_WSASend(
     // Only inspect if this is a DNS socket and filtering is enabled
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buffers && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
         
+        BOOLEAN isTcp = Socket_IsTcpSocket(s);
         int len = buffers[0].len;
         
         // Skip length-only sends (TCP DNS fragments)
-        if (len == 2) {
+        if (isTcp && len == 2) {
             if (DNS_DebugFlag) {
                 SbieApi_MonitorPutMsg(MONITOR_DNS, L"TCP DNS: WSASend skipping length-only send (len=2)");
             }
@@ -1761,12 +1767,12 @@ _FX int Socket_WSASend(
         const BYTE* dns_payload = (const BYTE*)buffers[0].buf;
         int dns_payload_len = len;
         
-        if (Socket_DetectTcpLengthPrefix((const BYTE*)buffers[0].buf, len, &dns_payload, &dns_payload_len)) {
+        if (isTcp && Socket_DetectTcpLengthPrefix((const BYTE*)buffers[0].buf, len, &dns_payload, &dns_payload_len)) {
             // Length prefix detected - dns_payload now points to actual DNS data
         }
         
         // Process DNS query
-        DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, dns_payload, dns_payload_len, NULL, L"TCP", L"WSASend");
+        DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, dns_payload, dns_payload_len, NULL, isTcp ? L"TCP" : L"UDP", L"WSASend");
         
         if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
             if (lpNumberOfBytesSent) *lpNumberOfBytesSent = len;
@@ -1879,6 +1885,40 @@ _FX int Socket_WSASendTo(
     // =========================================================================
     if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && !lpTo && Socket_IsDnsSocket(s) && buffers) {
         
+        // Handle UDP connected sockets separately (no length prefix, no reassembly)
+        if (!Socket_IsTcpSocket(s)) {
+            // Concatenate buffers if needed
+            BYTE* udp_payload = NULL;
+            BYTE* temp_buf = NULL;
+            
+            if (dwBufferCount == 1) {
+                udp_payload = (BYTE*)buffers[0].buf;
+            } else {
+                temp_buf = (BYTE*)Dll_AllocTemp(totalLen);
+                if (temp_buf) {
+                    int offset = 0;
+                    for (DWORD i = 0; i < dwBufferCount; i++) {
+                        memcpy(temp_buf + offset, buffers[i].buf, buffers[i].len);
+                        offset += buffers[i].len;
+                    }
+                    udp_payload = temp_buf;
+                }
+            }
+            
+            if (udp_payload) {
+                DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, udp_payload, totalLen, NULL, L"UDP", L"WSASendTo(conn)");
+                
+                if (temp_buf) Dll_Free(temp_buf);
+                
+                if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
+                    if (lpNumberOfBytesSent) *lpNumberOfBytesSent = totalLen;
+                    return 0;  // Return success (intercepted or error - don't send)
+                }
+            }
+            // Passthrough to original WSASendTo
+            return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
+        }
+
         // Cygwin may send [2-byte length prefix][DNS payload] in separate WSABUF entries
         // Check if we have multiple buffers with first being 2 bytes (length prefix)
         const BYTE* dns_payload = NULL;
@@ -2983,8 +3023,13 @@ _FX void Socket_AddFakeResponse(
     new_resp->timestamp = GetTickCount();
     new_resp->next = NULL;  // FIFO: new items go to tail
     
-    // Detect TCP vs UDP: if 'to' is NULL, this is TCP (connected socket)
-    new_resp->is_tcp = (to == NULL);
+    // Detect TCP vs UDP: if 'to' is NULL, this is a connected socket
+    // Use Socket_IsTcpSocket to distinguish TCP from UDP connected sockets
+    if (to == NULL) {
+        new_resp->is_tcp = Socket_IsTcpSocket(s);
+    } else {
+        new_resp->is_tcp = FALSE; // sendto with destination is always UDP (or connectionless)
+    }
     
     if (new_resp->is_tcp) {
         // TCP: Add 2-byte length prefix before DNS payload
