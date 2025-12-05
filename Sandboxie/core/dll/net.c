@@ -1502,13 +1502,15 @@ _FX int WSA_ConnectEx(
     extern BOOLEAN DNS_FilterEnabled;
     extern BOOLEAN DNS_DebugFlag;
     extern BOOLEAN DNS_HasValidCertificate;
+    extern BOOLEAN DNS_TraceFlag;
     extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
     extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
     
-    BOOLEAN DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(DNS_HasValidCertificate);
+    // Separate filtering (requires FilterRawDns + cert) from hooks/logging (FilterRawDns OR DnsTrace)
+    BOOLEAN DNS_RawSocketHooksEnabled = Socket_GetRawDnsFilterEnabled(DNS_HasValidCertificate) || DNS_TraceFlag;
     
     // Debug log ConnectEx calls when DNS filtering is enabled (controlled by DnsDebug flag)
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
 

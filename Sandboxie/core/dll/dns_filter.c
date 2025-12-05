@@ -1466,15 +1466,19 @@ _FX void DNS_InitFilterRules(void)
     // DnsTrace for logging (works regardless of certificate - logging only, no filtering)
     WCHAR wsTraceOptions[4];
     if (SbieApi_QueryConf(NULL, L"DnsTrace", 0, wsTraceOptions, sizeof(wsTraceOptions)) == STATUS_SUCCESS && wsTraceOptions[0] != L'\0') {
-        DNS_TraceFlag = TRUE;
-        // Initialize infrastructure for logging if not already done
-        // This allows pure logging mode even without certificate or filter rules
-        if (!DNS_FilterEnabled) {
-            DNS_FilterEnabled = TRUE;
-            if (!WSA_LookupMap_Initialized) {
-                InitializeCriticalSection(&WSA_LookupMap_CritSec);
-                map_init(&WSA_LookupMap, Dll_Pool);
-                WSA_LookupMap_Initialized = TRUE;
+        // Respect explicit disable (e.g. DnsTrace=n/0) instead of treating any value as TRUE
+        DNS_TraceFlag = Config_String2Bool(wsTraceOptions, FALSE);
+
+        if (DNS_TraceFlag) {
+            // Initialize infrastructure for logging if not already done
+            // This allows pure logging mode even without certificate or filter rules
+            if (!DNS_FilterEnabled) {
+                DNS_FilterEnabled = TRUE;
+                if (!WSA_LookupMap_Initialized) {
+                    InitializeCriticalSection(&WSA_LookupMap_CritSec);
+                    map_init(&WSA_LookupMap, Dll_Pool);
+                    WSA_LookupMap_Initialized = TRUE;
+                }
             }
         }
     }

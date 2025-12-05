@@ -235,6 +235,7 @@ static TCP_REASSEMBLY_BUFFER g_TcpReassemblyTable[TCP_REASSEMBLY_TABLE_SIZE];
 static CRITICAL_SECTION g_TcpReassemblyLock;
 
 static BOOLEAN DNS_RawSocketFilterEnabled = FALSE;  // Raw socket filtering enabled (default: FALSE)
+static BOOLEAN DNS_RawSocketHooksEnabled = FALSE;   // Hooks/logging enabled (FilterRawDns or DnsTrace)
 static BOOLEAN DNS_DebugFlag = FALSE;  // Verbose debug logging (requires DnsTrace + DnsDebug)
 
 //---------------------------------------------------------------------------
@@ -913,7 +914,9 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
     }
 
     // Load FilterRawDns setting (default: disabled, user must explicitly enable)
-    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate);
+    extern BOOLEAN DNS_TraceFlag;
+    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate); // filtering only
+    DNS_RawSocketHooksEnabled   = (DNS_RawSocketFilterEnabled || DNS_TraceFlag);      // install hooks when logging or filtering
 
     // Certificate validation logic has been moved to filtering time (in send hooks)
     // Here we only control whether hooks are installed at all
@@ -922,11 +925,9 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
     // - DnsTrace=y (logging mode)
     // This allows logging to work without certificate, while filtering requires certificate
     extern LIST DNS_FilterList;
-    extern BOOLEAN DNS_TraceFlag;
     
-    // If FilterRawDns explicitly disabled by user, skip hooking
-    // But allow hooks if DnsTrace is enabled even when FilterRawDns=n (logging-only mode)
-    if (!DNS_RawSocketFilterEnabled && !DNS_TraceFlag) {
+    // If neither filtering nor logging are enabled, skip hooking
+    if (!DNS_RawSocketHooksEnabled) {
         return TRUE;
     }
 
@@ -1319,7 +1320,7 @@ _FX int Socket_SendReassembledData(SOCKET s, LPDWORD lpNumberOfBytesSent)
 
 static BOOLEAN Socket_TrackDnsConnection(SOCKET s, const void* name, int namelen, const WCHAR* func_name)
 {
-    if (!DNS_FilterEnabled || !DNS_RawSocketFilterEnabled || !name)
+    if (!DNS_FilterEnabled || !DNS_RawSocketHooksEnabled || !name)
         return FALSE;
     
     USHORT destPort = 0;
@@ -1582,7 +1583,7 @@ _FX int Socket_connect(
     int            namelen)
 {
     // DEBUG: Log connect calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
@@ -1624,7 +1625,7 @@ _FX int Socket_WSAConnect(
     LPQOS          lpGQOS)
 {
     // DEBUG: Log WSAConnect calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && name) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && name) {
         USHORT destPort = 0;
         USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
@@ -1663,7 +1664,7 @@ _FX int Socket_send(
     int         flags)
 {
     // DEBUG: Log ALL send() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && buf && len > 0) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buf && len > 0) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: send() socket=%p, len=%d, isDns=%d",
             (void*)(ULONG_PTR)s, len, Socket_IsDnsSocket(s) ? 1 : 0);
@@ -1680,7 +1681,7 @@ _FX int Socket_send(
     }
 
     // Only inspect if this is a DNS socket and filtering is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
 
@@ -1733,7 +1734,7 @@ _FX int Socket_WSASend(
     LPWSABUF_REAL buffers = (lpBuffers && dwBufferCount > 0) ? (LPWSABUF_REAL)lpBuffers : NULL;
     
     // DEBUG: Log ALL WSASend() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && buffers) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSASend() socket=%p, len=%d, isDns=%d",
             (void*)(ULONG_PTR)s, buffers[0].len, Socket_IsDnsSocket(s) ? 1 : 0);
@@ -1750,7 +1751,7 @@ _FX int Socket_WSASend(
     }
 
     // Only inspect if this is a DNS socket and filtering is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && buffers && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && buffers && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
         
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
         int len = buffers[0].len;
@@ -1800,7 +1801,7 @@ _FX int Socket_sendto(
     int            tolen)
 {
     // Only inspect if DNS filtering is enabled and we have a valid destination
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         // Check if destination is DNS port 53
         USHORT destPort = 0;
@@ -1872,7 +1873,7 @@ _FX int Socket_WSASendTo(
     }
     
     // DEBUG: Log ALL WSASendTo() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && buffers) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSASendTo() socket=%p, bufCount=%d, buf[0].len=%d, totalLen=%d, lpTo=%s, isDns=%d",
             (void*)(ULONG_PTR)s, dwBufferCount, buffers[0].len, totalLen, lpTo ? L"set" : L"NULL", Socket_IsDnsSocket(s) ? 1 : 0);
@@ -1883,7 +1884,7 @@ _FX int Socket_WSASendTo(
     // CASE 1: Connected socket (lpTo == NULL) - handle like WSASend
     // This is what Cygwin uses for TCP DNS via WSASendTo on connected sockets
     // =========================================================================
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && !lpTo && Socket_IsDnsSocket(s) && buffers) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && !lpTo && Socket_IsDnsSocket(s) && buffers) {
         
         // Handle UDP connected sockets separately (no length prefix, no reassembly)
         if (!Socket_IsTcpSocket(s)) {
@@ -2136,7 +2137,7 @@ _FX int Socket_WSASendTo(
     // =========================================================================
     // CASE 2: UDP with destination address (lpTo != NULL)
     // =========================================================================
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && lpTo && buffers) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && lpTo && buffers) {
         
         // Check if destination is DNS port 53
         USHORT destPort = 0;
@@ -3285,7 +3286,7 @@ _FX int Socket_recv(
     int      flags)
 {
     // DEBUG: Log ALL recv() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL RECV: socket=%p, len=%d, isDns=%d, hasFake=%d",
             (void*)(ULONG_PTR)s, len, Socket_IsDnsSocket(s) ? 1 : 0, Socket_HasFakeResponse(s) ? 1 : 0);
@@ -3401,7 +3402,7 @@ _FX int Socket_WSARecv(
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpBuffers;
     
     // DEBUG: Log ALL WSARecv() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecv() socket=%p, first.len=%d, isDns=%d, hasFake=%d",
             (void*)(ULONG_PTR)s, buffers[0].len, Socket_IsDnsSocket(s) ? 1 : 0, Socket_HasFakeResponse(s) ? 1 : 0);
@@ -3477,7 +3478,7 @@ _FX int Socket_WSARecvFrom(
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpBuffers;
     
     // DEBUG: Log ALL WSARecvFrom() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecvFrom() socket=%p, first.len=%d, hasFake=%d",
             (void*)(ULONG_PTR)s, buffers[0].len, Socket_HasFakeResponse(s) ? 1 : 0);
@@ -3692,7 +3693,7 @@ _FX int Socket_getpeername(
     int            *namelen)
 {
     // Check if this is a DNS socket with a stored server address
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && Socket_IsDnsSocket(s) && name && namelen) {
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && name && namelen) {
         ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
         
         // If we have a stored DNS server address, return it
@@ -3734,7 +3735,7 @@ _FX int Socket_WSAEnumNetworkEvents(
     int result = __sys_WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents);
     
     // If the call succeeded and we have a fake response queued, inject FD_READ
-    if (result == 0 && DNS_FilterEnabled && DNS_RawSocketFilterEnabled && 
+    if (result == 0 && DNS_FilterEnabled && DNS_RawSocketHooksEnabled && 
         Socket_HasFakeResponse(s) && lpNetworkEvents) {
         
         WSANETWORKEVENTS_COMPAT* events = (WSANETWORKEVENTS_COMPAT*)lpNetworkEvents;
@@ -3783,7 +3784,7 @@ _FX INT PASCAL FAR Socket_WSARecvMsg(
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpMsg->lpBuffers;
     
     // DEBUG: Log ALL WSARecvMsg() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled && DNS_DebugFlag && 
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && 
         lpMsg && lpMsg->lpBuffers && lpMsg->dwBufferCount > 0) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecvMsg() socket=%p, first.len=%d, hasFake=%d",
