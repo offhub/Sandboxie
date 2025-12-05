@@ -1502,12 +1502,11 @@ _FX int WSA_ConnectEx(
     extern BOOLEAN DNS_FilterEnabled;
     extern BOOLEAN DNS_DebugFlag;
     extern BOOLEAN DNS_HasValidCertificate;
-    extern BOOLEAN DNS_TraceFlag;
     extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
     extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
     
-    // Separate filtering (requires FilterRawDns + cert) from hooks/logging (FilterRawDns OR DnsTrace)
-    BOOLEAN DNS_RawSocketHooksEnabled = Socket_GetRawDnsFilterEnabled(DNS_HasValidCertificate) || DNS_TraceFlag;
+    // FilterRawDns=y enables hooks/logging (cert not required for hooks), same as socket_hooks.c logic
+    BOOLEAN DNS_RawSocketHooksEnabled = Socket_GetRawDnsFilterEnabled(TRUE);
     
     // Debug log ConnectEx calls when DNS filtering is enabled (controlled by DnsDebug flag)
     if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && name) {

@@ -267,6 +267,7 @@ typedef struct _PENDING_DNS_QUERY {
     USHORT QueryType;
     BOOLEAN IsTcp;
     BOOLEAN Valid;  // TRUE if there's a pending query to log
+    DNS_PASSTHROUGH_REASON PassthroughReason;  // Reason for passthrough (for logging)
 } PENDING_DNS_QUERY;
 static PENDING_DNS_QUERY g_PendingQueries[DNS_SOCKET_TABLE_SIZE];
 
@@ -494,7 +495,7 @@ static int Socket_GetFakeResponse(
 //---------------------------------------------------------------------------
 
 // Store a pending passthrough query for a socket (called when forwarding to real DNS)
-static void Socket_SetPendingQuery(SOCKET s, const WCHAR* domain, USHORT qtype, BOOLEAN isTcp)
+static void Socket_SetPendingQuery(SOCKET s, const WCHAR* domain, USHORT qtype, BOOLEAN isTcp, DNS_PASSTHROUGH_REASON reason)
 {
     if (!DNS_TraceFlag || !domain)
         return;
@@ -515,13 +516,14 @@ static void Socket_SetPendingQuery(SOCKET s, const WCHAR* domain, USHORT qtype, 
     g_PendingQueries[index].Domain[domain_len] = L'\0';
     g_PendingQueries[index].QueryType = qtype;
     g_PendingQueries[index].IsTcp = isTcp;
+    g_PendingQueries[index].PassthroughReason = reason;
     g_PendingQueries[index].Valid = TRUE;
 }
 
 // Get pending query for a socket (called when receiving DNS response)
 // Returns TRUE if there was a pending query, fills in domain and qtype
 // If clearQuery is TRUE, the pending query is cleared (one-shot behavior)
-static BOOLEAN Socket_GetPendingQuery(SOCKET s, WCHAR* domain, int domain_size, USHORT* qtype, BOOLEAN* isTcp, BOOLEAN clearQuery)
+static BOOLEAN Socket_GetPendingQuery(SOCKET s, WCHAR* domain, int domain_size, USHORT* qtype, BOOLEAN* isTcp, DNS_PASSTHROUGH_REASON* reason, BOOLEAN clearQuery)
 {
     ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
     
@@ -541,6 +543,10 @@ static BOOLEAN Socket_GetPendingQuery(SOCKET s, WCHAR* domain, int domain_size, 
     
     if (isTcp) {
         *isTcp = g_PendingQueries[index].IsTcp;
+    }
+    
+    if (reason) {
+        *reason = g_PendingQueries[index].PassthroughReason;
     }
     
     // Clear the pending query if requested (one-shot - don't log again on subsequent reads)
@@ -572,7 +578,8 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     int data_len,
     const WCHAR* domain,
     USHORT qtype,
-    BOOLEAN isTcp)
+    BOOLEAN isTcp,
+    DNS_PASSTHROUGH_REASON reason)
 {
     if (!DNS_TraceFlag || !data || data_len < (int)sizeof(DNS_WIRE_HEADER))
         return FALSE;
@@ -604,6 +611,9 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         return FALSE;
     }
     
+    // Get reason string
+    const WCHAR* reason_str = DNS_GetPassthroughReasonString(reason);
+    
     // Check response code
     USHORT rcode = flags & 0x000F;
     if (rcode != 0) {
@@ -620,8 +630,13 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
             case 5: rcode_str = L"Refused"; break;
         }
         
-        Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - %s",
-            protocol, domain, DNS_GetTypeName(qtype), rcode_str);
+        if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
+            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) [%s] - %s",
+                protocol, domain, DNS_GetTypeName(qtype), reason_str, rcode_str);
+        } else {
+            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - %s",
+                protocol, domain, DNS_GetTypeName(qtype), rcode_str);
+        }
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
     }
@@ -633,8 +648,13 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         // No answers (NODATA)
         const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
         WCHAR msg[512];
-        Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - No records",
-            protocol, domain, DNS_GetTypeName(qtype));
+        if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
+            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) [%s] - No records",
+                protocol, domain, DNS_GetTypeName(qtype), reason_str);
+        } else {
+            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - No records",
+                protocol, domain, DNS_GetTypeName(qtype));
+        }
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
     }
@@ -642,8 +662,13 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     // Build log message with IPs
     const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
     WCHAR msg[1024];
-    Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s)",
-        protocol, domain, DNS_GetTypeName(qtype));
+    if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
+        Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s) [%s]",
+            protocol, domain, DNS_GetTypeName(qtype), reason_str);
+    } else {
+        Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s)",
+            protocol, domain, DNS_GetTypeName(qtype));
+    }
     
     // Skip to answer section (past header and question)
     int offset = sizeof(DNS_WIRE_HEADER);
@@ -782,7 +807,7 @@ static void Socket_LogInterceptedResponse(const WCHAR* protocol, const WCHAR* do
 }
 
 // Log filter mode passthrough and track pending query for response logging
-static void Socket_LogFilterPassthrough(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_host, const WCHAR* func_name, SOCKET s)
+static void Socket_LogFilterPassthrough(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_host, const WCHAR* func_name, SOCKET s, DNS_PASSTHROUGH_REASON reason)
 {
     if (!domain)
         return;
@@ -796,7 +821,7 @@ static void Socket_LogFilterPassthrough(const WCHAR* protocol, const WCHAR* doma
     }
     
     // Track this pending query so we can log the response IPs when recv returns
-    Socket_SetPendingQuery(s, domain, qtype_host, isTcp);
+    Socket_SetPendingQuery(s, domain, qtype_host, isTcp, reason);
     
     // Skip the initial passthrough message - we'll log the full result with IPs later
     if (DNS_DebugFlag && func_name) {
@@ -808,7 +833,7 @@ static void Socket_LogFilterPassthrough(const WCHAR* protocol, const WCHAR* doma
 }
 
 // Log forwarded to real DNS and track pending query for response logging
-static void Socket_LogForwarded(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_host, const WCHAR* func_name, SOCKET s)
+static void Socket_LogForwarded(const WCHAR* protocol, const WCHAR* domain, USHORT qtype_host, const WCHAR* func_name, SOCKET s, DNS_PASSTHROUGH_REASON reason)
 {
     if (!domain)
         return;
@@ -825,7 +850,7 @@ static void Socket_LogForwarded(const WCHAR* protocol, const WCHAR* domain, USHO
     
     // Track this pending query so we can log the response IPs when recv returns
     // This replaces the initial "Forwarding to real DNS" message with a full result message
-    Socket_SetPendingQuery(s, domain, qtype_host, isTcp);
+    Socket_SetPendingQuery(s, domain, qtype_host, isTcp, reason);
     
     // Skip the "Forwarding to real DNS" message - we'll log the full result with IPs later
     // Only log debug info if enabled
@@ -914,16 +939,14 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
     }
 
     // Load FilterRawDns setting (default: disabled, user must explicitly enable)
-    extern BOOLEAN DNS_TraceFlag;
-    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate); // filtering only
-    DNS_RawSocketHooksEnabled   = (DNS_RawSocketFilterEnabled || DNS_TraceFlag);      // install hooks when logging or filtering
+    // FilterRawDns controls both hooks and logging, similar to FilterDnsApi behavior
+    DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate); // filtering only (requires cert)
+    DNS_RawSocketHooksEnabled   = Socket_GetRawDnsFilterEnabled(TRUE);                 // hooks enabled when FilterRawDns=y (ignoring cert)
 
     // Certificate validation logic has been moved to filtering time (in send hooks)
     // Here we only control whether hooks are installed at all
-    // Install hooks when:
-    // - FilterRawDns=y (explicit enable) OR
-    // - DnsTrace=y (logging mode)
-    // This allows logging to work without certificate, while filtering requires certificate
+    // Install hooks when FilterRawDns=y (explicit enable)
+    // If no certificate, hooks are installed but filtering is disabled (logging only)
     extern LIST DNS_FilterList;
     
     // If neither filtering nor logging are enabled, skip hooking
@@ -960,6 +983,7 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
         g_PendingQueries[i].Domain[0] = L'\0';
         g_PendingQueries[i].QueryType = 0;
         g_PendingQueries[i].IsTcp = FALSE;
+        g_PendingQueries[i].PassthroughReason = DNS_PASSTHROUGH_NONE;
     }
 
     // Hook connect (to track DNS connections)
@@ -1484,7 +1508,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     
     if (match_result <= 0) {
         // Domain not in filter list - trace allowed queries
-        Socket_LogForwarded(protocol, domainName, qtype, func_name, s);
+        Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_MATCH);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -1499,7 +1523,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Certificate required for actual filtering (interception/blocking)
     extern BOOLEAN DNS_HasValidCertificate;
     if (!DNS_HasValidCertificate) {
-        Socket_LogForwarded(protocol, domainName, qtype, func_name, s);
+        Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_CERT);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -1512,12 +1536,8 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Check if type is negated (explicit passthrough)
     BOOLEAN is_negated = DNS_IsTypeNegated(type_filter, qtype);
     if (is_negated) {
-        // Type is negated (!type or !*) - log and passthrough
-        // Build "UDP DNS" or "TCP DNS" prefix for consistent log format
-        WCHAR dns_prefix[16];
-        Sbie_snwprintf(dns_prefix, 16, L"%s DNS", protocol);
-        DNS_LogTypeFilterPassthrough(dns_prefix, domainName, qtype, L"negated");
-        Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s);
+        // Type is negated (!type or !*) - passthrough with reason tracking
+        Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_TYPE_NEGATED);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -1537,7 +1557,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     
     if (response_len == 0) {
         // Type not in filter list (when filter is set) - passthrough without negation log
-        Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s);
+        Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_TYPE_NOT_FILTERED);
         return DNS_PROCESS_PASSTHROUGH;
     }
     
@@ -2056,7 +2076,7 @@ _FX int Socket_WSASendTo(
                     // Certificate required for actual filtering (interception/blocking)
                     extern BOOLEAN DNS_HasValidCertificate;
                     if (!DNS_HasValidCertificate) {
-                        Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s);
+                        Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_NO_CERT);
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
@@ -2077,7 +2097,7 @@ _FX int Socket_WSASendTo(
                     }
                     
                     if (response_len == 0) {
-                        Socket_LogFilterPassthrough(L"TCP", domainName, qtype, L"WSASendTo(conn)", s);
+                        Socket_LogFilterPassthrough(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_TYPE_NOT_FILTERED);
                         // Need to passthrough - if we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
                             Dll_Free(domain_lwr);
@@ -2123,7 +2143,7 @@ _FX int Socket_WSASendTo(
                     // If response_len == 0, we already freed domain_lwr above
                 }
                 else {
-                    Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s);
+                    Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_NO_MATCH);
                     Dll_Free(domain_lwr);
                     // Need to passthrough - if we used reassembly, send the complete reassembled data
                     if (used_reassembly) {
@@ -3316,12 +3336,13 @@ _FX int Socket_recv(
         WCHAR domain[256];
         USHORT qtype;
         BOOLEAN isTcp;
+        DNS_PASSTHROUGH_REASON reason;
         // Peek at the pending query without clearing it
-        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, FALSE)) {
+        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
             // Try to parse and log the DNS response
             // For TCP DNS, the first recv may only get the 2-byte length prefix
             // Only clear the pending query if we successfully parsed and logged
-            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buf, result, domain, qtype, isTcp)) {
+            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buf, result, domain, qtype, isTcp, reason)) {
                 // Successfully logged - clear the pending query
                 Socket_ClearPendingQuery(s);
             }
@@ -3369,11 +3390,12 @@ _FX int Socket_recvfrom(
         WCHAR domain[256];
         USHORT qtype;
         BOOLEAN isTcp;
+        DNS_PASSTHROUGH_REASON reason;
         // Peek at the pending query without clearing it
-        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, FALSE)) {
+        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
             // Try to parse and log the DNS response
             // Only clear the pending query if we successfully parsed and logged
-            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buf, result, domain, qtype, isTcp)) {
+            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buf, result, domain, qtype, isTcp, reason)) {
                 Socket_ClearPendingQuery(s);
             }
         }
@@ -3443,11 +3465,12 @@ _FX int Socket_WSARecv(
         WCHAR domain[256];
         USHORT qtype;
         BOOLEAN isTcp;
+        DNS_PASSTHROUGH_REASON reason;
         // Peek at the pending query without clearing it
-        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, FALSE)) {
+        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
             // Try to parse and log the DNS response
             // Only clear the pending query if we successfully parsed and logged
-            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpNumberOfBytesRecvd, domain, qtype, isTcp)) {
+            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpNumberOfBytesRecvd, domain, qtype, isTcp, reason)) {
                 Socket_ClearPendingQuery(s);
             }
         }
@@ -3521,11 +3544,12 @@ _FX int Socket_WSARecvFrom(
         WCHAR domain[256];
         USHORT qtype;
         BOOLEAN isTcp;
+        DNS_PASSTHROUGH_REASON reason;
         // Peek at the pending query without clearing it
-        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, FALSE)) {
+        if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
             // Try to parse and log the DNS response
             // Only clear the pending query if we successfully parsed and logged
-            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpNumberOfBytesRecvd, domain, qtype, isTcp)) {
+            if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpNumberOfBytesRecvd, domain, qtype, isTcp, reason)) {
                 Socket_ClearPendingQuery(s);
             }
         }
@@ -3830,11 +3854,12 @@ _FX INT PASCAL FAR Socket_WSARecvMsg(
             WCHAR domain[256];
             USHORT qtype;
             BOOLEAN isTcp;
+            DNS_PASSTHROUGH_REASON reason;
             // Peek at the pending query without clearing it
-            if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, FALSE)) {
+            if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
                 // Try to parse and log the DNS response
                 // Only clear the pending query if we successfully parsed and logged
-                if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpdwNumberOfBytesRecvd, domain, qtype, isTcp)) {
+                if (Socket_ParseAndLogDnsResponse(s, (const BYTE*)buffers[0].buf, (int)*lpdwNumberOfBytesRecvd, domain, qtype, isTcp, reason)) {
                     Socket_ClearPendingQuery(s);
                 }
             }

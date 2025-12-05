@@ -61,6 +61,24 @@ void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 BOOLEAN DNS_LoadSuppressLogSetting(void);
 
 //---------------------------------------------------------------------------
+// Passthrough Reason Codes
+//
+// Used to indicate why a DNS query was passed through to real DNS
+//---------------------------------------------------------------------------
+
+typedef enum _DNS_PASSTHROUGH_REASON {
+    DNS_PASSTHROUGH_NONE = 0,           // No specific reason (normal passthrough)
+    DNS_PASSTHROUGH_NO_MATCH,           // Domain not in filter list
+    DNS_PASSTHROUGH_NO_CERT,            // Domain matched but no valid certificate
+    DNS_PASSTHROUGH_TYPE_NOT_FILTERED,  // Type not in filter list
+    DNS_PASSTHROUGH_TYPE_NEGATED,       // Type explicitly negated in filter
+    DNS_PASSTHROUGH_CONFIG_ERROR,       // Configuration error (no aux data)
+} DNS_PASSTHROUGH_REASON;
+
+// Get reason string for passthrough logging
+const WCHAR* DNS_GetPassthroughReasonString(DNS_PASSTHROUGH_REASON reason);
+
+//---------------------------------------------------------------------------
 // General DNS logging functions
 //---------------------------------------------------------------------------
 
@@ -92,13 +110,22 @@ void DNS_LogPassthroughAnsi(const WCHAR* prefix, const CHAR* domainAnsi, WORD wT
 void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType, 
                        PDNSAPI_DNS_RECORD pRecords, const WCHAR* suffix, BOOLEAN is_passthrough);
 
+// Log DNS response from DNS_RECORD list with passthrough reason
+void DNS_LogDnsRecordsWithReason(const WCHAR* prefix, const WCHAR* domain, WORD wType,
+                                 PDNSAPI_DNS_RECORD pRecords, DNS_PASSTHROUGH_REASON reason);
+
 //---------------------------------------------------------------------------
 // DnsQuery-specific logging
 //---------------------------------------------------------------------------
 
-// Log DnsQuery passthrough results
+// Log DnsQuery passthrough results (without reason)
 void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
                            DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults);
+
+// Log DnsQuery passthrough results with reason
+void DNS_LogDnsQueryResultWithReason(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
+                                     DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults,
+                                     DNS_PASSTHROUGH_REASON reason);
 
 // Log DnsQueryEx status (PENDING, error, no records)
 void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status);

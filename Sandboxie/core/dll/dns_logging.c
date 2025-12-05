@@ -156,6 +156,20 @@ BOOLEAN DNS_LoadSuppressLogSetting(void)
 // Helper Functions
 //---------------------------------------------------------------------------
 
+// Get reason string for passthrough logging
+_FX const WCHAR* DNS_GetPassthroughReasonString(DNS_PASSTHROUGH_REASON reason)
+{
+    switch (reason) {
+        case DNS_PASSTHROUGH_NO_MATCH:           return L"no filter match";
+        case DNS_PASSTHROUGH_NO_CERT:            return L"no certificate";
+        case DNS_PASSTHROUGH_TYPE_NOT_FILTERED:  return L"type not filtered";
+        case DNS_PASSTHROUGH_TYPE_NEGATED:       return L"type negated";
+        case DNS_PASSTHROUGH_CONFIG_ERROR:       return L"config error";
+        case DNS_PASSTHROUGH_NONE:
+        default:                                 return NULL;
+    }
+}
+
 // Check if an IPv6 address is IPv4-mapped (::ffff:a.b.c.d)
 // Format: Bytes 0-9 must be 0x00, bytes 10-11 must be 0xFF
 BOOLEAN DNS_IsIPv4Mapped(const IP_ADDRESS* pIP)
@@ -435,13 +449,113 @@ _FX void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
 }
 
 //---------------------------------------------------------------------------
+// DNS_LogDnsRecordsWithReason
+//
+// Logs DNS records with passthrough reason (for DnsQueryEx passthrough)
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDnsRecordsWithReason(const WCHAR* prefix, const WCHAR* domain, WORD wType,
+                                     PDNSAPI_DNS_RECORD pRecords, DNS_PASSTHROUGH_REASON reason)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    // Skip if we've already logged this query recently (suppression applies to passthrough)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    // Build suffix with reason
+    const WCHAR* reasonStr = DNS_GetPassthroughReasonString(reason);
+    WCHAR suffix[128];
+    if (reasonStr && reasonStr[0] != L'\0') {
+        Sbie_snwprintf(suffix, 128, L" [%s]", reasonStr);
+    } else {
+        suffix[0] = L'\0';
+    }
+    
+    // Use the standard DNS_LogDnsRecords but with our reason suffix
+    // We pass is_passthrough=TRUE to use MONITOR_OPEN flag
+    WCHAR msg[1024];
+    Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s)%s",
+        prefix, domain, DNS_GetTypeName(wType), suffix);
+    
+    BOOLEAN is_any_query = (wType == 255);
+    PDNSAPI_DNS_RECORD pRec = pRecords;
+    int record_count = 0;
+    
+    extern BOOLEAN DNS_MapIpv4ToIpv6;
+    
+    // For AAAA queries: check if native IPv6 exists first
+    BOOLEAN has_native_ipv6 = FALSE;
+    if (wType == DNS_TYPE_AAAA) {
+        PDNSAPI_DNS_RECORD pCheckRec = pRecords;
+        while (pCheckRec) {
+            if (pCheckRec->wType == DNS_TYPE_AAAA) {
+                IP_ADDRESS check_ip;
+                memset(&check_ip, 0, sizeof(check_ip));
+                memcpy(check_ip.Data, &pCheckRec->Data.AAAA.Ip6Address, 16);
+                if (!DNS_IsIPv4Mapped(&check_ip)) {
+                    has_native_ipv6 = TRUE;
+                    break;
+                }
+            }
+            pCheckRec = pCheckRec->pNext;
+        }
+    }
+    
+    while (pRec && record_count < MAX_DNS_RECORDS_TO_LOG) {
+        BOOLEAN type_matches = (pRec->wType == wType) || is_any_query;
+        BOOLEAN is_loggable_type = (pRec->wType == DNS_TYPE_A || pRec->wType == DNS_TYPE_AAAA);
+        
+        if (type_matches && is_loggable_type) {
+            // Skip A records in AAAA passthrough queries when mapping is disabled
+            if (wType == DNS_TYPE_AAAA && pRec->wType == DNS_TYPE_A && !DNS_MapIpv4ToIpv6) {
+                pRec = pRec->pNext;
+                record_count++;
+                continue;
+            }
+            
+            IP_ADDRESS ip;
+            memset(&ip, 0, sizeof(ip));
+            if (pRec->wType == DNS_TYPE_AAAA) {
+                memcpy(ip.Data, &pRec->Data.AAAA.Ip6Address, 16);
+                
+                // Check if IPv4-mapped and skip if conditions met
+                BOOLEAN is_ipv4_mapped = DNS_IsIPv4Mapped(&ip);
+                BOOLEAN should_skip_mapped = FALSE;
+                
+                if (is_ipv4_mapped) {
+                    if (wType == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6) {
+                        should_skip_mapped = TRUE;
+                    } else if (has_native_ipv6) {
+                        should_skip_mapped = TRUE;
+                    }
+                }
+                
+                if (!should_skip_mapped) {
+                    WSA_DumpIP(AF_INET6, &ip, msg);
+                }
+            } else if (pRec->wType == DNS_TYPE_A) {
+                ip.Data32[3] = pRec->Data.A.IpAddress;
+                WSA_DumpIP(AF_INET, &ip, msg);
+            }
+        }
+        pRec = pRec->pNext;
+        record_count++;
+    }
+    
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+}
+
+//---------------------------------------------------------------------------
 // DnsQuery-specific logging
 //---------------------------------------------------------------------------
 
 static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status);
 
-_FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
-                               DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults)
+_FX void DNS_LogDnsQueryResultWithReason(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
+                                         DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults,
+                                         DNS_PASSTHROUGH_REASON reason)
 {
     if (!DNS_TraceFlag || !domain)
         return;
@@ -451,18 +565,34 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
         return;
 
     WCHAR msg[1024];
+    const WCHAR* reasonStr = DNS_GetPassthroughReasonString(reason);
     
     if (status == 0 && ppQueryResults && *ppQueryResults) {
-        Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s)",
-            sourceTag, domain, DNS_GetTypeName(wType));
+        if (reasonStr) {
+            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) [%s]",
+                sourceTag, domain, DNS_GetTypeName(wType), reasonStr);
+        } else {
+            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s)",
+                sourceTag, domain, DNS_GetTypeName(wType));
+        }
     } else {
         const WCHAR* statusMsg = DNS_GetStatusMessage(status);
-        if (statusMsg) {
-            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - %s",
-                sourceTag, domain, DNS_GetTypeName(wType), statusMsg);
+        if (reasonStr) {
+            if (statusMsg) {
+                Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) [%s] - %s",
+                    sourceTag, domain, DNS_GetTypeName(wType), reasonStr, statusMsg);
+            } else {
+                Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) [%s] - Status: %d",
+                    sourceTag, domain, DNS_GetTypeName(wType), reasonStr, status);
+            }
         } else {
-            Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - Status: %d",
-                sourceTag, domain, DNS_GetTypeName(wType), status);
+            if (statusMsg) {
+                Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - %s",
+                    sourceTag, domain, DNS_GetTypeName(wType), statusMsg);
+            } else {
+                Sbie_snwprintf(msg, 1024, L"%s: %s (Type: %s) - Status: %d",
+                    sourceTag, domain, DNS_GetTypeName(wType), status);
+            }
         }
     }
     
@@ -507,6 +637,12 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
     }
     
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+}
+
+_FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD wType,
+                               DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults)
+{
+    DNS_LogDnsQueryResultWithReason(sourceTag, domain, wType, status, ppQueryResults, DNS_PASSTHROUGH_NONE);
 }
 
 _FX void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status)

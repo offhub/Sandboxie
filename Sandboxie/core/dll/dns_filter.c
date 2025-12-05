@@ -53,11 +53,11 @@
 //      - Supports negation prefix '!' for passthrough (e.g., !MX, !*, !A)
 //
 //      Filter Mode (domain:ip) Behavior:
-//        - NO type filter set: A/AAAA/ANY intercepted, all other types BLOCKED
-//        - Types in list: Intercepted if supported (A/AAAA), blocked if unsupported (MX/TXT/etc)
-//        - Types NOT in list: PASSTHROUGH (only when type filter is explicitly set)
+//        - NO NetworkDnsFilterType: A/AAAA/ANY intercepted, all other types return NODATA (blocked)
+//        - Types in list: Intercepted if supported (A/AAAA), NODATA if unsupported (MX/TXT/etc)
+//        - Types NOT in list: PASSTHROUGH to real DNS (only when NetworkDnsFilterType IS set)
 //        - Negated types (!type): Passthrough to real DNS (explicit passthrough)
-//        - Wildcard (*): Filter ALL types (intercept supported, block unsupported)
+//        - Wildcard (*): Filter ALL types (intercept supported, NODATA for unsupported)
 //        - Negated wildcard (!*): Passthrough ALL types (explicit passthrough for all)
 //
 //      Block Mode (domain without IPs) Behavior:
@@ -99,8 +99,8 @@
 //          → ALL types: Passthrough (complete filtering bypass)
 //
 //      IMPORTANT: Only A and AAAA (or ANY) records can be synthesized from IP addresses.
-//                 - NO type filter: A/AAAA/ANY intercepted, all others return NOERROR + NODATA.
-//                 - WITH type filter: Only listed types filtered; unlisted types PASSTHROUGH.
+//                 - NO NetworkDnsFilterType: A/AAAA/ANY intercepted, all others return NOERROR + NODATA.
+//                 - WITH NetworkDnsFilterType: Only listed types filtered; unlisted types PASSTHROUGH.
 //                 - Unsupported types in filter list (without negation) return NOERROR + NODATA.
 //
 //    NetworkDnsFilterExclude=<patterns>
@@ -308,7 +308,8 @@ static P_DnsCancelQuery           __sys_DnsCancelQuery           = NULL;
 typedef struct _DNSAPI_EX_FILTER_RESULT {
     DNS_STATUS Status;
     BOOLEAN    IsAsync;
-    BOOLEAN    PassthroughLogged;  // TRUE if passthrough was already logged (negated type)
+    BOOLEAN    PassthroughLogged;        // TRUE if passthrough was already logged (negated type)
+    DNS_PASSTHROUGH_REASON PassthroughReason;  // Reason for passthrough (for logging)
 } DNSAPI_EX_FILTER_RESULT;
 
 // Context structure for async DnsQueryEx callback wrapper
@@ -325,6 +326,7 @@ typedef struct _DNSAPI_RAW_PASSTHROUGH_CONTEXT {
     PVOID                             OriginalContext;
     WCHAR                             Domain[256];
     WORD                              QueryType;
+    DNS_PASSTHROUGH_REASON            PassthroughReason;  // Reason for passthrough (for logging)
 } DNSAPI_RAW_PASSTHROUGH_CONTEXT;
 
 // Callback wrapper signature with SAL annotations
@@ -1424,17 +1426,19 @@ _FX void DNS_InitFilterRules(void)
     
     // Load DnsMapIpv4ToIpv6 setting (default: disabled)
     DNS_MapIpv4ToIpv6 = Config_GetSettingsForImageName_bool(L"DnsMapIpv4ToIpv6", FALSE);
-    
-    DNS_LoadExclusionRules();
 
     if (DNS_FilterList.count > 0)
         return;
 
     List_Init(&DNS_FilterList);
-    DNS_LoadFilterEntries();
+    BOOLEAN hasFilters = DNS_LoadFilterEntries();
     
-    // Load type filters (must be done after LoadFilterEntries)
-    DNS_LoadTypeFilterEntries();
+    // Only load exclusions and type filters if we have base filter rules
+    // NetworkDnsFilterExclude and NetworkDnsFilterType have no effect without NetworkDnsFilter
+    if (hasFilters) {
+        DNS_LoadExclusionRules();
+        DNS_LoadTypeFilterEntries();
+    }
 
     // Check certificate for NetworkDnsFilter (certificate-only feature)
     BOOLEAN has_valid_certificate = FALSE;
@@ -1639,8 +1643,49 @@ BOOLEAN DNS_IsTypeInFilterList(const DNS_TYPE_FILTER* type_filter, USHORT query_
         return TRUE;
     }
 
-    // Type not in list - PASSTHROUGH (only when type filter is explicitly set)
-    // When user sets a type filter, only listed types are filtered; unlisted types passthrough
+    // Type not in list - PASSTHROUGH (only when NetworkDnsFilterType IS set)
+    // When user sets NetworkDnsFilterType, only listed types are filtered; unlisted types passthrough
+    return FALSE;  // Passthrough to real DNS
+}
+
+//---------------------------------------------------------------------------
+// DNS_IsTypeInFilterListEx
+//
+// Extended version that also returns the passthrough reason
+// Returns TRUE if type should be filtered, FALSE if it should pass through
+// pReason is set when returning FALSE to indicate WHY it's passthrough
+//---------------------------------------------------------------------------
+
+BOOLEAN DNS_IsTypeInFilterListEx(const DNS_TYPE_FILTER* type_filter, USHORT query_type, DNS_PASSTHROUGH_REASON* pReason)
+{
+    // No type filter specified - use default behavior
+    // Filter ALL types (will be intercepted if A/AAAA/ANY, blocked if unsupported)
+    if (!type_filter) {
+        return TRUE;  // Filter all types by default
+    }
+
+    // Check if query type is EXPLICITLY in the allowed types list
+    // Explicit listing overrides any negation (including !*)
+    for (USHORT i = 0; i < type_filter->type_count && i < MAX_DNS_TYPE_FILTERS; i++) {
+        if (type_filter->allowed_types[i] == query_type) {
+            return TRUE;  // Type explicitly listed - filter it (ignore negation)
+        }
+    }
+
+    // Type not in allowed list - check if it's negated (passthrough)
+    if (DNS_IsTypeNegated(type_filter, query_type)) {
+        if (pReason) *pReason = DNS_PASSTHROUGH_TYPE_NEGATED;
+        return FALSE;  // Negated - passthrough
+    }
+
+    // Wildcard specified - filter ALL unlisted types (except negated, already checked)
+    if (type_filter->has_wildcard) {
+        return TRUE;
+    }
+
+    // Type not in list - PASSTHROUGH (only when NetworkDnsFilterType IS set)
+    // When user sets NetworkDnsFilterType, only listed types are filtered; unlisted types passthrough
+    if (pReason) *pReason = DNS_PASSTHROUGH_TYPE_NOT_FILTERED;
     return FALSE;  // Passthrough to real DNS
 }
 
@@ -1909,12 +1954,15 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
     // Initialize shared filter rules (if not already done)
     DNS_InitFilterRules();
 
-    // If neither filtering nor tracing is enabled (e.g. certificate missing with rules present
-    // and DnsTrace not allowed), skip installing any WSALookupService or raw socket hooks.
-    // This prevents crashes due to uninitialized lookup map usage in passthrough paths.
-    // Crash scenario: DNS_FilterEnabled == FALSE, DNS_TraceFlag == FALSE, hooks installed,
-    // WSA_WSALookupServiceBeginW uses WSA_GetLookup which depends on initialized map.
-    if (!DNS_FilterEnabled && !DNS_TraceFlag) {
+    // Check if raw socket DNS hooks are requested via FilterRawDns setting
+    extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
+    BOOLEAN rawDnsEnabled = Socket_GetRawDnsFilterEnabled(TRUE); // Check setting only, ignore cert
+
+    // If none of the DNS features are enabled, skip all hooks
+    // - DNS_FilterEnabled: NetworkDnsFilter rules exist
+    // - DNS_TraceFlag: DnsTrace=y for logging
+    // - rawDnsEnabled: FilterRawDns=y for raw socket filtering
+    if (!DNS_FilterEnabled && !DNS_TraceFlag && !rawDnsEnabled) {
         return TRUE; // Nothing to do; leave original APIs untouched.
     }
 
@@ -2067,8 +2115,7 @@ _FX int WSA_WSALookupServiceBeginW(
             // Certificate required for actual filtering (interception/blocking)
             extern BOOLEAN DNS_HasValidCertificate;
             if (!DNS_HasValidCertificate) {
-                // Domain matches filter but no cert - log as passthrough
-                DNS_LogPassthrough(L"WSA", lpqsRestrictions->lpszServiceInstanceName, DNS_TYPE_A, L"No certificate - forwarding to real DNS");
+                // Domain matches filter but no cert - passthrough (WSA_LogPassthrough will log with IPs)
                 Dll_Free(path_lwr);
                 return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
             }
@@ -2131,13 +2178,8 @@ _FX int WSA_WSALookupServiceBeginW(
                         BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, query_type);
                         
                         if (!should_filter) {
-                            // Type not in filter list or negated - pass through to real DNS
-                            // Check if negated to provide more specific log message
-                            const WCHAR* reason = DNS_IsTypeNegated(type_filter, query_type)
-                                ? L"Type filter: negated"
-                                : L"Type not in filter list, forwarding to real DNS";
-                            WSA_LogTypeFilterPassthrough(lpqsRestrictions->lpszServiceInstanceName, query_type, reason);
-                            
+                            // Type not in filter list or negated - passthrough to real DNS
+                            // WSA_LogPassthrough will log the final result with IPs
                             EnterCriticalSection(&WSA_LookupMap_CritSec);
                             map_remove(&WSA_LookupMap, fakeHandle);
                             LeaveCriticalSection(&WSA_LookupMap_CritSec);
@@ -2487,8 +2529,11 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
     // Certificate required for actual filtering (interception/blocking)
     extern BOOLEAN DNS_HasValidCertificate;
     if (!DNS_HasValidCertificate) {
-        // Domain matches filter but no cert - log as passthrough
-        DNS_LogPassthrough(sourceTag, pszName, wType, L"No certificate - forwarding to real DNS");
+        // Domain matches filter but no cert - passthrough (caller will log with IPs)
+        if (pOutcome) {
+            pOutcome->PassthroughLogged = TRUE;  // Signal caller to skip redundant logging
+            pOutcome->PassthroughReason = DNS_PASSTHROUGH_NO_CERT;
+        }
         Dll_Free(path_lwr);
         return FALSE;
     }
@@ -2503,19 +2548,15 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
         // (Don't check DNS_IsTypeInFilterList - block all types)
     } else {
         // Filter mode (with IPs) - check if this type should be filtered
-        BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
+        DNS_PASSTHROUGH_REASON typeReason = DNS_PASSTHROUGH_NONE;
+        BOOLEAN should_filter = DNS_IsTypeInFilterListEx(type_filter, wType, &typeReason);
         
         if (!should_filter) {
-            // Type not in filter list or negated - pass to real DNS
-            // Check if negated to provide more specific log message
-            if (type_filter && DNS_IsTypeNegated(type_filter, wType)) {
-                DNS_LogTypeFilterPassthrough(sourceTag, pszName, wType, L"negated");
-                if (pOutcome)
-                    pOutcome->PassthroughLogged = TRUE;  // Indicate passthrough was already logged
-            } else {
-                DNS_LogPassthrough(sourceTag, pszName, wType, L"Type not in filter list, forwarding to real DNS");
-                if (pOutcome)
-                    pOutcome->PassthroughLogged = TRUE;  // Indicate passthrough was already logged
+            // Type not in filter list or negated - passthrough to real DNS
+            // Caller will log the final result with IPs (suppression handles dedup)
+            if (pOutcome) {
+                pOutcome->PassthroughLogged = TRUE;  // Signal caller to skip redundant logging
+                pOutcome->PassthroughReason = typeReason;
             }
             Dll_Free(path_lwr);
             return FALSE;
@@ -2529,8 +2570,9 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
     if (pEntries && DNS_CanSynthesizeResponse(wType)) {
         // Filter mode with supported type (A/AAAA): build response
         pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries, CharSet);
-        if (!pRecords)
-            status = DNS_ERROR_RCODE_NAME_ERROR;
+        // If no records built (e.g., AAAA query but only IPv4 available),
+        // return NOERROR + NODATA (domain exists, no records of this type)
+        // status stays 0 (NOERROR), pRecords stays NULL (NODATA)
     } else if (!pEntries) {
         // Block mode: return NXDOMAIN (domain doesn't exist)
         status = DNS_ERROR_RCODE_NAME_ERROR;
@@ -2804,11 +2846,14 @@ static BOOLEAN DNSAPI_FilterDnsQuery(
     const WCHAR*            sourceTag,
     PDNSAPI_DNS_RECORD*     ppQueryResults,
     DNS_STATUS*             pStatus,
-    BOOLEAN*                pPassthroughLogged)  // OUT: TRUE if passthrough was already logged
+    BOOLEAN*                pPassthroughLogged,     // OUT: TRUE if passthrough was already logged
+    DNS_PASSTHROUGH_REASON* pPassthroughReason)     // OUT: Reason for passthrough
 {
-    // Initialize output flag
+    // Initialize output flags
     if (pPassthroughLogged)
         *pPassthroughLogged = FALSE;
+    if (pPassthroughReason)
+        *pPassthroughReason = DNS_PASSTHROUGH_NONE;
 
     // Block mode (no IPs) should block ALL query types
     if (!pEntries) {
@@ -2820,19 +2865,16 @@ static BOOLEAN DNSAPI_FilterDnsQuery(
     }
 
     // Filter mode (with IPs) - check if this type should be filtered
-    BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, wType);
+    DNS_PASSTHROUGH_REASON typeReason = DNS_PASSTHROUGH_NONE;
+    BOOLEAN should_filter = DNS_IsTypeInFilterListEx(type_filter, wType, &typeReason);
     
     if (!should_filter) {
-        // Type not in filter list or negated - pass to real DNS
-        // Check if negated to provide more specific log message
-        if (type_filter && DNS_IsTypeNegated(type_filter, wType)) {
-            // Use base tag (strip "Intercepted") for passthrough logging
-            WCHAR baseTag[128];
-            DNS_LogTypeFilterPassthrough(DNS_GetBaseTag(sourceTag, baseTag, ARRAYSIZE(baseTag)), wName, wType, L"negated");
-            if (pPassthroughLogged)
-                *pPassthroughLogged = TRUE;  // Indicate we already logged the passthrough
-        }
-        // else: will be logged by caller (passthrough path) as "Type not in filter list"
+        // Type not in filter list or negated - passthrough to real DNS
+        // Caller will log final result with IPs (suppression handles dedup)
+        if (pPassthroughLogged)
+            *pPassthroughLogged = TRUE;  // Signal caller to skip redundant logging
+        if (pPassthroughReason)
+            *pPassthroughReason = typeReason;
         *pStatus = 0;
         return FALSE;
     }
@@ -2881,6 +2923,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
     PVOID*          pReserved)
 {
     // Filter or block based on configuration
+    DNS_PASSTHROUGH_REASON passthroughReason = DNS_PASSTHROUGH_NONE;
+    
     if (DNS_FilterEnabled && pszName) {
         ULONG path_len = wcslen(pszName);
         WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
@@ -2898,36 +2942,34 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
         if (Pattern_MatchPathList(path_lwr, path_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
             PVOID* aux = Pattern_Aux(found);
             if (!aux || !*aux) {
-                DNS_LogPassthrough(L"DnsQuery_W Passthrough", pszName, wType, L"No match, forwarding to real DNS");
-                Dll_Free(path_lwr);
-                return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-            }
+                // Pattern matched but no aux data (config issue) - passthrough
+                // Fall through to passthrough path which logs with IPs
+            } else {
+                // Certificate required for actual filtering (interception/blocking)
+                extern BOOLEAN DNS_HasValidCertificate;
+                if (!DNS_HasValidCertificate) {
+                    // Domain matches filter but no cert - call real DNS and log result with IPs
+                    Dll_Free(path_lwr);
+                    DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                    DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
+                                                   status, ppQueryResults, DNS_PASSTHROUGH_NO_CERT);
+                    return status;
+                }
 
-            // Certificate required for actual filtering (interception/blocking)
-            extern BOOLEAN DNS_HasValidCertificate;
-            if (!DNS_HasValidCertificate) {
-                // Domain matches filter but no cert - log as passthrough
-                DNS_LogPassthrough(L"DnsQuery_W", pszName, wType, L"No certificate - forwarding to real DNS");
-                Dll_Free(path_lwr);
-                return __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
-            }
+                LIST* pEntries = NULL;
+                DNS_TYPE_FILTER* type_filter = NULL;
+                DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
 
-            LIST* pEntries = NULL;
-            DNS_TYPE_FILTER* type_filter = NULL;
-            DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
+                DNS_STATUS status;
+                BOOLEAN passthroughLogged = FALSE;
+                if (DNSAPI_FilterDnsQuery(pszName, wType, pEntries, type_filter, DnsCharSetUnicode,
+                                          L"DnsQuery_W Intercepted", ppQueryResults, &status, 
+                                          &passthroughLogged, &passthroughReason)) {
+                    Dll_Free(path_lwr);
+                    return status;
+                }
 
-            DNS_STATUS status;
-            BOOLEAN passthroughLogged = FALSE;
-            if (DNSAPI_FilterDnsQuery(pszName, wType, pEntries, type_filter, DnsCharSetUnicode,
-                                      L"DnsQuery_W Intercepted", ppQueryResults, &status, &passthroughLogged)) {
-                Dll_Free(path_lwr);
-                return status;
-            }
-
-            // Not filtered by type - call real DNS and return unmodified result
-            // Only log "Monitored" if passthrough wasn't already logged (e.g., for negated types)
-            if (!passthroughLogged) {
-                DNS_LogPassthrough(L"DnsQuery_W Monitored", pszName, wType, L"Type not in filter list, returning real DNS result");
+                // Not filtered by type - passthrough to real DNS (logged with IPs and reason below)
             }
         }
 
@@ -2937,7 +2979,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
     // Call original DnsQuery_W
     DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
-    DNS_LogDnsQueryResult(L"DnsQuery_W Passthrough", pszName, wType, status, ppQueryResults);
+    DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
+                                   status, ppQueryResults, passthroughReason);
 
     return status;
 }
@@ -2956,6 +2999,9 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
     PDNSAPI_DNS_RECORD* ppQueryResults,
     PVOID*          pReserved)
 {
+    // Track reason for passthrough (will be used in final logging)
+    DNS_PASSTHROUGH_REASON passthroughReason = DNS_PASSTHROUGH_NONE;
+    
     // For filtering, convert to wide and use shared filter logic
     if (DNS_FilterEnabled && pszName) {
         int nameLen = MultiByteToWideChar(CP_ACP, 0, pszName, -1, NULL, 0);
@@ -2988,10 +3034,12 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
                     // Certificate required for actual filtering (interception/blocking)
                     extern BOOLEAN DNS_HasValidCertificate;
                     if (!DNS_HasValidCertificate) {
-                        // Domain matches filter but no cert - log as passthrough
-                        DNS_LogPassthroughAnsi(L"DnsQuery_A", pszName, wType, L"No certificate - forwarding to real DNS");
+                        // Domain matches filter but no cert - call real DNS and log result with IPs
+                        DNS_STATUS status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                        DNS_LogDnsQueryResultWithReason(L"DnsQuery_A Passthrough", wName, wType, 
+                                                       status, ppQueryResults, DNS_PASSTHROUGH_NO_CERT);
                         Dll_Free(wName);
-                        return __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                        return status;
                     }
 
                     LIST* pEntries = NULL;
@@ -3001,16 +3049,13 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
                     DNS_STATUS status;
                     BOOLEAN passthroughLogged = FALSE;
                     if (DNSAPI_FilterDnsQuery(wName, wType, pEntries, type_filter, DnsCharSetAnsi,
-                                              L"DnsQuery_A Intercepted", ppQueryResults, &status, &passthroughLogged)) {
+                                              L"DnsQuery_A Intercepted", ppQueryResults, &status, 
+                                              &passthroughLogged, &passthroughReason)) {
                         Dll_Free(wName);
                         return status;
                     }
 
-                    // Not filtered by type - call real DNS and return unmodified result
-                    // Only log "Monitored" if passthrough wasn't already logged (e.g., for negated types)
-                    if (!passthroughLogged) {
-                        DNS_LogPassthroughAnsi(L"DnsQuery_A Monitored", pszName, wType, L"Type not in filter list, returning real DNS result");
-                    }
+                    // Not filtered by type - passthrough to real DNS (logged with IPs and reason below)
                 }
 
                 Dll_Free(wName);
@@ -3027,7 +3072,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
         if (nameLen > 0 && nameLen < 512) {
             WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
             if (wName && MultiByteToWideChar(CP_ACP, 0, pszName, -1, wName, nameLen)) {
-                DNS_LogDnsQueryResult(L"DnsQuery_A Passthrough", wName, wType, status, ppQueryResults);
+                DNS_LogDnsQueryResultWithReason(L"DnsQuery_A Passthrough", wName, wType, 
+                                               status, ppQueryResults, passthroughReason);
             }
         }
     }
@@ -3049,6 +3095,9 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
     PDNSAPI_DNS_RECORD* ppQueryResults,
     PVOID*          pReserved)
 {
+    // Track reason for passthrough (will be used in final logging)
+    DNS_PASSTHROUGH_REASON passthroughReason = DNS_PASSTHROUGH_NONE;
+    
     if (DNS_FilterEnabled && pszName) {
         int nameLen = MultiByteToWideChar(CP_UTF8, 0, pszName, -1, NULL, 0);
         if (nameLen > 0 && nameLen < 512) {  // Sanity check
@@ -3080,11 +3129,13 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
                     // Certificate required for actual filtering (interception/blocking)
                     extern BOOLEAN DNS_HasValidCertificate;
                     if (!DNS_HasValidCertificate) {
-                        // Domain matches filter but no cert - log as passthrough
-                        DNS_LogPassthroughAnsi(L"DnsQuery_UTF8", pszName, wType, L"No certificate - forwarding to real DNS");
+                        // Domain matches filter but no cert - call real DNS and log result with IPs
+                        DNS_STATUS status = __sys_DnsQuery_UTF8 ? __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved)
+                                                               : __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                        DNS_LogDnsQueryResultWithReason(L"DnsQuery_UTF8 Passthrough", wName, wType, 
+                                                       status, ppQueryResults, DNS_PASSTHROUGH_NO_CERT);
                         Dll_Free(wName);
-                        return __sys_DnsQuery_UTF8 ? __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved)
-                                                  : __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                        return status;
                     }
 
                     LIST* pEntries = NULL;
@@ -3094,16 +3145,13 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
                     DNS_STATUS status;
                     BOOLEAN passthroughLogged = FALSE;
                     if (DNSAPI_FilterDnsQuery(wName, wType, pEntries, type_filter, DnsCharSetUtf8,
-                                              L"DnsQuery_UTF8 Intercepted", ppQueryResults, &status, &passthroughLogged)) {
+                                              L"DnsQuery_UTF8 Intercepted", ppQueryResults, &status, 
+                                              &passthroughLogged, &passthroughReason)) {
                         Dll_Free(wName);
                         return status;
                     }
 
-                    // Not filtered by type - call real DNS and return unmodified result
-                    // Only log "Monitored" if passthrough wasn't already logged (e.g., for negated types)
-                    if (!passthroughLogged) {
-                        DNS_LogPassthroughAnsi(L"DnsQuery_UTF8 Monitored", pszName, wType, L"Type not in filter list, returning real DNS result");
-                    }
+                    // Not filtered by type - passthrough to real DNS (logged with IPs and reason below)
                 }
 
                 Dll_Free(wName);
@@ -3123,7 +3171,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
         if (nameLen > 0 && nameLen < 512) {
             WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
             if (wName && MultiByteToWideChar(CP_UTF8, 0, pszName, -1, wName, nameLen)) {
-                DNS_LogDnsQueryResult(L"DnsQuery_UTF8 Passthrough", wName, wType, status, ppQueryResults);
+                DNS_LogDnsQueryResultWithReason(L"DnsQuery_UTF8 Passthrough", wName, wType, 
+                                               status, ppQueryResults, passthroughReason);
             }
         }
     }
@@ -3181,10 +3230,12 @@ _FX VOID WINAPI DNSAPI_RawPassthroughCallbackWrapper(
     // Use queryRecords if Windows parsed them (preferred - structured data)
     // Otherwise fall back to status-only logging
     if (pQueryResults && pQueryResults->queryRecords) {
-        DNS_LogDnsRecordsFromQueryResult(L"DnsQueryRaw Passthrough", ctx->Domain, 
-            ctx->QueryType, status, (PDNSAPI_DNS_RECORD)pQueryResults->queryRecords);
+        DNS_LogDnsRecordsWithReason(L"DnsQueryRaw Passthrough", ctx->Domain, 
+            ctx->QueryType, (PDNSAPI_DNS_RECORD)pQueryResults->queryRecords, ctx->PassthroughReason);
     } else {
-        DNS_LogDnsQueryExStatus(L"DnsQueryRaw Passthrough", ctx->Domain, ctx->QueryType, status);
+        // No structured records - log with reason in status format
+        DNS_LogDnsQueryResultWithReason(L"DnsQueryRaw Passthrough", ctx->Domain, ctx->QueryType,
+                                        status, NULL, ctx->PassthroughReason);
     }
 
     // Call the original user callback
@@ -3260,14 +3311,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
         // Filter handled the request - return the status
         return outcome.Status;
     }
-    else if (!outcome.PassthroughLogged && pQueryRequest->QueryName && DNS_DomainMatchesFilter(pQueryRequest->QueryName))
-    {
-        // Domain matched filter but type not in filter list - log as monitored passthrough
-        // Only log if passthrough wasn't already logged (e.g., negated types already logged)
-        // This creates parity with DnsQuery_W behavior
-        DNS_LogPassthrough(L"DnsQueryEx Monitored", pQueryRequest->QueryName, 
-                          pQueryRequest->QueryType, L"Type not in filter list, returning real DNS result");
-    }
+    // If not filtered, passthrough logging with IPs happens after real DNS call below
 
     // Check if this is an async call (has completion callback)
     // Note: At this point we only handle VERSION1/2 (VERSION3 already returned above)
@@ -3500,9 +3544,10 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             DNS_LogDnsQueryExStatus(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
                                    pQueryRequest->QueryType, status);
         } else if (status == 0 && pQueryResults && pQueryResults->pQueryRecords) {
-            // Sync call completed successfully - log with type filtering
-            DNS_LogDnsRecords(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
-                            pQueryRequest->QueryType, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords, L"", TRUE);
+            // Sync call completed successfully - log with type filtering and reason
+            DNS_LogDnsRecordsWithReason(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
+                            pQueryRequest->QueryType, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords, 
+                            outcome.PassthroughReason);
         } else {
             // Error or no results - log based on status
             if (status != 0) {
@@ -3681,8 +3726,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                             // Certificate required for actual filtering (interception/blocking)
                             extern BOOLEAN DNS_HasValidCertificate;
                             if (!DNS_HasValidCertificate) {
-                                // Domain matches filter but no cert - log as passthrough
-                                DNS_LogPassthrough(L"DnsQueryRaw", domain, qtype, L"No certificate - forwarding to real DNS");
+                                // Domain matches filter but no cert - passthrough (logged via callback with IPs)
                                 Dll_Free(domain_lwr);
                                 
                                 // Wrap callback to log completion status
@@ -3694,6 +3738,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->OriginalContext = pQueryRequest->queryContext;
                                         wcscpy(ctx->Domain, domain);
                                         ctx->QueryType = qtype;
+                                        ctx->PassthroughReason = DNS_PASSTHROUGH_NO_CERT;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -3720,8 +3765,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                             BOOLEAN is_negated = DNS_IsTypeNegated(type_filter, qtype);
                             
                             if (is_negated) {
-                                // Negated types always passthrough - use consistent logging format
-                                DNS_LogTypeFilterPassthrough(L"DnsQueryRaw", domain, qtype, L"negated");
+                                // Negated types always passthrough - callback wrapper will log with IPs
                                 Dll_Free(domain_lwr);
                                 
                                 // Wrap callback to log completion status
@@ -3733,6 +3777,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->OriginalContext = pQueryRequest->queryContext;
                                         wcscpy(ctx->Domain, domain);
                                         ctx->QueryType = qtype;
+                                        ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NEGATED;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -3747,8 +3792,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                             BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, qtype);
                             
                             if (!should_filter) {
-                                // Type not in filter list - passthrough to real DNS (consistent with DnsQueryEx)
-                                DNS_LogPassthrough(L"DnsQueryRaw Passthrough", domain, qtype, L"Type not in filter list, forwarding to real DNS");
+                                // Type not in filter list - passthrough to real DNS
+                                // Callback wrapper will log final result with IPs
                                 Dll_Free(domain_lwr);
                                 
                                 // Wrap callback to log completion status
@@ -3760,6 +3805,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->OriginalContext = pQueryRequest->queryContext;
                                         wcscpy(ctx->Domain, domain);
                                         ctx->QueryType = qtype;
+                                        ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NOT_FILTERED;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -3805,6 +3851,14 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                 }
 
                                 if (response_len > 0) {
+                                    // Check if response has answers (not a NODATA response)
+                                    // DNS header: ID(2) + Flags(2) + Questions(2) + AnswerRRs(2) + AuthorityRRs(2) + AdditionalRRs(2)
+                                    // AnswerRRs is at offset 6, 2 bytes (network byte order)
+                                    USHORT answer_count = 0;
+                                    if (response_len >= 8) {
+                                        answer_count = _ntohs(*(USHORT*)(response + 6));
+                                    }
+                                    
                                     // Allocate completion callback structure
                                     if (pQueryRequest->queryCompletionCallback) {
                                         // Async mode - need to allocate result and call callback
@@ -3823,8 +3877,14 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                                 pResult->queryRawResponseSize = response_len;
                                                 memcpy(pResult->queryRawResponse, response, response_len);
                                                 
-                                                DNS_LogIntercepted(L"DnsQueryRaw Intercepted", 
-                                                                 domain, qtype, pEntries);
+                                                // Log appropriately based on whether we have answers
+                                                if (answer_count > 0) {
+                                                    DNS_LogIntercepted(L"DnsQueryRaw Intercepted", 
+                                                                     domain, qtype, pEntries);
+                                                } else {
+                                                    DNS_LogInterceptedNoData(L"DnsQueryRaw Intercepted", domain, qtype,
+                                                                 L"No records for this type (NODATA)");
+                                                }
                                                 
                                                 // Call completion callback
                                                 pQueryRequest->queryCompletionCallback(
@@ -3840,7 +3900,12 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                     
                                     // Synchronous mode - but DnsQueryRaw doesn't support sync return
                                     // Always returns via callback, so we shouldn't reach here
-                                    DNS_LogIntercepted(L"DnsQueryRaw Intercepted", domain, qtype, pEntries);
+                                    if (answer_count > 0) {
+                                        DNS_LogIntercepted(L"DnsQueryRaw Intercepted", domain, qtype, pEntries);
+                                    } else {
+                                        DNS_LogInterceptedNoData(L"DnsQueryRaw Intercepted", domain, qtype,
+                                                     L"No records for this type (NODATA)");
+                                    }
                                     Dll_Free(domain_lwr);
                                     return DNS_REQUEST_PENDING;
                                 }
@@ -3934,6 +3999,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
             ctx->OriginalContext = pQueryRequest->queryContext;
             wcscpy(ctx->Domain, domain);
             ctx->QueryType = qtype;
+            ctx->PassthroughReason = DNS_PASSTHROUGH_NO_MATCH;
             
             // Replace with our wrapper
             pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
