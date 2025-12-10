@@ -65,6 +65,23 @@
 #include "socket_hooks.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_doh.h"
+
+//---------------------------------------------------------------------------
+// sockaddr_storage Definition (for IPv4/IPv6 address storage)
+// Standard Windows structure from ws2def.h, needed for proper IPv6 support
+// Using fixed sizes that match Windows ABI (128 bytes total)
+//---------------------------------------------------------------------------
+
+#ifndef _SOCKADDR_STORAGE_DEFINED
+#define _SOCKADDR_STORAGE_DEFINED
+typedef struct sockaddr_storage {
+    ADDRESS_FAMILY ss_family;
+    CHAR __ss_pad1[6];      // Padding to 8-byte alignment
+    __int64 __ss_align;     // Force 8-byte alignment
+    CHAR __ss_pad2[112];    // Remaining padding to reach 128 bytes
+} SOCKADDR_STORAGE, *PSOCKADDR_STORAGE;
+#endif
 
 //---------------------------------------------------------------------------
 // WSABUF Definition
@@ -124,7 +141,9 @@ typedef struct _DNS_RR {
 #define DNS_TYPE_AAAA  28
 #endif
 
-#define DNS_RESPONSE_SIZE 512  // Maximum DNS response size (RFC 1035)
+// Maximum DNS response size - increased from 512 to support EDNS0
+// RFC 6891 allows up to 4096 bytes for EDNS0-capable resolvers
+#define DNS_RESPONSE_SIZE 4096
 
 //---------------------------------------------------------------------------
 // Socket Option Constants (for getsockopt)
@@ -181,13 +200,14 @@ typedef struct _WSANETWORKEVENTS_COMPAT {
 
 typedef struct _FAKE_RESPONSE {
     char length_prefix[2];      // TCP DNS length prefix (2 bytes, network byte order)
-    char response[512];         // DNS payload
+    char response[DNS_RESPONSE_SIZE];  // DNS payload (4096 bytes for EDNS0 support)
     int response_len;           // Length of DNS payload
     int consumed;               // Bytes already returned (includes length prefix for TCP)
     int total_len;              // Total bytes to return (2 + response_len for TCP, response_len for UDP)
     BOOLEAN is_tcp;             // TRUE if this is a TCP response (has length prefix)
     BOOLEAN skip_length_prefix; // TRUE if we should skip sending the length prefix (nslookup without -vc)
-    struct sockaddr_in from_addr;
+    SOCKADDR_STORAGE from_addr; // Use sockaddr_storage to support both IPv4 and IPv6
+    int from_addr_len;          // Actual length of the address (sizeof(sockaddr_in) or sockaddr_in6)
     DWORD timestamp;
     struct _FAKE_RESPONSE* next;
 } FAKE_RESPONSE;
@@ -217,7 +237,9 @@ static CRITICAL_SECTION g_ResponseTableLock;  // Only for queue creation/deletio
 // We need to reassemble these fragments to properly intercept the query.
 //---------------------------------------------------------------------------
 
-#define TCP_REASSEMBLY_BUFFER_SIZE 520  // 2-byte prefix + 512-byte max DNS payload + headroom
+// Increased from 520 to 4098 to support EDNS0 (RFC 6891) and prevent filter bypass
+// via oversized packets. Format: 2-byte length prefix + up to 4096 byte DNS payload
+#define TCP_REASSEMBLY_BUFFER_SIZE 4098
 #define TCP_REASSEMBLY_TIMEOUT_MS 5000  // Drop incomplete messages after 5 seconds
 
 typedef struct _TCP_REASSEMBLY_BUFFER {
@@ -251,6 +273,7 @@ static BOOLEAN Socket_IsTcpSocket(SOCKET s);  // Helper to detect TCP vs UDP soc
 #define DNS_SOCKET_TABLE_SIZE 256
 static SOCKET g_DnsSockets[DNS_SOCKET_TABLE_SIZE];
 static BOOLEAN g_DnsSocketFlags[DNS_SOCKET_TABLE_SIZE];
+static CRITICAL_SECTION g_DnsSocketTableLock;  // Protects socket table access
 
 // Store DNS server addresses for getpeername() support
 // Stores the address the socket connected to (for local-response spoofing)
@@ -901,6 +924,139 @@ static int Socket_HandleDnsQuery(
 }
 
 //---------------------------------------------------------------------------
+// Socket_BuildDoHResponse
+//
+// Build a DNS wire format response from DoH query results.
+// Used for raw socket DNS interception when SecureDnsServer is configured.
+//
+// Parameters:
+//   query         - Original DNS query packet
+//   query_len     - Length of query packet
+//   domain        - Domain name being queried
+//   qtype         - Query type (DNS_TYPE_A, DNS_TYPE_AAAA, etc.)
+//   response      - Buffer for DNS response
+//   response_size - Size of response buffer
+//
+// Returns: Length of response packet, 0 for passthrough, -1 on error
+//---------------------------------------------------------------------------
+
+static int Socket_BuildDoHResponse(
+    const BYTE* query,
+    int query_len,
+    const WCHAR* domain,
+    USHORT qtype,
+    BYTE* response,
+    int response_size)
+{
+    // Only attempt DoH for A and AAAA queries (other types not supported by JSON API)
+    if (qtype != DNS_TYPE_A && qtype != DNS_TYPE_AAAA) {
+        return 0;  // Passthrough for unsupported types
+    }
+    
+    // Check if DoH is enabled
+    if (!DoH_IsEnabled()) {
+        return 0;  // Passthrough - DoH not configured
+    }
+    
+    // Prevent re-entrancy - if DoH query is already active, don't trigger another
+    // This prevents infinite loops when FilterWinHttp=y intercepts DoH's WinHTTP calls
+    if (DoH_IsQueryActive()) {
+        if (DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"Raw DNS: Skipping DoH for %s - DoH query already active (re-entrancy protection)", domain);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        return 0;  // Passthrough to avoid re-entrancy
+    }
+    
+    // Query DoH server
+    DOH_RESULT doh_result;
+    if (!DoH_Query(domain, qtype, &doh_result)) {
+        // DoH query failed - if DoH is enabled, return NXDOMAIN instead of passthrough
+        // This ensures all DNS traffic goes through DoH when configured
+        if (DoH_IsEnabled()) {
+            // Return NXDOMAIN response (domain doesn't exist)
+            if (response_size < sizeof(DNS_WIRE_HEADER)) {
+                return -1;  // Buffer too small
+            }
+            
+            // Copy query header and set response flags
+            if (query_len >= sizeof(DNS_WIRE_HEADER)) {
+                memcpy(response, query, sizeof(DNS_WIRE_HEADER));
+                DNS_WIRE_HEADER* resp_hdr = (DNS_WIRE_HEADER*)response;
+                resp_hdr->Flags = _htons(0x8183);  // Response, NXDOMAIN (RCODE=3)
+                resp_hdr->AnswerRRs = 0;
+                resp_hdr->AuthorityRRs = 0;
+                resp_hdr->AdditionalRRs = 0;
+                
+                if (DNS_TraceFlag) {
+                    WCHAR msg[256];
+                    Sbie_snwprintf(msg, 256, L"Raw DNS DoH: Query failed for %s - returning NXDOMAIN (no fallback)", domain);
+                    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+                }
+                
+                return sizeof(DNS_WIRE_HEADER);  // Return minimal NXDOMAIN response
+            }
+            return -1;
+        }
+        return 0;  // DoH disabled - passthrough to system DNS
+    }
+    
+    if (!doh_result.Success) {
+        // DoH returned error - same handling as query failure
+        if (DoH_IsEnabled()) {
+            if (response_size < sizeof(DNS_WIRE_HEADER) || query_len < sizeof(DNS_WIRE_HEADER)) {
+                return -1;
+            }
+            memcpy(response, query, sizeof(DNS_WIRE_HEADER));
+            DNS_WIRE_HEADER* resp_hdr = (DNS_WIRE_HEADER*)response;
+            resp_hdr->Flags = _htons(0x8183);  // Response, NXDOMAIN
+            resp_hdr->AnswerRRs = 0;
+            resp_hdr->AuthorityRRs = 0;
+            resp_hdr->AdditionalRRs = 0;
+            return sizeof(DNS_WIRE_HEADER);
+        }
+        return 0;  // DoH disabled - passthrough
+    }
+    
+    // Build LIST of IP entries from DoH result (to reuse Socket_BuildDnsResponse)
+    LIST ip_list;
+    List_Init(&ip_list);
+    
+    for (int i = 0; i < doh_result.AnswerCount && i < 32; i++) {
+        IP_ENTRY* entry = (IP_ENTRY*)Dll_Alloc(sizeof(IP_ENTRY));
+        if (entry) {
+            entry->Type = doh_result.Answers[i].Type;
+            memcpy(&entry->IP, &doh_result.Answers[i].IP, sizeof(IP_ADDRESS));
+            List_Insert_After(&ip_list, NULL, entry);
+        }
+    }
+    
+    // Build DNS response using existing function
+    int response_len = Socket_BuildDnsResponse(
+        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL);
+    
+    // Free the IP list
+    IP_ENTRY* entry = (IP_ENTRY*)List_Head(&ip_list);
+    while (entry) {
+        IP_ENTRY* next = (IP_ENTRY*)List_Next(entry);
+        Dll_Free(entry);
+        entry = next;
+    }
+    
+    if (response_len > 0 && DNS_TraceFlag) {
+        WCHAR msg[512];
+        DNS_WIRE_HEADER* resp_hdr = (DNS_WIRE_HEADER*)response;
+        USHORT answer_rrs = (response_len >= sizeof(DNS_WIRE_HEADER)) ? _ntohs(resp_hdr->AnswerRRs) : 0;
+        Sbie_snwprintf(msg, 512, L"Raw DNS DoH: Built response for %s (Type: %s, IPs: %d, response_len: %d, AnswerRRs: %d)",
+            domain, DNS_GetTypeName(qtype), doh_result.AnswerCount, response_len, answer_rrs);
+        SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+    }
+    
+    return response_len;
+}
+
+//---------------------------------------------------------------------------
 // Socket_GetRawDnsFilterEnabled
 //
 // Query the FilterRawDns setting to control raw socket DNS filtering
@@ -954,10 +1110,8 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
         return TRUE;
     }
 
-    // Load DnsDebug setting for verbose logging (only effective if DnsTrace is also set)
-    WCHAR wsDebugOptions[4] = { 0 };
-    if (SbieApi_QueryConf(NULL, L"DnsDebug", 0, wsDebugOptions, sizeof(wsDebugOptions)) == STATUS_SUCCESS && wsDebugOptions[0] != L'\0')
-        DNS_DebugFlag = Config_String2Bool(wsDebugOptions, FALSE);
+    // Load DnsDebug setting for verbose logging (supports per-process: DnsDebug=program.exe,y)
+    DNS_DebugFlag = Config_GetSettingsForImageName_bool(L"DnsDebug", FALSE);
 
     // Initialize per-socket response queue table
     InitializeCriticalSection(&g_ResponseTableLock);
@@ -973,7 +1127,8 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
         g_TcpReassemblyTable[i].expected_length = -1;
     }
 
-    // Initialize DNS socket tracking table
+    // Initialize DNS socket tracking table with critical section (thread safety fix)
+    InitializeCriticalSection(&g_DnsSocketTableLock);
     for (int i = 0; i < DNS_SOCKET_TABLE_SIZE; i++) {
         g_DnsSockets[i] = INVALID_SOCKET;
         g_DnsSocketFlags[i] = FALSE;
@@ -1089,25 +1244,32 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
 // Socket_IsDnsSocket
 //
 // Check if a socket is marked as a DNS connection
+// Thread-safe: uses critical section to prevent race conditions
 //---------------------------------------------------------------------------
 
 _FX BOOLEAN Socket_IsDnsSocket(SOCKET s)
 {
     ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
-    return (g_DnsSockets[index] == s && g_DnsSocketFlags[index]);
+    EnterCriticalSection(&g_DnsSocketTableLock);
+    BOOLEAN result = (g_DnsSockets[index] == s && g_DnsSocketFlags[index]);
+    LeaveCriticalSection(&g_DnsSocketTableLock);
+    return result;
 }
 
 //---------------------------------------------------------------------------
 // Socket_MarkDnsSocket
 //
 // Mark a socket as DNS connection (or unmark it)
+// Thread-safe: uses critical section to prevent race conditions
 //---------------------------------------------------------------------------
 
 _FX void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns)
 {
     ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
+    EnterCriticalSection(&g_DnsSocketTableLock);
     g_DnsSockets[index] = s;
     g_DnsSocketFlags[index] = isDns;
+    LeaveCriticalSection(&g_DnsSocketTableLock);
 }
 
 //---------------------------------------------------------------------------
@@ -1294,8 +1456,15 @@ _FX int Socket_AddToReassemblyBuffer(SOCKET s, const BYTE* data, int len, BYTE**
 
 // Send the complete reassembled TCP DNS data to the server
 // This is called when we need to passthrough a DNS query that was reassembled
-// Returns: 0 on success, SOCKET_ERROR on failure
-_FX int Socket_SendReassembledData(SOCKET s, LPDWORD lpNumberOfBytesSent)
+// 
+// IMPORTANT: We must support both synchronous and overlapped I/O modes.
+// If overlapped parameters are provided, we pass them through to preserve async semantics.
+// Returns: 0 on success, SOCKET_ERROR on failure (or WSA_IO_PENDING for async)
+_FX int Socket_SendReassembledData(
+    SOCKET s, 
+    LPDWORD lpNumberOfBytesSent,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
     ULONG index = ((ULONG_PTR)s) % TCP_REASSEMBLY_TABLE_SIZE;
     int result = SOCKET_ERROR;
@@ -1310,7 +1479,12 @@ _FX int Socket_SendReassembledData(SOCKET s, LPDWORD lpNumberOfBytesSent)
         wsabuf.buf = (char*)buf->buffer;
         
         DWORD bytesSent = 0;
-        result = __sys_WSASendTo(s, (LPWSABUF)&wsabuf, 1, &bytesSent, 0, NULL, 0, NULL, NULL);
+        
+        // Pass through overlapped parameters to preserve async I/O semantics
+        // This fixes the bug where we were forcing synchronous sends and breaking
+        // applications that use overlapped I/O (like Cygwin dig with async sockets)
+        result = __sys_WSASendTo(s, (LPWSABUF)&wsabuf, 1, &bytesSent, 0, NULL, 0, 
+                                  lpOverlapped, lpCompletionRoutine);
         
         if (result == 0 && lpNumberOfBytesSent) {
             *lpNumberOfBytesSent = bytesSent;
@@ -1318,8 +1492,8 @@ _FX int Socket_SendReassembledData(SOCKET s, LPDWORD lpNumberOfBytesSent)
         
         if (DNS_DebugFlag) {
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"TCP DNS: Sent reassembled data (%d bytes) to server, result=%d",
-                buf->bytes_received, result);
+            Sbie_snwprintf(msg, 256, L"TCP DNS: Sent reassembled data (%d bytes) to server, result=%d, overlapped=%s",
+                buf->bytes_received, result, lpOverlapped ? L"yes" : L"no");
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
         
@@ -1361,12 +1535,14 @@ static BOOLEAN Socket_TrackDnsConnection(SOCKET s, const void* name, int namelen
     if (destPort == 53) {
         Socket_MarkDnsSocket(s, TRUE);
         
-        // Store DNS server address for getpeername() support
+        // Store DNS server address for getpeername() support (thread-safe)
         ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
+        EnterCriticalSection(&g_DnsSocketTableLock);
         if (namelen <= DNS_SERVER_ADDR_SIZE) {
             memcpy(g_DnsServerAddrs[index], name, namelen);
             g_DnsServerAddrLens[index] = namelen;
         }
+        LeaveCriticalSection(&g_DnsSocketTableLock);
         
         // Log DNS connection detection with protocol type
         if (DNS_DebugFlag) {
@@ -1418,14 +1594,17 @@ static BOOLEAN Socket_DetectTcpLengthPrefix(
     // Only treat as length prefix if:
     // 1. Length matches exactly (tcp_length + 2 == len)
     // 2. The remaining bytes look like a valid DNS header
-    // 3. Length is within reasonable DNS bounds (12 to 512 bytes)
+    // 3. Length is within reasonable DNS bounds (12 bytes minimum, up to 65535 per RFC 1035)
+    //    Note: We use 4096 as practical upper bound (EDNS0 common size per RFC 6891)
     // 4. QR bit is 0 (query, not response)
     
     USHORT tcp_length = _ntohs(*(USHORT*)buf);
     
+    // SECURITY FIX: Removed 512-byte limit that allowed filter bypass via EDNS0 padding
+    // TCP DNS supports up to 65535 bytes, we accept up to 4096 (common EDNS0 size)
     if (tcp_length + 2 == len && 
         tcp_length >= sizeof(DNS_WIRE_HEADER) && 
-        tcp_length <= 512) {
+        tcp_length <= 4096) {
         
         // Validate: check if bytes after prefix look like DNS header
         DNS_WIRE_HEADER* potential_header = (DNS_WIRE_HEADER*)(buf + 2);
@@ -1507,7 +1686,28 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     int match_result = Socket_MatchDomainHierarchical(domain_lwr, domain_len, &found);
     
     if (match_result <= 0) {
-        // Domain not in filter list - trace allowed queries
+        // Domain not in filter list - try DoH if configured, otherwise passthrough
+        if (DoH_IsEnabled()) {
+            BYTE response[DNS_RESPONSE_SIZE];
+            int response_len = Socket_BuildDoHResponse(dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE);
+            if (response_len > 0) {
+                // DoH succeeded - queue the response
+                BOOLEAN isTcp = wcscmp(protocol, L"TCP") == 0;
+                if (isTcp) {
+                    // For TCP, add 2-byte length prefix
+                    BYTE tcp_response[DNS_RESPONSE_SIZE + 2];
+                    tcp_response[0] = (BYTE)(response_len >> 8);
+                    tcp_response[1] = (BYTE)(response_len & 0xFF);
+                    memcpy(tcp_response + 2, response, response_len);
+                    Socket_AddFakeResponse(s, tcp_response, response_len + 2, to);
+                } else {
+                    Socket_AddFakeResponse(s, response, response_len, to);
+                }
+                Dll_Free(domain_lwr);
+                return DNS_PROCESS_INTERCEPTED;
+            }
+        }
+        // DoH not configured or failed - passthrough
         Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_MATCH);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
@@ -1523,6 +1723,25 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Certificate required for actual filtering (interception/blocking)
     extern BOOLEAN DNS_HasValidCertificate;
     if (!DNS_HasValidCertificate) {
+        // No certificate - try DoH if configured, otherwise passthrough
+        if (DoH_IsEnabled()) {
+            BYTE response[DNS_RESPONSE_SIZE];
+            int response_len = Socket_BuildDoHResponse(dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE);
+            if (response_len > 0) {
+                BOOLEAN isTcp = wcscmp(protocol, L"TCP") == 0;
+                if (isTcp) {
+                    BYTE tcp_response[DNS_RESPONSE_SIZE + 2];
+                    tcp_response[0] = (BYTE)(response_len >> 8);
+                    tcp_response[1] = (BYTE)(response_len & 0xFF);
+                    memcpy(tcp_response + 2, response, response_len);
+                    Socket_AddFakeResponse(s, tcp_response, response_len + 2, to);
+                } else {
+                    Socket_AddFakeResponse(s, response, response_len, to);
+                }
+                Dll_Free(domain_lwr);
+                return DNS_PROCESS_INTERCEPTED;
+            }
+        }
         Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_CERT);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
@@ -1536,7 +1755,25 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Check if type is negated (explicit passthrough)
     BOOLEAN is_negated = DNS_IsTypeNegated(type_filter, qtype);
     if (is_negated) {
-        // Type is negated (!type or !*) - passthrough with reason tracking
+        // Type is negated (!type or !*) - try DoH if configured, otherwise passthrough
+        if (DoH_IsEnabled()) {
+            BYTE response[DNS_RESPONSE_SIZE];
+            int response_len = Socket_BuildDoHResponse(dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE);
+            if (response_len > 0) {
+                BOOLEAN isTcp = wcscmp(protocol, L"TCP") == 0;
+                if (isTcp) {
+                    BYTE tcp_response[DNS_RESPONSE_SIZE + 2];
+                    tcp_response[0] = (BYTE)(response_len >> 8);
+                    tcp_response[1] = (BYTE)(response_len & 0xFF);
+                    memcpy(tcp_response + 2, response, response_len);
+                    Socket_AddFakeResponse(s, tcp_response, response_len + 2, to);
+                } else {
+                    Socket_AddFakeResponse(s, response, response_len, to);
+                }
+                Dll_Free(domain_lwr);
+                return DNS_PROCESS_INTERCEPTED;
+            }
+        }
         Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_TYPE_NEGATED);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
@@ -1683,11 +1920,11 @@ _FX int Socket_send(
     int         len,
     int         flags)
 {
-    // DEBUG: Log ALL send() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buf && len > 0) {
+    // DEBUG: Log send() calls on DNS sockets only
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buf && len > 0 && Socket_IsDnsSocket(s)) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"GLOBAL: send() socket=%p, len=%d, isDns=%d",
-            (void*)(ULONG_PTR)s, len, Socket_IsDnsSocket(s) ? 1 : 0);
+        Sbie_snwprintf(msg, 256, L"GLOBAL: send() socket=%p, len=%d",
+            (void*)(ULONG_PTR)s, len);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
@@ -1753,11 +1990,11 @@ _FX int Socket_WSASend(
     // Cast to actual WSABUF structure
     LPWSABUF_REAL buffers = (lpBuffers && dwBufferCount > 0) ? (LPWSABUF_REAL)lpBuffers : NULL;
     
-    // DEBUG: Log ALL WSASend() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers) {
+    // DEBUG: Log WSASend() calls on DNS sockets only
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers && Socket_IsDnsSocket(s)) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"GLOBAL: WSASend() socket=%p, len=%d, isDns=%d",
-            (void*)(ULONG_PTR)s, buffers[0].len, Socket_IsDnsSocket(s) ? 1 : 0);
+        Sbie_snwprintf(msg, 256, L"GLOBAL: WSASend() socket=%p, len=%d",
+            (void*)(ULONG_PTR)s, buffers[0].len);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
@@ -1892,11 +2129,11 @@ _FX int Socket_WSASendTo(
         }
     }
     
-    // DEBUG: Log ALL WSASendTo() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers) {
+    // DEBUG: Log WSASendTo() calls on DNS sockets only
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && buffers && Socket_IsDnsSocket(s)) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"GLOBAL: WSASendTo() socket=%p, bufCount=%d, buf[0].len=%d, totalLen=%d, lpTo=%s, isDns=%d",
-            (void*)(ULONG_PTR)s, dwBufferCount, buffers[0].len, totalLen, lpTo ? L"set" : L"NULL", Socket_IsDnsSocket(s) ? 1 : 0);
+        Sbie_snwprintf(msg, 256, L"GLOBAL: WSASendTo() socket=%p, bufCount=%d, buf[0].len=%d, totalLen=%d, lpTo=%s",
+            (void*)(ULONG_PTR)s, dwBufferCount, buffers[0].len, totalLen, lpTo ? L"set" : L"NULL");
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
@@ -2068,7 +2305,7 @@ _FX int Socket_WSASendTo(
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
-                            return Socket_SendReassembledData(s, lpNumberOfBytesSent);
+                            return Socket_SendReassembledData(s, lpNumberOfBytesSent, lpOverlapped, lpCompletionRoutine);
                         }
                         return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
                     }
@@ -2080,7 +2317,7 @@ _FX int Socket_WSASendTo(
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
-                            return Socket_SendReassembledData(s, lpNumberOfBytesSent);
+                            return Socket_SendReassembledData(s, lpNumberOfBytesSent, lpOverlapped, lpCompletionRoutine);
                         }
                         return __sys_WSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
                     }
@@ -2101,7 +2338,7 @@ _FX int Socket_WSASendTo(
                         // Need to passthrough - if we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
                             Dll_Free(domain_lwr);
-                            return Socket_SendReassembledData(s, lpNumberOfBytesSent);
+                            return Socket_SendReassembledData(s, lpNumberOfBytesSent, lpOverlapped, lpCompletionRoutine);
                         }
                         Dll_Free(domain_lwr);
                         // Fall through to call __sys_WSASendTo at end of function
@@ -2147,7 +2384,7 @@ _FX int Socket_WSASendTo(
                     Dll_Free(domain_lwr);
                     // Need to passthrough - if we used reassembly, send the complete reassembled data
                     if (used_reassembly) {
-                        return Socket_SendReassembledData(s, lpNumberOfBytesSent);
+                        return Socket_SendReassembledData(s, lpNumberOfBytesSent, lpOverlapped, lpCompletionRoutine);
                     }
                 }
             }
@@ -2410,6 +2647,9 @@ _FX int Socket_DecodeDnsName(
     int originalOffset = offset;
     int outPos = 0;
     BOOLEAN firstLabel = TRUE;
+    int jumpCount = 0;           // Loop detection for compression pointers
+    BOOLEAN jumped = FALSE;      // Track if we've followed a pointer
+    int savedOffset = -1;        // Save original offset when following pointer
 
     while (offset < packetLen) {
         BYTE labelLen = packet[offset];
@@ -2422,10 +2662,32 @@ _FX int Socket_DecodeDnsName(
 
         // Check for DNS name compression (pointer - top 2 bits set)
         if ((labelLen & 0xC0) == 0xC0) {
-            // Name compression not fully supported in this simple parser
-            // Just terminate here to avoid infinite loops
-            offset += 2;
-            break;
+            // SECURITY FIX: Properly follow compression pointers with loop detection
+            // DNS compression pointer format: 11xxxxxx xxxxxxxx (14-bit offset)
+            if (offset + 1 >= packetLen)
+                return -1;  // Incomplete pointer
+            
+            // Loop detection: max 10 jumps to prevent infinite loops from malicious packets
+            if (++jumpCount > 10)
+                return -1;  // Too many jumps - possible attack
+            
+            // Calculate pointer target offset
+            USHORT ptrOffset = ((labelLen & 0x3F) << 8) | packet[offset + 1];
+            
+            // Pointer must point backwards (or at least not past current position)
+            // and must be within packet bounds
+            if (ptrOffset >= packetLen || ptrOffset >= offset)
+                return -1;  // Invalid pointer target
+            
+            // Save our position (only on first jump) so we can calculate bytes consumed
+            if (!jumped) {
+                savedOffset = offset + 2;  // Position after the pointer
+                jumped = TRUE;
+            }
+            
+            // Follow the pointer
+            offset = ptrOffset;
+            continue;
         }
 
         // Check if label length is valid
@@ -2458,7 +2720,12 @@ _FX int Socket_DecodeDnsName(
     // Null-terminate
     nameOut[outPos] = L'\0';
 
-    // Return number of bytes consumed
+    // Return number of bytes consumed from the original position
+    // If we followed a compression pointer, return the saved offset (position after pointer)
+    // Otherwise return current offset
+    if (jumped && savedOffset > 0) {
+        return savedOffset - originalOffset;
+    }
     return offset - originalOffset;
 }
 
@@ -2504,6 +2771,11 @@ static BOOLEAN Pattern_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
 //   4. Try "*.com"
 //   5. Try "*"
 //
+// Level-aware matching (fixes per-image config leakage):
+//   Patterns have levels: 0 = exact image match, 1 = negated match, 2 = global
+//   Lower level = higher priority. Once we find a match at level N, we ignore
+//   patterns with level > N. This ensures process-specific rules take precedence.
+//
 // Returns: >0 if match found, 0 if no match, <0 on error
 //---------------------------------------------------------------------------
 
@@ -2527,10 +2799,13 @@ _FX int Socket_MatchDomainHierarchical(
         return 0;  // Return no match - allow normal DNS resolution
     }
     
-    int best_level = -1;
-    int best_is_exact = 0;
+    // Track best match with level-aware priority (like Pattern_MatchPathList)
+    // Level: 0 = exact image match (highest priority), 1 = negated, 2 = global (lowest)
+    ULONG best_level = (ULONG)-1;  // Start with worst possible level
+    int best_match_type = 0;       // 1 = exact, 2 = wildcard, 3 = catch-all
+    int best_wildcard_len = -1;
+    int best_wildcard_count = 1000;
     PATTERN* best_pattern = NULL;
-    int match_result = 0;
 
     // Create local mutable copy for Pattern_MatchPathList (which expects non-const WCHAR*)
     WCHAR* domain_copy = (WCHAR*)Dll_AllocTemp((domain_len + 1) * sizeof(WCHAR));
@@ -2539,88 +2814,122 @@ _FX int Socket_MatchDomainHierarchical(
     wmemcpy(domain_copy, domain_lwr, domain_len);
     domain_copy[domain_len] = L'\0';
 
-    // 1. Check for exact match (no '*' or '?')
+    // Single pass through all patterns, tracking best match with level priority
     PATTERN* pat = (PATTERN*)List_Head(&DNS_FilterList);
     while (pat) {
         const WCHAR* pat_text = Pattern_Source(pat);
         if (!pat_text) { pat = (PATTERN*)List_Next(pat); continue; }
+        
+        ULONG pat_level = Pattern_Level(pat);
         ULONG pat_len = wcslen(pat_text);
-        if (!wcschr(pat_text, L'*') && !wcschr(pat_text, L'?')) {
-            if (DNS_DebugFlag) {
-                WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Comparing domain '%s' to pattern '%s' (len: %lu vs %lu)", domain_lwr, pat_text, domain_len, pat_len);
-                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-            }
+        
+        // Skip patterns with weaker (higher) level than our current best
+        if (pat_level > best_level) {
+            pat = (PATTERN*)List_Next(pat);
+            continue;
+        }
+        
+        BOOLEAN is_exact = (!wcschr(pat_text, L'*') && !wcschr(pat_text, L'?'));
+        BOOLEAN is_catchall = (pat_len == 1 && pat_text[0] == L'*');
+        
+        // Check for exact match (no wildcards)
+        if (is_exact) {
             if (pat_len == domain_len && _wcsnicmp(pat_text, domain_lwr, domain_len) == 0) {
-                // Exact match found, return immediately
-                *found = pat;
+                // Exact match - check if better than current best
+                if (pat_level < best_level || 
+                    (pat_level == best_level && best_match_type != 1)) {
+                    best_pattern = pat;
+                    best_level = pat_level;
+                    best_match_type = 1;  // Exact match
+                    
+                    if (DNS_DebugFlag) {
+                        WCHAR msg[512];
+                        Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' matched exact pattern '%s' (level=%lu)", 
+                            domain_lwr, pat_text, pat_level);
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                    }
+                    
+                    // If we found an exact match at level 0, we can't do better
+                    if (pat_level == 0) {
+                        Dll_Free(domain_copy);
+                        *found = best_pattern;
+                        return 1;
+                    }
+                }
+            }
+        }
+        // Check for catch-all wildcard "*" (lowest priority within same level)
+        else if (is_catchall) {
+            // Only use catch-all if no better match at this or better level
+            if (pat_level < best_level || 
+                (pat_level == best_level && best_match_type == 0)) {
+                best_pattern = pat;
+                best_level = pat_level;
+                best_match_type = 3;  // Catch-all
+                
                 if (DNS_DebugFlag) {
                     WCHAR msg[512];
-                    Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' matched exact pattern '%s'", domain_lwr, pat_text);
+                    Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' candidate catch-all '*' (level=%lu)", 
+                        domain_lwr, pat_level);
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
-                Dll_Free(domain_copy);
-                return 1;
             }
         }
-        pat = (PATTERN*)List_Next(pat);
-    }
-
-    // 2. Check for wildcard matches (mid-pattern wildcards supported)
-    pat = (PATTERN*)List_Head(&DNS_FilterList);
-    int best_wildcard_len = -1;
-    int best_wildcard_count = 1000;
-    PATTERN* best_wildcard_pattern = NULL;
-    while (pat) {
-        const WCHAR* pat_text = Pattern_Source(pat);
-        if (!pat_text) { pat = (PATTERN*)List_Next(pat); continue; }
-        ULONG pat_len = wcslen(pat_text);
-        // Skip global wildcard '*' for now
-        if (pat_len == 1 && pat_text[0] == L'*') { pat = (PATTERN*)List_Next(pat); continue; }
-        // Only consider patterns with '*' or '?'
-        if (wcschr(pat_text, L'*') || wcschr(pat_text, L'?')) {
-            if (Pattern_MatchWildcard(pat_text, domain_lwr)) {
-                // Prefer the most specific: longest pattern, then fewest wildcards
-                int wildcard_count = 0;
-                for (const WCHAR* p = pat_text; *p; ++p) if (*p == L'*') wildcard_count++;
-                if ((int)pat_len > best_wildcard_len || ((int)pat_len == best_wildcard_len && wildcard_count < best_wildcard_count)) {
-                    best_wildcard_pattern = pat;
-                    best_wildcard_len = (int)pat_len;
-                    best_wildcard_count = wildcard_count;
+        // Check for wildcard match (middle priority)
+        else if (Pattern_MatchWildcard(pat_text, domain_lwr)) {
+            // Count wildcards for specificity comparison
+            int wildcard_count = 0;
+            for (const WCHAR* p = pat_text; *p; ++p) if (*p == L'*') wildcard_count++;
+            
+            // Better match if: better level, or same level but more specific pattern
+            BOOLEAN is_better = FALSE;
+            if (pat_level < best_level) {
+                is_better = TRUE;
+            } else if (pat_level == best_level) {
+                // At same level: prefer exact > wildcard > catch-all
+                // Among wildcards: prefer longest, then fewest wildcards
+                if (best_match_type == 0 || best_match_type == 3) {
+                    is_better = TRUE;
+                } else if (best_match_type == 2) {
+                    if ((int)pat_len > best_wildcard_len || 
+                        ((int)pat_len == best_wildcard_len && wildcard_count < best_wildcard_count)) {
+                        is_better = TRUE;
+                    }
+                }
+            }
+            
+            if (is_better) {
+                best_pattern = pat;
+                best_level = pat_level;
+                best_match_type = 2;  // Wildcard match
+                best_wildcard_len = (int)pat_len;
+                best_wildcard_count = wildcard_count;
+                
+                if (DNS_DebugFlag) {
+                    WCHAR msg[512];
+                    Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' matched pattern '%s' (level=%lu, len=%lu)", 
+                        domain_lwr, pat_text, pat_level, pat_len);
+                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
             }
         }
+        
         pat = (PATTERN*)List_Next(pat);
     }
-    if (best_wildcard_pattern) {
-        *found = best_wildcard_pattern;
+    
+    Dll_Free(domain_copy);
+    
+    if (best_pattern) {
+        *found = best_pattern;
         if (DNS_DebugFlag) {
             WCHAR msg[512];
-            Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' matched pattern '%s' (mid-wildcard support)", domain_lwr, Pattern_Source(best_wildcard_pattern));
+            Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Final match for '%s' is '%s' (type=%d, level=%lu)", 
+                domain_lwr, Pattern_Source(best_pattern), best_match_type, best_level);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
-        Dll_Free(domain_copy);
-        return 2;
+        return best_match_type;
     }
-
-    // 3. Check for catch-all wildcard "*" (least specific, last resort)
-    pat = (PATTERN*)List_Head(&DNS_FilterList);
-    while (pat) {
-        const WCHAR* pat_text = Pattern_Source(pat);
-        if (pat_text && wcslen(pat_text) == 1 && pat_text[0] == L'*') {
-            *found = pat;
-            if (DNS_DebugFlag) {
-                WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"  DNS Debug Hierarchical: Domain '%s' matched catch-all pattern '*'", domain_lwr);
-                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-            }
-            Dll_Free(domain_copy);
-            return 3;
-        }
-        pat = (PATTERN*)List_Next(pat);
-    }
-
-    Dll_Free(domain_copy);
+    
     return 0;
 }
 
@@ -2848,7 +3157,7 @@ _FX int Socket_BuildDnsResponse(
             
             // Copy IP address data
             if (record_type == DNS_TYPE_A && entry->Type == AF_INET) {
-                // IPv4: use Data32[3] for the last 32-bit word
+                // IPv4: stored in Data32[3] (last 4 bytes) per codebase convention
                 memcpy(response + offset, &entry->IP.Data32[3], 4);
                 offset += 4;
             } else if (record_type == DNS_TYPE_AAAA && entry->Type == AF_INET6) {
@@ -3024,7 +3333,7 @@ _FX void Socket_AddFakeResponse(
     int            response_len,
     const void*    to)
 {
-    if (!response || response_len <= 0 || response_len > 512)
+    if (!response || response_len <= 0 || response_len > DNS_RESPONSE_SIZE)
         return;
 
     // Get or create queue for this socket
@@ -3066,26 +3375,45 @@ _FX void Socket_AddFakeResponse(
     
     // Set source address - preserve the original DNS server address including port 53
     // DIG validates that responses come from the same address:port as the query destination
+    // Now properly supports both IPv4 and IPv6 using sockaddr_storage
     if (to) {
-        memcpy(&new_resp->from_addr, to, sizeof(struct sockaddr_in));
-        // Keep the port as-is (should be 53 for DNS)
-        
-        if (DNS_DebugFlag) {
-            struct sockaddr_in* addr = (struct sockaddr_in*)to;
-            WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"DNS: Fake response queued, from_addr=%d.%d.%d.%d:%d, socket=%p",
-                (addr->sin_addr.s_addr) & 0xFF,
-                (addr->sin_addr.s_addr >> 8) & 0xFF,
-                (addr->sin_addr.s_addr >> 16) & 0xFF,
-                (addr->sin_addr.s_addr >> 24) & 0xFF,
-                _ntohs(addr->sin_port),
-                (void*)(ULONG_PTR)s);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        const struct sockaddr* addr = (const struct sockaddr*)to;
+        if (addr->sa_family == AF_INET6) {
+            // IPv6 address
+            memcpy(&new_resp->from_addr, to, sizeof(SOCKADDR_IN6_LH));
+            new_resp->from_addr_len = sizeof(SOCKADDR_IN6_LH);
+            
+            if (DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"DNS: Fake response queued (IPv6), socket=%p",
+                    (void*)(ULONG_PTR)s);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
+        } else {
+            // IPv4 address (AF_INET)
+            memcpy(&new_resp->from_addr, to, sizeof(SOCKADDR_IN));
+            new_resp->from_addr_len = sizeof(SOCKADDR_IN);
+            
+            if (DNS_DebugFlag) {
+                SOCKADDR_IN* addr4 = (SOCKADDR_IN*)to;
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"DNS: Fake response queued, from_addr=%d.%d.%d.%d:%d, socket=%p",
+                    (addr4->sin_addr.s_addr) & 0xFF,
+                    (addr4->sin_addr.s_addr >> 8) & 0xFF,
+                    (addr4->sin_addr.s_addr >> 16) & 0xFF,
+                    (addr4->sin_addr.s_addr >> 24) & 0xFF,
+                    _ntohs(addr4->sin_port),
+                    (void*)(ULONG_PTR)s);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
         }
     } else {
-        memset(&new_resp->from_addr, 0, sizeof(struct sockaddr_in));
-        new_resp->from_addr.sin_family = AF_INET;
-        new_resp->from_addr.sin_port = _htons(53);  // DNS port in network byte order
+        // No destination address provided - use default IPv4
+        memset(&new_resp->from_addr, 0, sizeof(SOCKADDR_STORAGE));
+        SOCKADDR_IN* addr4 = (SOCKADDR_IN*)&new_resp->from_addr;
+        addr4->sin_family = AF_INET;
+        addr4->sin_port = _htons(53);  // DNS port in network byte order
+        new_resp->from_addr_len = sizeof(SOCKADDR_IN);
     }
 
     // Add to FIFO tail (per-socket lock, not global)
@@ -3252,10 +3580,11 @@ _FX int Socket_GetFakeResponse(
             cur->consumed += copy_len;
             
             // Copy source address if requested (for UDP, or TCP if app asks for it)
+            // Now properly supports IPv6 using stored from_addr_len
             if (from && fromlen) {
-                int addr_copy_len = (*fromlen < sizeof(struct sockaddr_in)) ? *fromlen : sizeof(struct sockaddr_in);
+                int addr_copy_len = (*fromlen < cur->from_addr_len) ? *fromlen : cur->from_addr_len;
                 memcpy(from, &cur->from_addr, addr_copy_len);
-                *fromlen = sizeof(struct sockaddr_in);
+                *fromlen = cur->from_addr_len;
             }
             
             // If fully consumed, remove from head (FIFO dequeue)
@@ -3423,11 +3752,13 @@ _FX int Socket_WSARecv(
     // Cast to actual WSABUF structure
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpBuffers;
     
-    // DEBUG: Log ALL WSARecv() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
+    // DEBUG: Log WSARecv() calls on DNS sockets or with fake responses
+    BOOLEAN isDns = Socket_IsDnsSocket(s);
+    BOOLEAN hasFake = Socket_HasFakeResponse(s);
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0 && (isDns || hasFake)) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecv() socket=%p, first.len=%d, isDns=%d, hasFake=%d",
-            (void*)(ULONG_PTR)s, buffers[0].len, Socket_IsDnsSocket(s) ? 1 : 0, Socket_HasFakeResponse(s) ? 1 : 0);
+        Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecv() socket=%p, first.len=%d, hasFake=%d",
+            (void*)(ULONG_PTR)s, buffers[0].len, hasFake ? 1 : 0);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
@@ -3500,11 +3831,12 @@ _FX int Socket_WSARecvFrom(
     // Cast to actual WSABUF structure
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpBuffers;
     
-    // DEBUG: Log ALL WSARecvFrom() calls when verbose debug is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0) {
+    // DEBUG: Log WSARecvFrom() calls only if there's a fake response queued
+    BOOLEAN hasFake = Socket_HasFakeResponse(s);
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && lpBuffers && dwBufferCount > 0 && hasFake) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecvFrom() socket=%p, first.len=%d, hasFake=%d",
-            (void*)(ULONG_PTR)s, buffers[0].len, Socket_HasFakeResponse(s) ? 1 : 0);
+            (void*)(ULONG_PTR)s, buffers[0].len, hasFake ? 1 : 0);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
@@ -3720,11 +4052,16 @@ _FX int Socket_getpeername(
     if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && name && namelen) {
         ULONG index = ((ULONG_PTR)s) % DNS_SOCKET_TABLE_SIZE;
         
+        // Thread-safe access to DNS server address storage
+        EnterCriticalSection(&g_DnsSocketTableLock);
+        
         // If we have a stored DNS server address, return it
         if (g_DnsServerAddrLens[index] > 0) {
             int copy_len = (*namelen < g_DnsServerAddrLens[index]) ? *namelen : g_DnsServerAddrLens[index];
             memcpy(name, g_DnsServerAddrs[index], copy_len);
             *namelen = g_DnsServerAddrLens[index];
+            
+            LeaveCriticalSection(&g_DnsSocketTableLock);
             
             if (DNS_TraceFlag) {
                 WCHAR msg[256];
@@ -3735,6 +4072,8 @@ _FX int Socket_getpeername(
             
             return 0;  // Success
         }
+        
+        LeaveCriticalSection(&g_DnsSocketTableLock);
     }
     
     // Not a DNS socket or no stored address - pass through to real getpeername
@@ -3807,12 +4146,13 @@ _FX INT PASCAL FAR Socket_WSARecvMsg(
     // Cast WSABUF to our version
     LPWSABUF_REAL buffers = (LPWSABUF_REAL)lpMsg->lpBuffers;
     
-    // DEBUG: Log ALL WSARecvMsg() calls when verbose debug is enabled
+    // DEBUG: Log WSARecvMsg() calls only if there's a fake response queued
+    BOOLEAN hasFake = Socket_HasFakeResponse(s);
     if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && 
-        lpMsg && lpMsg->lpBuffers && lpMsg->dwBufferCount > 0) {
+        lpMsg && lpMsg->lpBuffers && lpMsg->dwBufferCount > 0 && hasFake) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"GLOBAL: WSARecvMsg() socket=%p, first.len=%d, hasFake=%d",
-            (void*)(ULONG_PTR)s, buffers[0].len, Socket_HasFakeResponse(s) ? 1 : 0);
+            (void*)(ULONG_PTR)s, buffers[0].len, hasFake ? 1 : 0);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 

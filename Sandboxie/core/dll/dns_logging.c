@@ -39,6 +39,9 @@ ULONGLONG GetTickCount64();
 BOOLEAN WSA_GetIP(const SOCKADDR* addr, int addrlen, IP_ADDRESS* pIP);
 void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 
+// External function from dns_doh.c
+BOOLEAN DoH_IsEnabled(void);
+
 // DNS trace and debug flags (moved from dns_filter.c)
 BOOLEAN DNS_TraceFlag = FALSE;
 BOOLEAN DNS_DebugFlag = FALSE;
@@ -80,12 +83,22 @@ static void DNS_InitSuppressCache(void)
     g_DnsSuppressInitialized = TRUE;
 }
 
-// Simple string hash (djb2)
+// Improved string hash (FNV-1a variant with per-process salt)
+// More resistant to collision attacks than simple djb2
+static ULONG g_HashSalt = 0;
 static ULONG DNS_HashString(const WCHAR* str)
 {
-    ULONG hash = 5381;
+    // Initialize salt on first use (process-unique value)
+    if (g_HashSalt == 0) {
+        g_HashSalt = (ULONG)GetCurrentProcessId() ^ (ULONG)GetTickCount();
+        if (g_HashSalt == 0) g_HashSalt = 0x811c9dc5;  // FNV offset basis
+    }
+    
+    // FNV-1a hash with salt
+    ULONG hash = 0x811c9dc5 ^ g_HashSalt;  // FNV offset basis XOR salt
     while (*str) {
-        hash = ((hash << 5) + hash) + (*str++);
+        hash ^= (ULONG)(*str++);
+        hash *= 0x01000193;  // FNV prime
     }
     return hash;
 }
@@ -892,7 +905,7 @@ _FX BOOLEAN WSA_IsIPv6Query(LPGUID lpServiceClassId)
     return FALSE;
 }
 
-_FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, HANDLE handle, BOOLEAN is_blocked, LIST* pEntries)
+_FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, HANDLE handle, BOOLEAN is_blocked, LIST* pEntries, BOOLEAN is_doh)
 {
     if (!DNS_TraceFlag || !domain)
         return;
@@ -904,12 +917,24 @@ _FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
         return;
     
     WCHAR msg[1024];
+    ULONG monitor_flags;
     if (is_blocked) {
         Sbie_snwprintf(msg, 1024, L"WSALookupService Blocked: %s (Type: %s) - Domain blocked (NXDOMAIN)",
             domain, DNS_GetTypeName(wType));
+        monitor_flags = MONITOR_DNS | MONITOR_DENY;
     } else {
-        Sbie_snwprintf(msg, 1024, L"WSALookupService Intercepted: %s (Type: %s) - Using filtered response",
-            domain, DNS_GetTypeName(wType));
+        // Use different terminology for DoH vs filter-based responses:
+        // - DoH: "Resolved" (successful DNS resolution via secure DoH)
+        // - Filter: "Filtered" (redirected/blocked by NetworkDnsFilter rules)
+        if (is_doh) {
+            Sbie_snwprintf(msg, 1024, L"WSALookupService DoH: %s (Type: %s)",
+                domain, DNS_GetTypeName(wType));
+            monitor_flags = MONITOR_DNS | MONITOR_OPEN;
+        } else {
+            Sbie_snwprintf(msg, 1024, L"WSALookupService Filtered: %s (Type: %s)",
+                domain, DNS_GetTypeName(wType));
+            monitor_flags = MONITOR_DNS | MONITOR_DENY;
+        }
         
         if (pEntries) {
             IP_ENTRY* entry;
@@ -933,7 +958,7 @@ _FX void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpac
             }
         }
     }
-    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+    SbieApi_MonitorPutMsg(monitor_flags, msg);
     
     if (DNS_DebugFlag) {
         WCHAR ClsId[64] = { 0 };
@@ -984,6 +1009,149 @@ _FX void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type, co
     Sbie_snwprintf(msg, 512, L"WSALookupService Passthrough: %s (Type: %s) - %s",
         domain, DNS_GetTypeName(query_type), reason ? reason : L"forwarding to real DNS");
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+}
+
+//---------------------------------------------------------------------------
+// GetAddrInfo-specific logging (WinHTTP, curl, etc.)
+//---------------------------------------------------------------------------
+
+_FX const WCHAR* GAI_GetFamilyName(int family)
+{
+    switch (family) {
+        case AF_INET:   return L"IPv4";
+        case AF_INET6:  return L"IPv6";
+        case AF_UNSPEC: return L"Any";
+        default:        return L"Unknown";
+    }
+}
+
+_FX void GAI_LogIntercepted(const WCHAR* funcName, const WCHAR* domain, int family, LIST* pEntries, BOOLEAN is_doh)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    WORD wType = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[1024];
+    // Use different terminology for DoH vs filter-based responses:
+    // - DoH: "Resolved" (successful DNS resolution via secure DoH)
+    // - Filter: "Filtered" (redirected/blocked by NetworkDnsFilter rules)
+    const WCHAR* action = is_doh ? L"Resolved" : L"Filtered";
+    Sbie_snwprintf(msg, 1024, L"%s %s: %s (%s)",
+        funcName ? funcName : L"GetAddrInfo", action, domain, GAI_GetFamilyName(family));
+    
+    // Append IP addresses if available
+    if (pEntries) {
+        IP_ENTRY* entry;
+        for (entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+            BOOLEAN match = FALSE;
+            if (family == AF_UNSPEC)
+                match = TRUE;
+            else if (family == AF_INET6 && entry->Type == AF_INET6)
+                match = TRUE;
+            else if (family == AF_INET && entry->Type == AF_INET)
+                match = TRUE;
+            
+            if (match) {
+                WCHAR ipStr[64];
+                if (entry->Type == AF_INET) {
+                    DNS_FormatIPv4(ipStr, ARRAYSIZE(ipStr), &entry->IP.Data[12]);
+                    wcscat_s(msg, 1024, L"; IPv4: ");
+                } else {
+                    Sbie_snwprintf(ipStr, 64, L"%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                        entry->IP.Data[0], entry->IP.Data[1], entry->IP.Data[2], entry->IP.Data[3],
+                        entry->IP.Data[4], entry->IP.Data[5], entry->IP.Data[6], entry->IP.Data[7],
+                        entry->IP.Data[8], entry->IP.Data[9], entry->IP.Data[10], entry->IP.Data[11],
+                        entry->IP.Data[12], entry->IP.Data[13], entry->IP.Data[14], entry->IP.Data[15]);
+                    wcscat_s(msg, 1024, L"; IPv6: ");
+                }
+                wcscat_s(msg, 1024, ipStr);
+            }
+        }
+    }
+    
+    // DoH-based resolution: MONITOR_OPEN (successful DNS query)
+    // Filter-based interception: MONITOR_DENY (redirected/blocked query)
+    ULONG monitorFlag = is_doh ? MONITOR_OPEN : MONITOR_DENY;
+    SbieApi_MonitorPutMsg(MONITOR_DNS | monitorFlag, msg);
+}
+
+_FX void GAI_LogBlocked(const WCHAR* funcName, const WCHAR* domain, int family)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    WORD wType = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s Blocked: %s (%s) - Domain blocked (NXDOMAIN)",
+        funcName ? funcName : L"GetAddrInfo", domain, GAI_GetFamilyName(family));
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+}
+
+_FX void GAI_LogPassthrough(const WCHAR* funcName, const WCHAR* domain, int family, const WCHAR* reason)
+{
+    if (!DNS_TraceFlag)
+        return;
+    
+    // For passthrough, only log if there's a specific reason or debug is enabled
+    if (!reason && !DNS_DebugFlag)
+        return;
+    
+    // Apply log suppression for passthrough logs (avoid duplicates from multiple APIs)
+    WORD wType = (family == AF_INET6) ? DNS_TYPE_AAAA : 
+                 (family == AF_INET) ? DNS_TYPE_A : DNS_TYPE_ANY;
+    if (domain && DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (%s)%s%s",
+        funcName ? funcName : L"GetAddrInfo", 
+        domain ? domain : L"(null)", 
+        GAI_GetFamilyName(family),
+        reason ? L" - " : L"",
+        reason ? reason : L"");
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+}
+
+_FX void GAI_LogNoData(const WCHAR* funcName, const WCHAR* domain, int family)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+    
+    WORD wType = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+    
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"%s Intercepted: %s (%s) - NODATA (no matching records)",
+        funcName ? funcName : L"GetAddrInfo", domain, GAI_GetFamilyName(family));
+    // NODATA uses MONITOR_DENY - we're blocking access to real data
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+}
+
+_FX void GAI_LogDebugEntry(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family)
+{
+    if (!DNS_DebugFlag)
+        return;
+    
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"  %s Entry: domain=%s, service=%s, family=%s",
+        funcName ? funcName : L"GetAddrInfo",
+        domain ? domain : L"(null)",
+        service ? service : L"(null)",
+        GAI_GetFamilyName(family));
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
 //---------------------------------------------------------------------------

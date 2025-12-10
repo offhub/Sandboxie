@@ -21,6 +21,7 @@
 #include <windows.h>
 #include "common/list.h"
 #include "common/netfw.h"
+#include "common/my_wsa.h"  // For SOCKET type
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,7 @@ typedef struct _DNS_FILTER_AUX
 
 BOOLEAN WSA_InitNetDnsFilter(HMODULE module);
 BOOLEAN DNSAPI_Init(HMODULE module);
+BOOLEAN WINHTTP_Init(HMODULE module);
 BOOLEAN DNS_IsExcluded(const WCHAR* domain);
 BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries);
 

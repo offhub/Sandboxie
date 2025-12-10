@@ -269,6 +269,9 @@
     <ClCompile Include="socket_hooks.c">
       <Filter>net</Filter>
     </ClCompile>
+    <ClCompile Include="dns_doh.c">
+      <Filter>net</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="advapi.h" />
@@ -388,6 +391,9 @@
       <Filter>net</Filter>
     </ClInclude>
     <ClInclude Include="dns_logging.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="dns_doh.h">
       <Filter>net</Filter>
     </ClInclude>
   </ItemGroup>

@@ -155,8 +155,11 @@ void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD wTyp
 // WSALookupService-specific logging
 //---------------------------------------------------------------------------
 
+// Log WSALookupService result - for both DoH and filter-based responses
+// is_doh: TRUE for DoH-based resolution (shows "Resolved", MONITOR_OPEN)
+//         FALSE for filter-based response (shows "Filtered", MONITOR_DENY)
 void WSA_LogIntercepted(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, 
-                       HANDLE handle, BOOLEAN is_blocked, LIST* pEntries);
+                       HANDLE handle, BOOLEAN is_blocked, LIST* pEntries, BOOLEAN is_doh);
 
 void WSA_LogPassthrough(const WCHAR* domain, LPGUID lpGuid, DWORD dwNameSpace, 
                        HANDLE handle, int errCode, WORD actualQueryType);
@@ -166,6 +169,27 @@ void WSA_LogTypeFilterPassthrough(const WCHAR* domain, USHORT query_type, const 
 void WSA_FormatGuid(LPGUID lpGuid, WCHAR* buffer, SIZE_T bufferSize);
 
 BOOLEAN WSA_IsIPv6Query(LPGUID lpServiceClassId);
+
+//---------------------------------------------------------------------------
+// GetAddrInfo-specific logging (WinHTTP, curl, etc.)
+//---------------------------------------------------------------------------
+
+// Log GetAddrInfo* query result - for both DoH and filter-based responses
+// is_doh: TRUE for DoH-based resolution (shows "Resolved", MONITOR_OPEN)
+//         FALSE for filter-based response (shows "Filtered", MONITOR_DENY)
+void GAI_LogIntercepted(const WCHAR* funcName, const WCHAR* domain, int family, LIST* pEntries, BOOLEAN is_doh);
+
+// Log GetAddrInfo* blocked (NXDOMAIN)
+void GAI_LogBlocked(const WCHAR* funcName, const WCHAR* domain, int family);
+
+// Log GetAddrInfo* passthrough to system DNS
+void GAI_LogPassthrough(const WCHAR* funcName, const WCHAR* domain, int family, const WCHAR* reason);
+
+// Log GetAddrInfo* NODATA response (domain exists but no records for requested type)
+void GAI_LogNoData(const WCHAR* funcName, const WCHAR* domain, int family);
+
+// Debug: Log GetAddrInfo* function entry
+void GAI_LogDebugEntry(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family);
 
 //---------------------------------------------------------------------------
 // Debug logging helpers

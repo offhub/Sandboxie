@@ -368,4 +368,4 @@ typedef ULONG (*P_GetAdaptersAddresses)(
     void* AdapterAddresses,
     PULONG SizePointer);
 
-#endif _WSA_DEFS_H
+#endif // _WSA_DEFS_H

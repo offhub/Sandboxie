@@ -840,6 +840,13 @@ _FX int WSA_bind(
 {
     BOOLEAN new_name = WSA_HandleAfUnix(&name, &namelen);
 
+    // Log ALL bind attempts to help diagnose StrictBindIP issues
+    //const SOCKADDR* sa = (const SOCKADDR*)name;
+    //int fam = (name && namelen >= (int)sizeof(USHORT)) ? sa->sa_family : -1;
+    //    BOOLEAN StrictBindIP = WSA_GetStrictBindIP();
+    //WSA_DebugBindMsg(L"bind: ENTRY af=%d BindIP=%d Strict=%d cfg(v4=%d,v6=%d)\n",
+    //        fam, (int)WSA_BindIP, (int)StrictBindIP, (int)WSA_BindIPv4Configured, (int)WSA_BindIPv6Configured);
+
     if (WSA_BindIP) {
         const SOCKADDR* sa = (const SOCKADDR*)name;
         int fam = (name && namelen >= (int)sizeof(USHORT)) ? sa->sa_family : -1;

@@ -239,6 +239,18 @@ typedef struct _THREAD_DATA {
 
     ULONG_PTR       rpc_caller;
 
+    //
+    // dns_filter module: re-entrancy flag for GetAddrInfoExW
+    //
+
+    BOOLEAN         dns_in_getaddrinfoex;
+
+    //
+    // dns_doh module: re-entrancy flag for DoH queries
+    //
+
+    BOOLEAN         dns_in_doh_query;
+
 } THREAD_DATA;
 
 
@@ -700,6 +712,8 @@ BOOLEAN HNet_Init(HMODULE);
 BOOLEAN WSA_Init(HMODULE);
 
 BOOLEAN DNSAPI_Init(HMODULE);
+
+BOOLEAN WINHTTP_Init(HMODULE);
 
 BOOLEAN NSI_Init(HMODULE);
 

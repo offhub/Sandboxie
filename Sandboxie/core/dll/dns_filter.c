@@ -123,6 +123,17 @@
 //      - When disabled: No DnsQuery_W/A/UTF8/Ex/Raw hooks installed
 //      - Use case: Disable for specific apps that require native DNS behavior
 //
+//    FilterWinHttp=[process,]y|n
+//      - Boolean: Enable/disable WinHTTP API hooking (default: n)
+//      - Per-process support: FilterWinHttp=updutil.exe,y
+//      - When enabled: WinHttpConnect() calls are validated against NetworkDnsFilter rules
+//      - Intercepts: Applications using WinHTTP for HTTP/HTTPS (e.g., UpdUtil, many updaters)
+//      - Use case: Block malicious update services or telemetry URLs accessed via WinHTTP
+//      - Note: Works independently from other DNS hooks; applies NetworkDnsFilter rules
+//      - Examples:
+//        * FilterWinHttp=y  (enable for all processes)
+//        * FilterWinHttp=updutil.exe,y  (enable only for UpdUtil)
+//
 //    DnsMapIpv4ToIpv6=[process,]y|n
 //      - Boolean: Enable/disable IPv4-mapped IPv6 for AAAA queries (default: n)
 //      - Per-process support: DnsMapIpv4ToIpv6=firefox.exe,y
@@ -147,6 +158,56 @@
 //      - Debug logging (DnsDebug=y) shows when suppression occurs
 //      - Use case: Disable for debugging to see all API interactions
 //
+//    SecureDnsServer=[process,]<url>[;<url2>;...]
+//      - DNS-over-HTTPS (DoH) server URLs for passthrough queries (default: disabled)
+//      - Format: Semicolon-separated HTTPS URLs to RFC 8484 compliant DoH servers
+//      - URL format: https://host[:port][/path] or httpx://host[:port][/path]
+//        * https://  - Standard HTTPS with full certificate validation (signed cert)
+//        * httpx:// - HTTPS with disabled certificate validation (self-signed cert)
+//        * Port defaults to 443, path defaults to /dns-query
+//      - Per-process support: SecureDnsServer=firefox.exe,https://1.1.1.1/dns-query
+//        * Process-specific configs have HIGHER priority than global configs
+//        * Only highest priority level is used (per-process overrides global completely)
+//      - IPv6 servers: Use bracket notation https://[2606:4700:4700::1111]/dns-query
+//      - Custom port support: https://dns.example.com:8443/dns-query
+//      - Self-signed certificate support: httpx://internal-doh.local:8443/dns-query
+//      - Supported providers: Cloudflare, Google, Quad9, any RFC 8484 server (signed or self-signed)
+//      - Multi-server support:
+//        * Multiple SecureDnsServer lines: Up to 8 config lines supported
+//        * Each line can contain up to 16 semicolon-separated server URLs
+//        * Round-robin load balancing across config lines AND servers within lines
+//        * Failed servers enter 30-second cooldown (automatic failover)
+//      - Examples:
+//        * Single server (signed cert):
+//          SecureDnsServer=https://cloudflare-dns.com/dns-query
+//        * Multiple servers (same line, signed certs):
+//          SecureDnsServer=https://1.1.1.1/dns-query;https://1.0.0.1/dns-query
+//        * Multiple lines (round-robin across providers):
+//          SecureDnsServer=https://1.1.1.1/dns-query;https://1.0.0.1/dns-query
+//          SecureDnsServer=https://9.9.9.9/dns-query;https://149.112.112.112/dns-query
+//        * Per-process configuration (OVERRIDES global):
+//          SecureDnsServer=https://1.1.1.1/dns-query
+//          SecureDnsServer=nslookup.exe,https://9.9.9.9/dns-query
+//          (nslookup.exe uses ONLY 9.9.9.9, other processes use 1.1.1.1)
+//        * IPv6 servers:
+//          SecureDnsServer=https://[2606:4700:4700::1111]/dns-query
+//          SecureDnsServer=https://[2001:4860:4860::8888]/dns-query
+//        * Self-signed certificate (internal DoH server):
+//          SecureDnsServer=httpx://internal-doh.corp:443/dns-query
+//          SecureDnsServer=httpx://[fd12:3456::1]:8443/dns-query
+//      - Behavior:
+//        * Only applies to passthrough domains (excluded or no filter match)
+//        * Bypasses system DNS resolver for enhanced privacy/security
+//        * Supports A and AAAA queries only (consistent with NetworkDnsFilter)
+//        * Response caching: 64-entry cache, 300-second default TTL
+//        * Certificate validation via WinHTTP/WinINet (prevents MITM attacks on https://)
+//        * Self-signed certs (httpx://) bypass validation for internal/test environments
+//        * Supported APIs: GetAddrInfoW, DnsQuery_A/W/UTF8, DnsQueryEx (~95% coverage)
+//      - Re-entrancy protection: DoH server hostname automatically excluded
+//      - Use case: Prevent DNS leaks for non-filtered domains, bypass DNS-based blocking, internal DoH servers
+//      - Security: httpx:// should only be used for internal DoH servers in trusted networks
+//      - Note: Requires valid HTTPS connection; falls back to system DNS on error
+//
 // Naming Convention:
 //    WSA_*    - WSALookupService API specific functions
 //    DNSAPI_* - DnsApi specific functions  
@@ -169,14 +230,74 @@
 #include <oleauto.h>
 #include <SvcGuid.h>
 #include <windns.h>
+#include <winhttp.h>
 #include "common/my_wsa.h"
 #include "common/netfw.h"
 #include "common/map.h"
 #include "wsa_defs.h"
 #include "dnsapi_defs.h"
+
+// Additional getaddrinfo structures not defined in wsa_defs.h
+// (wsa_defs.h already defines ADDRINFOW, PADDRINFOW, P_GetAddrInfoW, P_FreeAddrInfoW)
+
+#ifndef WSAAPI
+#define WSAAPI WINAPI
+#endif
+
+// Magic marker for our ADDRINFOW allocations
+// We set bit 31 of ai_flags to mark structures allocated from our private heap
+// This allows free functions to distinguish our allocations from system allocations
+// Standard ai_flags values use lower bits (AI_PASSIVE=0x01, AI_CANONNAME=0x02, etc.)
+#define AI_SBIE_MARKER  0x80000000
+
+// ANSI version of addrinfo (not in wsa_defs.h)
+typedef struct addrinfo {
+    int                 ai_flags;
+    int                 ai_family;
+    int                 ai_socktype;
+    int                 ai_protocol;
+    size_t              ai_addrlen;
+    char*               ai_canonname;
+    struct sockaddr*    ai_addr;
+    struct addrinfo*    ai_next;
+} ADDRINFOA, *PADDRINFOA;
+
+// Extended addrinfo for GetAddrInfoExW (not in wsa_defs.h)
+typedef struct addrinfoexW {
+    int                 ai_flags;
+    int                 ai_family;
+    int                 ai_socktype;
+    int                 ai_protocol;
+    size_t              ai_addrlen;
+    PWSTR               ai_canonname;
+    struct sockaddr*    ai_addr;
+    void*               ai_blob;
+    size_t              ai_bloblen;
+    LPGUID              ai_provider;
+    struct addrinfoexW* ai_next;
+} ADDRINFOEXW, *PADDRINFOEXW, *LPADDRINFOEXW;
+
+// Completion routine for async GetAddrInfoExW
+typedef void (CALLBACK *LPLOOKUPSERVICE_COMPLETION_ROUTINE)(
+    DWORD    dwError,
+    DWORD    dwBytes,
+    LPOVERLAPPED lpOverlapped);
+
+// WSA error codes
+#ifndef WSAHOST_NOT_FOUND
+#define WSAHOST_NOT_FOUND    11001
+#endif
+#ifndef WSANO_DATA
+#define WSANO_DATA           11004
+#endif
+#ifndef WSA_NOT_ENOUGH_MEMORY
+#define WSA_NOT_ENOUGH_MEMORY 8
+#endif
+
 #include "socket_hooks.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_doh.h"
 #include "common/pattern.h"
 #include "common/str_util.h"
 #include "core/drv/api_defs.h"
@@ -245,14 +366,61 @@ static VOID DNSAPI_DnsQueryRawResultFree(
 static DNS_STATUS DNSAPI_DnsCancelQuery(
     PDNS_QUERY_CANCEL       pCancelHandle);
 
+// getaddrinfo API hooks (ws2_32.dll)
+static INT WSAAPI WSA_getaddrinfo(
+    PCSTR           pNodeName,
+    PCSTR           pServiceName,
+    const ADDRINFOA* pHints,
+    PADDRINFOA*     ppResult);
+
+static INT WSAAPI WSA_GetAddrInfoW(
+    PCWSTR          pNodeName,
+    PCWSTR          pServiceName,
+    const ADDRINFOW* pHints,
+    PADDRINFOW*     ppResult);
+
+static INT WSAAPI WSA_GetAddrInfoExW(
+    PCWSTR          pName,
+    PCWSTR          pServiceName,
+    DWORD           dwNameSpace,
+    LPGUID          lpNspId,
+    const ADDRINFOEXW* hints,
+    PADDRINFOEXW*   ppResult,
+    struct timeval* timeout,
+    LPOVERLAPPED    lpOverlapped,
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE lpCompletionRoutine,
+    LPHANDLE        lpHandle);
+
+static VOID WSAAPI WSA_freeaddrinfo(
+    PADDRINFOA      pAddrInfo);
+
+static VOID WSAAPI WSA_FreeAddrInfoW(
+    PADDRINFOW      pAddrInfo);
+
+static VOID WSAAPI WSA_FreeAddrInfoExW(
+    PADDRINFOEXW    pAddrInfoEx);
+
+// Helper function to check if an ADDRINFO structure is ours
+// Returns TRUE if it has our magic marker (AI_SBIE_MARKER)
+static BOOLEAN DNS_IsOurAddrInfo(int ai_flags);
+
 static PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
     const WCHAR*    domainName,
     WORD            wType,
     LIST*           pEntries,
-    DNS_CHARSET     CharSet);
+    DNS_CHARSET     CharSet,
+    const DOH_RESULT* pDohResult);  // Optional: CNAME info from DoH
 
 // DNS Type Filter Helper Functions (internal use only)
 static BOOLEAN DNS_ParseTypeName(const WCHAR* name, USHORT* type_out, BOOLEAN* is_negated);
+
+// DoH helper functions (forward declarations)
+static BOOLEAN DNS_TryDoHQuery(const WCHAR* domain, USHORT qtype, LIST* pListOut, DOH_RESULT* pFullResult);
+static void DNS_FreeIPEntryList(LIST* pList);
+static BOOLEAN DNS_DoHQueryForFamily(const WCHAR* domain, int family, LIST* pListOut);
+static int DNS_DoHBuildWSALookup(LPWSAQUERYSETW lpqsRestrictions, LPHANDLE lphLookup);
+static BOOLEAN WSA_ConvertAddrInfoWToEx(PADDRINFOW pResultW, PADDRINFOEXW* ppResultEx);
+static BOOLEAN DNS_DoHQueryForGetAddrInfoExW(PCWSTR pName, int family, const ADDRINFOEXW* hints, PCWSTR pServiceName, PADDRINFOEXW* ppResult);
 
 // Shared utility functions (implemented in net.c)
 BOOLEAN WSA_GetIP(const short* addr, int addrlen, IP_ADDRESS* pIP);
@@ -304,6 +472,65 @@ static P_DnsRecordListFree        __sys_DnsRecordListFree        = NULL;
 static P_DnsQueryRaw              __sys_DnsQueryRaw              = NULL;
 static P_DnsQueryRawResultFree    __sys_DnsQueryRawResultFree    = NULL;
 static P_DnsCancelQuery           __sys_DnsCancelQuery           = NULL;
+
+// getaddrinfo API function pointer types (ws2_32.dll)
+// Note: P_GetAddrInfoW and P_FreeAddrInfoW are already defined in wsa_defs.h
+
+typedef INT (WSAAPI *P_getaddrinfo)(
+    PCSTR           pNodeName,
+    PCSTR           pServiceName,
+    const ADDRINFOA* pHints,
+    PADDRINFOA*     ppResult);
+
+typedef INT (WSAAPI *P_GetAddrInfoExW)(
+    PCWSTR          pName,
+    PCWSTR          pServiceName,
+    DWORD           dwNameSpace,
+    LPGUID          lpNspId,
+    const ADDRINFOEXW* hints,
+    PADDRINFOEXW*   ppResult,
+    struct timeval* timeout,
+    LPOVERLAPPED    lpOverlapped,
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE lpCompletionRoutine,
+    LPHANDLE        lpHandle);
+
+typedef VOID (WSAAPI *P_freeaddrinfo)(PADDRINFOA pAddrInfo);
+typedef VOID (WSAAPI *P_FreeAddrInfoExW)(PADDRINFOEXW pAddrInfoEx);
+
+// WinHTTP function pointer type (winhttp.dll)
+typedef HINTERNET (WINAPI *P_WinHttpConnect)(
+    HINTERNET hSession,
+    LPCWSTR pswzServerName,
+    INTERNET_PORT nServerPort,
+    DWORD dwReserved);
+
+static P_getaddrinfo              __sys_getaddrinfo              = NULL;
+static P_GetAddrInfoW             __sys_GetAddrInfoW             = NULL;
+static P_GetAddrInfoExW           __sys_GetAddrInfoExW           = NULL;
+static P_freeaddrinfo             __sys_freeaddrinfo             = NULL;
+static P_FreeAddrInfoW            __sys_FreeAddrInfoW            = NULL;
+static P_FreeAddrInfoExW          __sys_FreeAddrInfoExW          = NULL;
+static P_WSASetLastError          __sys_WSASetLastError          = NULL;
+static P_WinHttpConnect           __sys_WinHttpConnect           = NULL;
+
+// Re-entrancy check helper: uses THREAD_DATA instead of __declspec(thread)
+// to avoid TLS linker issues in this DLL project
+static BOOLEAN WSA_GetInGetAddrInfoEx(void)
+{
+    THREAD_DATA *data = Dll_GetTlsData(NULL);
+    return data ? data->dns_in_getaddrinfoex : FALSE;
+}
+
+static void WSA_SetInGetAddrInfoEx(BOOLEAN value)
+{
+    THREAD_DATA *data = Dll_GetTlsData(NULL);
+    if (data)
+        data->dns_in_getaddrinfoex = value;
+}
+
+// Magic marker for our synthesized ADDRINFO structures
+// Used by FreeAddrInfo to identify and properly free our allocations
+#define ADDRINFO_SBIE_MAGIC 0x53424945  // 'SBIE'
 
 typedef struct _DNSAPI_EX_FILTER_RESULT {
     DNS_STATUS Status;
@@ -363,6 +590,7 @@ extern POOL* Dll_Pool;
 LIST       DNS_FilterList;      // Shared by WSA, DNSAPI, and raw socket implementations
 BOOLEAN    DNS_FilterEnabled = FALSE;
 static BOOLEAN DNS_DnsApiHookEnabled = TRUE;  // FilterDnsApi setting (default: enabled)
+static BOOLEAN DNS_WinHttpHookEnabled = FALSE;  // FilterWinHttp setting (default: disabled)
 BOOLEAN    DNS_MapIpv4ToIpv6 = FALSE;         // DnsMapIpv4ToIpv6 setting (default: disabled)
 BOOLEAN    DNS_HasValidCertificate = FALSE;  // Certificate validity for NetworkDnsFilter/FilterRawDns (exported)
 
@@ -403,6 +631,39 @@ typedef struct _WSA_LOOKUP {
 static HASH_MAP   WSA_LookupMap;
 static CRITICAL_SECTION WSA_LookupMap_CritSec;
 static BOOLEAN WSA_LookupMap_Initialized = FALSE;
+
+// Re-entrancy detection counter for system's getaddrinfo (ANSI)
+// When system calls getaddrinfo (ANSI), it internally calls GetAddrInfoW
+// We need to passthrough in this case to avoid returning our private heap allocations
+// that the system will try to free during ANSI conversion
+// Using volatile to ensure thread-safe increments are visible
+static volatile LONG WSA_SystemGetAddrInfoDepth = 0;
+
+// Private heap for DNS filter allocations
+// Using a private heap allows us to distinguish OUR allocations from system allocations
+// HeapSize on this heap returns -1 for system allocations (which use process heap)
+static HANDLE g_DnsFilterHeap = NULL;
+
+static HANDLE DNS_GetFilterHeap(void)
+{
+    HANDLE hHeap = g_DnsFilterHeap;
+    if (hHeap != NULL)
+        return hHeap;
+    
+    // Create new heap - thread-safe lazy initialization
+    hHeap = HeapCreate(0, 0, 0);
+    if (hHeap) {
+        // Use InterlockedCompareExchangePointer for 64-bit pointer safety
+        // InterlockedCompareExchange((LONG*)) truncates 64-bit handles!
+        HANDLE hExisting = InterlockedCompareExchangePointer(&g_DnsFilterHeap, hHeap, NULL);
+        if (hExisting != NULL) {
+            // Another thread already created the heap
+            HeapDestroy(hHeap);
+            hHeap = hExisting;
+        }
+    }
+    return hHeap;
+}
 
 
 //---------------------------------------------------------------------------
@@ -1424,6 +1685,9 @@ _FX void DNS_InitFilterRules(void)
     // Load DnsApi hook setting
     DNS_DnsApiHookEnabled = Config_GetSettingsForImageName_bool(L"FilterDnsApi", TRUE);
     
+    // Load WinHTTP hook setting
+    DNS_WinHttpHookEnabled = Config_GetSettingsForImageName_bool(L"FilterWinHttp", FALSE);
+    
     // Load DnsMapIpv4ToIpv6 setting (default: disabled)
     DNS_MapIpv4ToIpv6 = Config_GetSettingsForImageName_bool(L"DnsMapIpv4ToIpv6", FALSE);
 
@@ -1709,6 +1973,20 @@ BOOLEAN DNS_IsExcluded(const WCHAR* domain)
     if (!domain)
         return FALSE;
 
+    // Automatically exclude DoH server hostname to prevent re-entrancy loops
+    // (WinHTTP resolves hostname internally, triggering DNS hooks)
+    if (DoH_IsEnabled()) {
+        const WCHAR* doh_hostname = DoH_GetServerHostname();
+        if (doh_hostname && _wcsicmp(domain, doh_hostname) == 0) {
+            if (DNS_DebugFlag) {
+                WCHAR msg[512];
+                Sbie_snwprintf(msg, 512, L"[DoH] Auto-excluded DoH server hostname: %s", domain);
+                SbieApi_MonitorPutMsg(MONITOR_OTHER, msg);
+            }
+            return TRUE;
+        }
+    }
+
     DNS_LoadExclusionRules();
 
     const WCHAR* image = Dll_ImageName;
@@ -1905,6 +2183,12 @@ _FX BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries)
 // Helper function to find a pattern in DNS_FilterList using Pattern_MatchPathList.
 // Supports wildcards and prioritizes by specificity (like NetworkDnsFilter).
 // Returns the best matching pattern, or NULL if no match found.
+//
+// Level parameter:
+//   0 = exact image match only
+//   1 = negated image match only  
+//   2 = global default only
+//   (ULONG)-1 = match any level (for runtime lookups that don't care about specificity)
 //---------------------------------------------------------------------------
 
 static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level)
@@ -1925,19 +2209,137 @@ static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level)
     domain_lwr[domain_len] = L'\0';
     _wcslwr(domain_lwr);
 
-    // Use Pattern_MatchPathList with level filtering
     PATTERN* found = NULL;
-    ULONG match_level = level;
-    int match_result = Pattern_MatchPathList(domain_lwr, (ULONG)domain_len, &DNS_FilterList, &match_level, NULL, NULL, &found);
+    int match_result;
+    
+    if (level == (ULONG)-1) {
+        // Match any level - for runtime lookups (GetAddrInfo, DnsQuery, etc.)
+        match_result = Pattern_MatchPathList(domain_lwr, (ULONG)domain_len, &DNS_FilterList, NULL, NULL, NULL, &found);
+    } else {
+        // Match specific level - for configuration loading (NetworkDnsFilterType)
+        ULONG match_level = level;
+        match_result = Pattern_MatchPathList(domain_lwr, (ULONG)domain_len, &DNS_FilterList, &match_level, NULL, NULL, &found);
+        
+        // Verify level matches exactly
+        if (match_result > 0 && found && Pattern_Level(found) != level) {
+            found = NULL;
+            match_result = 0;
+        }
+    }
 
     Dll_Free(domain_lwr);
 
-    // Verify level matches (Pattern_MatchPathList returns best match, but we need exact level)
-    if (match_result > 0 && found && Pattern_Level(found) == level) {
+    if (match_result > 0 && found) {
         return found;
     }
 
     return NULL;
+}
+
+//---------------------------------------------------------------------------
+// DNS_WinHttpConnect
+//
+// Hook for WinHttpConnect() from winhttp.dll
+// Validates server name against NetworkDnsFilter rules
+// Returns NULL (connection failed) if domain is blocked, otherwise calls original
+//---------------------------------------------------------------------------
+
+static HINTERNET WINAPI DNS_WinHttpConnect(
+    HINTERNET hSession,
+    LPCWSTR pswzServerName,
+    INTERNET_PORT nServerPort,
+    DWORD dwReserved)
+{
+    // Quick path: if WinHTTP hook is disabled or no filter rules, use original
+    if (!DNS_WinHttpHookEnabled || !DNS_FilterEnabled) {
+        return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+    }
+
+    // Validate domain against NetworkDnsFilter rules
+    if (pswzServerName && wcslen(pswzServerName) > 0) {
+        size_t domain_len = wcslen(pswzServerName);
+        WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
+        if (domain_lwr) {
+            wmemcpy(domain_lwr, pswzServerName, domain_len);
+            domain_lwr[domain_len] = L'\0';
+            _wcslwr(domain_lwr);
+            
+            // Check exclusion first
+            if (DNS_IsExcluded(domain_lwr)) {
+                DNS_LogExclusion(domain_lwr);
+                Dll_Free(domain_lwr);
+                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+            }
+            
+            // Exclude DoH server hostnames to prevent re-entrancy
+            // DoH uses WinHTTP internally, so we must bypass DoH server connections
+            if (DoH_IsServerHostname(domain_lwr)) {
+                if (DNS_TraceFlag || DNS_DebugFlag) {
+                    DNS_LogPassthrough(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"DoH server");
+                }
+                Dll_Free(domain_lwr);
+                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+            }
+            
+            // If a DoH query is already active, bypass to prevent re-entrancy
+            // DoH may trigger GetAddrInfoW which may trigger WinHttpConnect recursively
+            if (DoH_IsQueryActive()) {
+                if (DNS_TraceFlag || DNS_DebugFlag) {
+                    DNS_LogPassthrough(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"DoH query active");
+                }
+                Dll_Free(domain_lwr);
+                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+            }
+            
+            PATTERN* found = NULL;
+            
+            // Use Pattern_MatchPathList for consistent wildcard matching with DNS_FilterList
+            if (Pattern_MatchPathList(domain_lwr, (ULONG)domain_len, &DNS_FilterList, NULL, NULL, NULL, &found) > 0) {
+                // Domain matches NetworkDnsFilter
+                
+                // Check if certificate is valid for filtering
+                if (!DNS_HasValidCertificate) {
+                    DNS_LogPassthrough(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"no certificate");
+                    Dll_Free(domain_lwr);
+                    return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+                }
+                
+                // Get IP entries for this domain (if any)
+                PVOID* aux = Pattern_Aux(found);
+                LIST* pEntries = NULL;
+                DNS_TYPE_FILTER* type_filter = NULL;
+                
+                if (aux && *aux) {
+                    DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
+                }
+                
+                // If no IP entries, this is block mode - deny connection
+                if (!pEntries) {
+                    DNS_LogBlocked(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"Domain blocked (NXDOMAIN)");
+                    Dll_Free(domain_lwr);
+                    SetLastError(ERROR_HOST_UNREACHABLE);
+                    return NULL;
+                }
+                
+                // Has IP entries - redirect mode
+                // WinHTTP will perform DNS resolution internally via GetAddrInfoW
+                // Our existing GetAddrInfoW hook will intercept and return the filtered IPs
+                // Just allow the connection - the DNS hook handles the redirection
+                DNS_LogPassthrough(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"allowing (DNS hooks will redirect)");
+                Dll_Free(domain_lwr);
+                // Let WinHTTP proceed - it will call GetAddrInfoW which our hooks will intercept
+                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+            }
+            
+            // Domain not in filter - allow and log passthrough if tracing
+            DNS_LogPassthrough(L"WinHTTP", pswzServerName, DNS_TYPE_ANY, L"not filtered");
+            
+            Dll_Free(domain_lwr);
+        }
+    }
+
+    // Domain allowed or not blocked - call original function
+    return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
 }
 
 //---------------------------------------------------------------------------
@@ -1958,13 +2360,21 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
     extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
     BOOLEAN rawDnsEnabled = Socket_GetRawDnsFilterEnabled(TRUE); // Check setting only, ignore cert
 
+    // Check if WinHTTP hooks are requested via FilterWinHttp setting
+    // (This function will be defined later - forward declaration)
+    BOOLEAN winHttpEnabled = (Config_GetSettingsForImageName_bool(L"FilterWinHttp", FALSE));
+
     // If none of the DNS features are enabled, skip all hooks
     // - DNS_FilterEnabled: NetworkDnsFilter rules exist
     // - DNS_TraceFlag: DnsTrace=y for logging
     // - rawDnsEnabled: FilterRawDns=y for raw socket filtering
-    if (!DNS_FilterEnabled && !DNS_TraceFlag && !rawDnsEnabled) {
+    // - winHttpEnabled: FilterWinHttp=y for WinHTTP API filtering
+    if (!DNS_FilterEnabled && !DNS_TraceFlag && !rawDnsEnabled && !winHttpEnabled) {
         return TRUE; // Nothing to do; leave original APIs untouched.
     }
+
+    // Get WSASetLastError for error reporting in getaddrinfo hooks
+    __sys_WSASetLastError = (P_WSASetLastError)GetProcAddress(module, "WSASetLastError");
 
     //
     // Setup WSALookupService hooks (ws2_32.dll)
@@ -1986,10 +2396,103 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
     }
 
     //
+    // Setup getaddrinfo hooks (ws2_32.dll)
+    // These are used by WinHTTP, libcurl, and many modern applications
+    //
+
+    // Note: We use explicit casting to avoid conflicts with SDK definitions
+    // The SBIEDLL_HOOK macro expects the local variable name to match the export name
+    void* getaddrinfo = (void*)GetProcAddress(module, "getaddrinfo");
+    if (getaddrinfo) {
+        SBIEDLL_HOOK(WSA_, getaddrinfo);
+    }
+
+    P_GetAddrInfoW GetAddrInfoW = (P_GetAddrInfoW)GetProcAddress(module, "GetAddrInfoW");
+    if (GetAddrInfoW) {
+        SBIEDLL_HOOK(WSA_, GetAddrInfoW);
+    }
+
+    P_GetAddrInfoExW GetAddrInfoExW = (P_GetAddrInfoExW)GetProcAddress(module, "GetAddrInfoExW");
+    if (GetAddrInfoExW) {
+        SBIEDLL_HOOK(WSA_, GetAddrInfoExW);
+    }
+
+    void* freeaddrinfo = (void*)GetProcAddress(module, "freeaddrinfo");
+    if (freeaddrinfo) {
+        SBIEDLL_HOOK(WSA_, freeaddrinfo);
+    }
+
+    P_FreeAddrInfoW FreeAddrInfoW = (P_FreeAddrInfoW)GetProcAddress(module, "FreeAddrInfoW");
+    if (FreeAddrInfoW) {
+        SBIEDLL_HOOK(WSA_, FreeAddrInfoW);
+    }
+
+    P_FreeAddrInfoExW FreeAddrInfoExW = (P_FreeAddrInfoExW)GetProcAddress(module, "FreeAddrInfoExW");
+    if (FreeAddrInfoExW) {
+        SBIEDLL_HOOK(WSA_, FreeAddrInfoExW);
+    }
+
+    //
     // Setup raw socket hooks for nslookup and other direct DNS tools
     // Pass certificate status to enforce certificate requirement for FilterRawDns
     //
     Socket_InitHooks(module, DNS_HasValidCertificate);
+
+    //
+    // Initialize DoH (DNS-over-HTTPS) client
+    // This is done here in addition to DNSAPI_Init to ensure DoH is available
+    // when WSA APIs are used before dnsapi.dll is loaded
+    //
+    HMODULE hWinHttp = GetModuleHandleW(L"winhttp.dll");
+    if (!hWinHttp) {
+        hWinHttp = LoadLibraryW(L"winhttp.dll");
+    }
+    DoH_Init(hWinHttp);
+    DoH_LoadConfig();
+
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// WINHTTP_Init
+//
+// Initializes WinHTTP hooks (called when winhttp.dll is loaded)
+// Hooks WinHttpConnect() to validate domains against NetworkDnsFilter rules
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN WINHTTP_Init(HMODULE module)
+{
+    // Initialize shared filter rules (if not already done)
+    DNS_InitFilterRules();
+
+    // Check FilterWinHttp setting (default: disabled)
+    BOOLEAN winHttpEnabled = Config_GetSettingsForImageName_bool(L"FilterWinHttp", FALSE);
+    
+    if (!winHttpEnabled) {
+        // FilterWinHttp disabled - skip WinHTTP hooking entirely
+        return TRUE;
+    }
+
+    // Only hook if filter rules exist
+    if (!DNS_FilterEnabled) {
+        return TRUE;
+    }
+
+    // Enable the WinHTTP hook for this process
+    DNS_WinHttpHookEnabled = TRUE;
+
+    //
+    // Setup WinHttpConnect hook
+    //
+
+    P_WinHttpConnect WinHttpConnect = (P_WinHttpConnect)GetProcAddress(module, "WinHttpConnect");
+    if (!WinHttpConnect) {
+        // Function not found in module - log and skip
+        SbieApi_Log(2205, L"WinHttpConnect not found in winhttp.dll");
+        return TRUE;
+    }
+    
+    SBIEDLL_HOOK(DNS_, WinHttpConnect);
 
     return TRUE;
 }
@@ -2078,6 +2581,22 @@ _FX BOOLEAN DNSAPI_Init(HMODULE module)
         SBIEDLL_HOOK(DNSAPI_, DnsCancelQuery);
     }
 
+    // Initialize DoH client
+    // Note: We try to load configuration even without WinHTTP/WinINet
+    // because SbieSvc can handle DoH queries out-of-process
+    HMODULE hWinHttp = GetModuleHandleW(L"winhttp.dll");
+    if (!hWinHttp) {
+        hWinHttp = LoadLibraryW(L"winhttp.dll");
+    }
+    
+    // Always initialize DoH (even if hWinHttp is NULL)
+    // DoH_Init handles NULL gracefully and loads WinINet if available
+    DoH_Init(hWinHttp);
+    
+    // Always try to load configuration
+    // If in-process backends unavailable, SbieSvc will be used
+    DoH_LoadConfig();
+
     return TRUE;
 }
 
@@ -2096,6 +2615,20 @@ _FX int WSA_WSALookupServiceBeginW(
     if (DNS_FilterEnabled)
         WSA_CleanupStaleHandles();
     
+    // Re-entrancy check: if we're inside GetAddrInfoExW, passthrough to avoid double-interception
+    // GetAddrInfoExW internally may call WSALookupService on some Windows versions
+    if (WSA_GetInGetAddrInfoEx()) {
+        return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
+    }
+    
+    // Re-entrancy check: if we're inside system's getaddrinfo (ANSI), passthrough
+    // The system's getaddrinfo calls GetAddrInfoW which may call WSALookupService
+    // If we intercept here and call DoH, we'll block waiting for WinHTTP which
+    // may deadlock if the DNS resolution thread pool is exhausted
+    if (WSA_SystemGetAddrInfoDepth > 0) {
+        return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
+    }
+    
     if (DNS_FilterEnabled && lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
         ULONG path_len = wcslen(lpqsRestrictions->lpszServiceInstanceName);
         WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
@@ -2105,6 +2638,7 @@ _FX int WSA_WSALookupServiceBeginW(
 
         if (DNS_IsExcluded(path_lwr)) {
             DNS_LogExclusion(path_lwr);
+            // Excluded domains bypass all filtering and DoH - use system DNS directly
             Dll_Free(path_lwr);
             return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
         }
@@ -2115,7 +2649,81 @@ _FX int WSA_WSALookupServiceBeginW(
             // Certificate required for actual filtering (interception/blocking)
             extern BOOLEAN DNS_HasValidCertificate;
             if (!DNS_HasValidCertificate) {
-                // Domain matches filter but no cert - passthrough (WSA_LogPassthrough will log with IPs)
+                // Domain matches filter but no cert - try DoH first, then passthrough
+                WORD queryType = WSA_IsIPv6Query(lpqsRestrictions->lpServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+                LIST doh_list;
+                DOH_RESULT doh_result;
+                if (DoH_IsEnabled() && DNS_TryDoHQuery(path_lwr, queryType, &doh_list, &doh_result)) {
+                    HANDLE fakeHandle = (HANDLE)Dll_Alloc(sizeof(ULONG_PTR));
+                    if (fakeHandle) {
+                        *lphLookup = fakeHandle;
+                        
+                        WSA_LOOKUP* pLookup = WSA_GetLookup(fakeHandle, TRUE);
+                        if (pLookup) {
+                            pLookup->Filtered = TRUE;
+                            pLookup->NoMore = FALSE;
+                            pLookup->QueryType = queryType;
+                            
+                            pLookup->DomainName = Dll_Alloc((path_len + 1) * sizeof(WCHAR));
+                            if (pLookup->DomainName) {
+                                wcscpy_s(pLookup->DomainName, path_len + 1, lpqsRestrictions->lpszServiceInstanceName);
+                            }
+                            
+                            pLookup->Namespace = lpqsRestrictions->dwNameSpace;
+                            
+                            if (lpqsRestrictions->lpServiceClassId) {
+                                pLookup->ServiceClassId = Dll_Alloc(sizeof(GUID));
+                                if (pLookup->ServiceClassId) {
+                                    memcpy(pLookup->ServiceClassId, lpqsRestrictions->lpServiceClassId, sizeof(GUID));
+                                }
+                            }
+                            
+                            // Convert DoH results to IP_ENTRY list
+                            IP_ENTRY* entry;
+                            LIST* pEntries = &doh_list;
+                            
+                            pLookup->pEntries = Dll_Alloc(sizeof(LIST));
+                            if (pLookup->pEntries) {
+                                List_Init(pLookup->pEntries);
+                                
+                                entry = (IP_ENTRY*)List_Head(pEntries);
+                                while (entry) {
+                                    IP_ENTRY* newEntry = (IP_ENTRY*)Dll_Alloc(sizeof(IP_ENTRY));
+                                    if (newEntry) {
+                                        newEntry->Type = entry->Type;
+                                        memcpy(&newEntry->IP, &entry->IP, sizeof(IP_ADDRESS));
+                                        List_Insert_After(pLookup->pEntries, NULL, newEntry);
+                                    }
+                                    entry = (IP_ENTRY*)List_Next(entry);
+                                }
+                            }
+                            
+                            WSA_LogIntercepted(lpqsRestrictions->lpszServiceInstanceName,
+                                lpqsRestrictions->lpServiceClassId,
+                                lpqsRestrictions->dwNameSpace,
+                                fakeHandle,
+                                FALSE,  // not blocked
+                                pLookup->pEntries,
+                                TRUE);  // is_doh = TRUE (DoH resolution)
+                            
+                            Dll_Free(path_lwr);
+                            DNS_FreeIPEntryList(&doh_list);
+                            return NO_ERROR;
+                        }
+                        Dll_Free(fakeHandle);
+                    }
+                    DNS_FreeIPEntryList(&doh_list);
+                }
+                
+                // DoH query failed or returned no records
+                if (DoH_IsEnabled()) {
+                    // DoH is enabled but query failed - return error instead of fallback to system DNS
+                    Dll_Free(path_lwr);
+                    SetLastError(WSAHOST_NOT_FOUND);
+                    return SOCKET_ERROR;
+                }
+                
+                // DoH disabled - fall through to system DNS
                 Dll_Free(path_lwr);
                 return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
             }
@@ -2178,14 +2786,26 @@ _FX int WSA_WSALookupServiceBeginW(
                         BOOLEAN should_filter = DNS_IsTypeInFilterList(type_filter, query_type);
                         
                         if (!should_filter) {
-                            // Type not in filter list or negated - passthrough to real DNS
-                            // WSA_LogPassthrough will log the final result with IPs
+                            // Type not in filter list or negated - try DoH first, then passthrough to real DNS
                             EnterCriticalSection(&WSA_LookupMap_CritSec);
                             map_remove(&WSA_LookupMap, fakeHandle);
                             LeaveCriticalSection(&WSA_LookupMap_CritSec);
-
                             Dll_Free(fakeHandle);
+                            
+                            // Try DoH for negated type passthrough queries
+                            int doh_result = DNS_DoHBuildWSALookup(lpqsRestrictions, lphLookup);
+                            if (doh_result == NO_ERROR) {
+                                Dll_Free(path_lwr);
+                                return NO_ERROR;
+                            }
+                            
+                            // DoH failed or disabled
                             Dll_Free(path_lwr);
+                            if (DoH_IsEnabled()) {
+                                // DoH is enabled but failed - return error
+                                return SOCKET_ERROR;
+                            }
+                            // DoH disabled - passthrough to real DNS
                             return __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
                         }
                         
@@ -2204,7 +2824,8 @@ _FX int WSA_WSALookupServiceBeginW(
                 lpqsRestrictions->dwNameSpace,
                 fakeHandle,
                 is_blocked,
-                pEntries);
+                pEntries,
+                FALSE);  // is_doh = FALSE (filter-based)
 
             Dll_Free(path_lwr);
             return NO_ERROR;
@@ -2213,6 +2834,20 @@ _FX int WSA_WSALookupServiceBeginW(
         Dll_Free(path_lwr);
     }
 
+    // If DoH is enabled, try DoH for all passthrough queries (non-matching or no-cert)
+    // This ensures all DNS traffic goes through secure channel when SecureDnsServer is configured
+    if (lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
+        int doh_result = DNS_DoHBuildWSALookup(lpqsRestrictions, lphLookup);
+        if (doh_result == NO_ERROR) {
+            return NO_ERROR;
+        }
+        // DoH failed or disabled - if DoH is enabled, return error (no fallback)
+        if (DoH_IsEnabled()) {
+            return SOCKET_ERROR;
+        }
+    }
+
+    // DoH disabled - use system DNS
     int ret = __sys_WSALookupServiceBeginW(lpqsRestrictions, dwControlFlags, lphLookup);
 
     if (lpqsRestrictions && ret == NO_ERROR && lphLookup && *lphLookup) {
@@ -2569,7 +3204,7 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
 
     if (pEntries && DNS_CanSynthesizeResponse(wType)) {
         // Filter mode with supported type (A/AAAA): build response
-        pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries, CharSet);
+        pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, pEntries, CharSet, NULL);
         // If no records built (e.g., AAAA query but only IPv4 available),
         // return NOERROR + NODATA (domain exists, no records of this type)
         // status stays 0 (NOERROR), pRecords stays NULL (NODATA)
@@ -2631,13 +3266,16 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
 //
 // IMPORTANT: Different from HOSTENT BLOB format - uses absolute pointers
 //            in a linked list structure. Caller must free with DnsRecordListFree.
+//
+// If pDohResult is provided and contains CNAME info, prepends CNAME record
 //---------------------------------------------------------------------------
 
 _FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
     const WCHAR* domainName,
     WORD wType,
     LIST* pEntries,
-    DNS_CHARSET CharSet)
+    DNS_CHARSET CharSet,
+    const DOH_RESULT* pDohResult)
 {
     if (!pEntries || !domainName)
         return NULL;
@@ -2645,9 +3283,88 @@ _FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
     PDNSAPI_DNS_RECORD pFirstRecord = NULL;
     PDNSAPI_DNS_RECORD pLastRecord = NULL;
 
+    // If DoH result contains CNAME, prepend it first
+    if (pDohResult && pDohResult->HasCname && pDohResult->CnameOwner[0] != L'\0' && pDohResult->CnameTarget[0] != L'\0') {
+        SIZE_T ownerNameLen = 0, targetNameLen = 0;
+        
+        // Calculate lengths based on CharSet
+        if (CharSet == DnsCharSetUnicode) {
+            ownerNameLen = (wcslen(pDohResult->CnameOwner) + 1) * sizeof(WCHAR);
+            targetNameLen = (wcslen(pDohResult->CnameTarget) + 1) * sizeof(WCHAR);
+        } else if (CharSet == DnsCharSetAnsi) {
+            int len1 = WideCharToMultiByte(CP_ACP, 0, pDohResult->CnameOwner, -1, NULL, 0, NULL, NULL);
+            int len2 = WideCharToMultiByte(CP_ACP, 0, pDohResult->CnameTarget, -1, NULL, 0, NULL, NULL);
+            if (len1 > 0 && len2 > 0) {
+                ownerNameLen = len1;
+                targetNameLen = len2;
+            }
+        } else if (CharSet == DnsCharSetUtf8) {
+            int len1 = WideCharToMultiByte(CP_UTF8, 0, pDohResult->CnameOwner, -1, NULL, 0, NULL, NULL);
+            int len2 = WideCharToMultiByte(CP_UTF8, 0, pDohResult->CnameTarget, -1, NULL, 0, NULL, NULL);
+            if (len1 > 0 && len2 > 0) {
+                ownerNameLen = len1;
+                targetNameLen = len2;
+            }
+        }
+        
+        if (ownerNameLen > 0 && targetNameLen > 0) {
+            // Allocate CNAME record
+            PDNSAPI_DNS_RECORD pCnameRec = (PDNSAPI_DNS_RECORD)LocalAlloc(LPTR, sizeof(DNSAPI_DNS_RECORD));
+            if (pCnameRec) {
+                pCnameRec->pName = (PWSTR)LocalAlloc(LPTR, ownerNameLen);
+                if (pCnameRec->pName) {
+                    // Copy owner name
+                    if (CharSet == DnsCharSetUnicode) {
+                        wmemcpy(pCnameRec->pName, pDohResult->CnameOwner, wcslen(pDohResult->CnameOwner) + 1);
+                    } else if (CharSet == DnsCharSetAnsi) {
+                        WideCharToMultiByte(CP_ACP, 0, pDohResult->CnameOwner, -1, (LPSTR)pCnameRec->pName, (int)ownerNameLen, NULL, NULL);
+                    } else if (CharSet == DnsCharSetUtf8) {
+                        WideCharToMultiByte(CP_UTF8, 0, pDohResult->CnameOwner, -1, (LPSTR)pCnameRec->pName, (int)ownerNameLen, NULL, NULL);
+                    }
+                    
+                    // Allocate and copy CNAME target
+                    pCnameRec->Data.CNAME.pNameHost = (PWSTR)LocalAlloc(LPTR, targetNameLen);
+                    if (pCnameRec->Data.CNAME.pNameHost) {
+                        if (CharSet == DnsCharSetUnicode) {
+                            wmemcpy(pCnameRec->Data.CNAME.pNameHost, pDohResult->CnameTarget, wcslen(pDohResult->CnameTarget) + 1);
+                        } else if (CharSet == DnsCharSetAnsi) {
+                            WideCharToMultiByte(CP_ACP, 0, pDohResult->CnameTarget, -1, (LPSTR)pCnameRec->Data.CNAME.pNameHost, (int)targetNameLen, NULL, NULL);
+                        } else if (CharSet == DnsCharSetUtf8) {
+                            WideCharToMultiByte(CP_UTF8, 0, pDohResult->CnameTarget, -1, (LPSTR)pCnameRec->Data.CNAME.pNameHost, (int)targetNameLen, NULL, NULL);
+                        }
+                        
+                        // Set CNAME record fields
+                        pCnameRec->wType = DNS_TYPE_CNAME;
+                        pCnameRec->wDataLength = (WORD)targetNameLen;
+                        pCnameRec->Flags.DW = 0;
+                        pCnameRec->Flags.S.Section = DNSREC_ANSWER;
+                        pCnameRec->Flags.S.CharSet = CharSet;
+                        pCnameRec->dwTtl = pDohResult->TTL;
+                        pCnameRec->dwReserved = 0x53424945;  // 'SBIE' magic marker
+                        pCnameRec->pNext = NULL;
+                        
+                        pFirstRecord = pCnameRec;
+                        pLastRecord = pCnameRec;
+                    } else {
+                        LocalFree(pCnameRec->pName);
+                        LocalFree(pCnameRec);
+                    }
+                } else {
+                    LocalFree(pCnameRec);
+                }
+            }
+        }
+    }
+
     // For ANY queries (type 255), return both A and AAAA records
     BOOLEAN is_any_query = (wType == 255);
     USHORT targetType = (wType == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
+    
+    // If CNAME is present, use CNAME target as domain name for A/AAAA records
+    const WCHAR* recordDomainName = domainName;
+    if (pDohResult && pDohResult->HasCname && pDohResult->CnameTarget[0] != L'\0') {
+        recordDomainName = pDohResult->CnameTarget;
+    }
     
     // Check if IPv6 entries exist (needed for IPv4-mapped IPv6 creation)
     BOOLEAN has_ipv6 = FALSE;
@@ -2661,21 +3378,21 @@ _FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
         }
     }
     
-    // Calculate domain name length based on CharSet
+    // Calculate domain name length based on CharSet (for A/AAAA records)
     SIZE_T domainNameLen = 0;
     if (CharSet == DnsCharSetUnicode) {
-        domainNameLen = (wcslen(domainName) + 1) * sizeof(WCHAR);
+        domainNameLen = (wcslen(recordDomainName) + 1) * sizeof(WCHAR);
     } else if (CharSet == DnsCharSetAnsi) {
-        int len = WideCharToMultiByte(CP_ACP, 0, domainName, -1, NULL, 0, NULL, NULL);
-        if (len <= 0) return NULL;
+        int len = WideCharToMultiByte(CP_ACP, 0, recordDomainName, -1, NULL, 0, NULL, NULL);
+        if (len <= 0) return pFirstRecord;  // Return CNAME record if present
         domainNameLen = len;
     } else if (CharSet == DnsCharSetUtf8) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, domainName, -1, NULL, 0, NULL, NULL);
-        if (len <= 0) return NULL;
+        int len = WideCharToMultiByte(CP_UTF8, 0, recordDomainName, -1, NULL, 0, NULL, NULL);
+        if (len <= 0) return pFirstRecord;  // Return CNAME record if present
         domainNameLen = len;
     } else {
         // Default to Unicode if unknown
-        domainNameLen = (wcslen(domainName) + 1) * sizeof(WCHAR);
+        domainNameLen = (wcslen(recordDomainName) + 1) * sizeof(WCHAR);
         CharSet = DnsCharSetUnicode;
     }
 
@@ -2724,13 +3441,13 @@ _FX PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
             return NULL;
         }
         
-        // Copy domain name with conversion
+        // Copy domain name with conversion (use CNAME target if present)
         if (CharSet == DnsCharSetUnicode) {
-            wmemcpy(pRecord->pName, domainName, wcslen(domainName) + 1);
+            wmemcpy(pRecord->pName, recordDomainName, wcslen(recordDomainName) + 1);
         } else if (CharSet == DnsCharSetAnsi) {
-            WideCharToMultiByte(CP_ACP, 0, domainName, -1, (LPSTR)pRecord->pName, (int)domainNameLen, NULL, NULL);
+            WideCharToMultiByte(CP_ACP, 0, recordDomainName, -1, (LPSTR)pRecord->pName, (int)domainNameLen, NULL, NULL);
         } else if (CharSet == DnsCharSetUtf8) {
-            WideCharToMultiByte(CP_UTF8, 0, domainName, -1, (LPSTR)pRecord->pName, (int)domainNameLen, NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, recordDomainName, -1, (LPSTR)pRecord->pName, (int)domainNameLen, NULL, NULL);
         }
 
         // Set record type and flags
@@ -2860,6 +3577,7 @@ static BOOLEAN DNSAPI_FilterDnsQuery(
         WCHAR blockTag[128];
         DNS_LogBlocked(DNS_GetBlockedTag(sourceTag, blockTag, ARRAYSIZE(blockTag)), 
                        wName, wType, L"Domain blocked (NXDOMAIN)");
+        *ppQueryResults = NULL;  // CRITICAL: Must set to NULL to prevent caller using garbage pointer
         *pStatus = DNS_ERROR_RCODE_NAME_ERROR;
         return TRUE;
     }
@@ -2882,7 +3600,7 @@ static BOOLEAN DNSAPI_FilterDnsQuery(
     // Type is in filter list - check if we can synthesize or should block
     if (DNS_CanSynthesizeResponse(wType)) {
         // Filter mode with supported type: build DNS_RECORD linked list
-        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries, CharSet);
+        PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(wName, wType, pEntries, CharSet, NULL);
         
         if (pRecords) {
             *ppQueryResults = pRecords;
@@ -2976,8 +3694,45 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
         Dll_Free(path_lwr);
     }
 
-    // Call original DnsQuery_W
-    DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+    // Call original DnsQuery_W (or use DoH exclusively if enabled)
+    DNS_STATUS status;
+    
+    // Try DoH for all passthrough queries when DoH is enabled
+    // When DoH is enabled, we should ONLY use DoH - no fallback to system DNS
+    if (DoH_IsEnabled() && pszName) {
+        // For A/AAAA queries, perform actual DoH lookup
+        if (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA) {
+            LIST doh_list;
+            DOH_RESULT doh_result;
+            if (DNS_TryDoHQuery(pszName, wType, &doh_list, &doh_result)) {
+                PDNSAPI_DNS_RECORD pResult = DNSAPI_BuildDnsRecordList(pszName, wType, &doh_list, DnsCharSetUnicode, &doh_result);
+                if (pResult) {
+                    DNS_LogDnsQueryResultWithReason(L"DnsQuery_W DoH", pszName, wType,
+                                                   DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pResult, passthroughReason);
+                    DNS_FreeIPEntryList(&doh_list);
+                    *ppQueryResults = pResult;
+                    return DNS_RCODE_NOERROR;
+                }
+                DNS_FreeIPEntryList(&doh_list);
+            }
+            // DoH query failed or returned no records - return DNS error instead of fallback
+            DNS_LogDnsQueryResultWithReason(L"DnsQuery_W DoH", pszName, wType,
+                                           DNS_ERROR_RCODE_NAME_ERROR, NULL, passthroughReason);
+            *ppQueryResults = NULL;
+            return DNS_ERROR_RCODE_NAME_ERROR;
+        }
+        
+        // For non-A/AAAA queries (MX, TXT, SRV, etc.), return NODATA
+        // This prevents leaking queries to system DNS when DoH mode is enabled
+        // TODO: Future enhancement - implement raw DNS wire format DoH for all types
+        DNS_LogDnsQueryResultWithReason(L"DnsQuery_W DoH (unsupported type)", pszName, wType,
+                                       DNS_INFO_NO_RECORDS, NULL, passthroughReason);
+        *ppQueryResults = NULL;
+        return DNS_INFO_NO_RECORDS;  // NODATA - domain exists but no records of this type
+    }
+    
+    // DoH disabled - use system DNS
+    status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
     DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
                                    status, ppQueryResults, passthroughReason);
@@ -3063,8 +3818,50 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_A(
         }
     }
 
-    // Call original DnsQuery_A
-    DNS_STATUS status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+    // Call original DnsQuery_A (or try DoH first)
+    DNS_STATUS status;
+    
+    // When DoH is enabled, we should ONLY use DoH - no fallback to system DNS
+    if (DoH_IsEnabled() && pszName) {
+        int nameLen = MultiByteToWideChar(CP_ACP, 0, pszName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_ACP, 0, pszName, -1, wName, nameLen)) {
+                // For A/AAAA queries, perform actual DoH lookup
+                if (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA) {
+                    LIST doh_list;
+                    DOH_RESULT doh_result;
+                    if (DNS_TryDoHQuery(wName, wType, &doh_list, &doh_result)) {
+                        PDNSAPI_DNS_RECORD pResult = DNSAPI_BuildDnsRecordList(wName, wType, &doh_list, DnsCharSetAnsi, &doh_result);
+                        if (pResult) {
+                            DNS_LogDnsQueryResultWithReason(L"DnsQuery_A DoH", wName, wType,
+                                                           DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pResult, passthroughReason);
+                            DNS_FreeIPEntryList(&doh_list);
+                            Dll_Free(wName);
+                            *ppQueryResults = pResult;
+                            return DNS_RCODE_NOERROR;
+                        }
+                        DNS_FreeIPEntryList(&doh_list);
+                    }
+                    // DoH query failed - return error instead of fallback
+                    DNS_LogDnsQueryResultWithReason(L"DnsQuery_A DoH", wName, wType,
+                                                   DNS_ERROR_RCODE_NAME_ERROR, NULL, passthroughReason);
+                    Dll_Free(wName);
+                    *ppQueryResults = NULL;
+                    return DNS_ERROR_RCODE_NAME_ERROR;
+                }
+                
+                // For non-A/AAAA queries, return NODATA
+                DNS_LogDnsQueryResultWithReason(L"DnsQuery_A DoH (unsupported type)", wName, wType,
+                                               DNS_INFO_NO_RECORDS, NULL, passthroughReason);
+                Dll_Free(wName);
+                *ppQueryResults = NULL;
+                return DNS_INFO_NO_RECORDS;
+            }
+        }
+    }
+    
+    status = __sys_DnsQuery_A(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
     // Convert ANSI domain to wide for logging
     if (DNS_TraceFlag && pszName) {
@@ -3159,7 +3956,49 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_UTF8(
         }
     }
 
+    // Call original DnsQuery_UTF8 (or try DoH first)
     DNS_STATUS status;
+    
+    // When DoH is enabled, we should ONLY use DoH - no fallback to system DNS
+    if (DoH_IsEnabled() && pszName) {
+        int nameLen = MultiByteToWideChar(CP_UTF8, 0, pszName, -1, NULL, 0);
+        if (nameLen > 0 && nameLen < 512) {
+            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (wName && MultiByteToWideChar(CP_UTF8, 0, pszName, -1, wName, nameLen)) {
+                // For A/AAAA queries, perform actual DoH lookup
+                if (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA) {
+                    LIST doh_list;
+                    DOH_RESULT doh_result;
+                    if (DNS_TryDoHQuery(wName, wType, &doh_list, &doh_result)) {
+                        PDNSAPI_DNS_RECORD pResult = DNSAPI_BuildDnsRecordList(wName, wType, &doh_list, DnsCharSetUtf8, &doh_result);
+                        if (pResult) {
+                            DNS_LogDnsQueryResultWithReason(L"DnsQuery_UTF8 DoH", wName, wType,
+                                                           DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pResult, passthroughReason);
+                            DNS_FreeIPEntryList(&doh_list);
+                            Dll_Free(wName);
+                            *ppQueryResults = pResult;
+                            return DNS_RCODE_NOERROR;
+                        }
+                        DNS_FreeIPEntryList(&doh_list);
+                    }
+                    // DoH query failed - return error instead of fallback
+                    DNS_LogDnsQueryResultWithReason(L"DnsQuery_UTF8 DoH", wName, wType,
+                                                   DNS_ERROR_RCODE_NAME_ERROR, NULL, passthroughReason);
+                    Dll_Free(wName);
+                    *ppQueryResults = NULL;
+                    return DNS_ERROR_RCODE_NAME_ERROR;
+                }
+                
+                // For non-A/AAAA queries, return NODATA
+                DNS_LogDnsQueryResultWithReason(L"DnsQuery_UTF8 DoH (unsupported type)", wName, wType,
+                                               DNS_INFO_NO_RECORDS, NULL, passthroughReason);
+                Dll_Free(wName);
+                *ppQueryResults = NULL;
+                return DNS_INFO_NO_RECORDS;
+            }
+        }
+    }
+    
     if (__sys_DnsQuery_UTF8)
         status = __sys_DnsQuery_UTF8(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
     else
@@ -3248,6 +4087,65 @@ _FX VOID WINAPI DNSAPI_RawPassthroughCallbackWrapper(
 }
 
 //---------------------------------------------------------------------------
+// DNSAPI_TryDoHForQueryEx
+//
+// Helper: Try DoH for DnsQueryEx passthrough queries
+// Returns TRUE if DoH succeeded and pQueryResults filled
+// For non-A/AAAA types when DoH is enabled, returns NODATA result
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNSAPI_TryDoHForQueryEx(
+    const WCHAR* pszName,
+    WORD wType,
+    ULONG64 queryOptions,
+    PDNS_QUERY_RESULT pQueryResults,
+    DNS_CHARSET CharSet)
+{
+    if (!pszName || !pQueryResults) {
+        return FALSE;
+    }
+
+    // For non-A/AAAA types when DoH is enabled, return success with empty result (NODATA)
+    // This prevents leaking queries to system DNS
+    if (wType != DNS_TYPE_A && wType != DNS_TYPE_AAAA) {
+        if (DoH_IsEnabled()) {
+            // Fill with empty NODATA result
+            if (pQueryResults->Version == 0)
+                pQueryResults->Version = DNS_QUERY_RESULTS_VERSION1;
+            pQueryResults->QueryOptions = queryOptions;
+            pQueryResults->pQueryRecords = NULL;
+            pQueryResults->Reserved = NULL;
+            pQueryResults->QueryStatus = DNS_INFO_NO_RECORDS;  // NODATA
+            return TRUE;
+        }
+        return FALSE;
+    }
+
+    LIST doh_list;
+    DOH_RESULT doh_result;
+    if (!DNS_TryDoHQuery(pszName, wType, &doh_list, &doh_result)) {
+        return FALSE;
+    }
+
+    PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, &doh_list, CharSet, &doh_result);
+    DNS_FreeIPEntryList(&doh_list);
+
+    if (!pRecords) {
+        return FALSE;
+    }
+
+    // Fill query results
+    if (pQueryResults->Version == 0)
+        pQueryResults->Version = DNS_QUERY_RESULTS_VERSION1;
+    pQueryResults->QueryOptions = queryOptions;
+    pQueryResults->pQueryRecords = pRecords;
+    pQueryResults->Reserved = NULL;
+    pQueryResults->QueryStatus = 0;
+
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
 // DNSAPI_DnsQueryEx
 //---------------------------------------------------------------------------
 
@@ -3311,6 +4209,42 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
         // Filter handled the request - return the status
         return outcome.Status;
     }
+    
+    // Not filtered - try DoH for passthrough queries (but NOT for excluded domains)
+    // Excluded domains should use system DNS directly
+    if (pQueryRequest->QueryName) {
+        size_t domain_len = wcslen(pQueryRequest->QueryName);
+        WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
+        if (domain_lwr) {
+            wmemcpy(domain_lwr, pQueryRequest->QueryName, domain_len);
+            domain_lwr[domain_len] = L'\0';
+            _wcslwr(domain_lwr);
+            
+            BOOLEAN is_excluded = DNS_IsExcluded(domain_lwr);
+            Dll_Free(domain_lwr);
+            
+            if (!is_excluded) {
+                // Not excluded - try DoH
+                if (DNSAPI_TryDoHForQueryEx(pQueryRequest->QueryName, pQueryRequest->QueryType,
+                                             pQueryRequest->QueryOptions, pQueryResults, DnsCharSetUnicode)) {
+                    DNS_LogDnsRecordsFromQueryResult(L"DnsQueryEx DoH", pQueryRequest->QueryName,
+                                                    pQueryRequest->QueryType, 0, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords);
+                    return 0;
+                }
+                // DoH query failed or returned no records - return error when DoH is enabled
+                if (DoH_IsEnabled()) {
+                    DNS_LogDnsQueryExStatus(L"DnsQueryEx DoH", pQueryRequest->QueryName, 
+                                           pQueryRequest->QueryType, DNS_ERROR_RCODE_NAME_ERROR);
+                    if (pQueryResults) {
+                        pQueryResults->QueryStatus = DNS_ERROR_RCODE_NAME_ERROR;
+                        pQueryResults->pQueryRecords = NULL;
+                    }
+                    return DNS_ERROR_RCODE_NAME_ERROR;
+                }
+            }
+        }
+    }
+    
     // If not filtered, passthrough logging with IPs happens after real DNS call below
 
     // Check if this is an async call (has completion callback)
@@ -3736,7 +4670,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                     if (ctx) {
                                         ctx->OriginalCallback = pQueryRequest->queryCompletionCallback;
                                         ctx->OriginalContext = pQueryRequest->queryContext;
-                                        wcscpy(ctx->Domain, domain);
+                                        wcsncpy(ctx->Domain, domain, 255);
+                                        ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_NO_CERT;
                                         
@@ -3775,7 +4710,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                     if (ctx) {
                                         ctx->OriginalCallback = pQueryRequest->queryCompletionCallback;
                                         ctx->OriginalContext = pQueryRequest->queryContext;
-                                        wcscpy(ctx->Domain, domain);
+                                        wcsncpy(ctx->Domain, domain, 255);
+                                        ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NEGATED;
                                         
@@ -3803,7 +4739,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                     if (ctx) {
                                         ctx->OriginalCallback = pQueryRequest->queryCompletionCallback;
                                         ctx->OriginalContext = pQueryRequest->queryContext;
-                                        wcscpy(ctx->Domain, domain);
+                                        wcsncpy(ctx->Domain, domain, 255);
+                                        ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NOT_FILTERED;
                                         
@@ -3997,7 +4934,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
         if (ctx) {
             ctx->OriginalCallback = pQueryRequest->queryCompletionCallback;
             ctx->OriginalContext = pQueryRequest->queryContext;
-            wcscpy(ctx->Domain, domain);
+            wcsncpy(ctx->Domain, domain, 255);
+            ctx->Domain[255] = L'\0';
             ctx->QueryType = qtype;
             ctx->PassthroughReason = DNS_PASSTHROUGH_NO_MATCH;
             
@@ -4102,3 +5040,1404 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsCancelQuery(
     return __sys_DnsCancelQuery(pCancelHandle);
 }
 
+
+//---------------------------------------------------------------------------
+// WSA_BuildAddrInfoList
+//
+// Helper function to build ADDRINFOW linked list from IP entries
+// Returns synthesized ADDRINFOW chain, or NULL on failure
+// Caller must free with FreeAddrInfoW (our hook will detect and free properly)
+//---------------------------------------------------------------------------
+
+static PADDRINFOW WSA_BuildAddrInfoList(
+    const WCHAR*    pNodeName,
+    const WCHAR*    pServiceName,
+    const ADDRINFOW* pHints,
+    LIST*           pEntries)
+{
+    if (!pEntries || !List_Head(pEntries))
+        return NULL;
+
+    // Determine what address families to return based on hints
+    int requestedFamily = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = IPPROTO_TCP;
+    
+    if (pHints) {
+        requestedFamily = pHints->ai_family;
+        if (pHints->ai_socktype)
+            socktype = pHints->ai_socktype;
+        if (pHints->ai_protocol)
+            protocol = pHints->ai_protocol;
+    }
+
+    // Count matching entries
+    int count = 0;
+    for (IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+        if (requestedFamily == AF_UNSPEC || 
+            (requestedFamily == AF_INET && entry->Type == AF_INET) ||
+            (requestedFamily == AF_INET6 && entry->Type == AF_INET6)) {
+            count++;
+        }
+    }
+
+    if (count == 0)
+        return NULL;
+
+    PADDRINFOW pHead = NULL;
+    PADDRINFOW pTail = NULL;
+
+    for (IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+        if (requestedFamily != AF_UNSPEC && 
+            !((requestedFamily == AF_INET && entry->Type == AF_INET) ||
+              (requestedFamily == AF_INET6 && entry->Type == AF_INET6))) {
+            continue;
+        }
+
+        // Calculate sizes for this entry
+        SIZE_T addrSize = (entry->Type == AF_INET6) ? sizeof(SOCKADDR_IN6_LH) : sizeof(SOCKADDR_IN);
+        SIZE_T nodeNameLen = pNodeName ? (wcslen(pNodeName) + 1) * sizeof(WCHAR) : 0;
+        
+        // Allocate ADDRINFOW + sockaddr + canonname in one block
+        // FIX: Use private heap to distinguish OUR allocations from system allocations
+        SIZE_T totalSize = sizeof(ADDRINFOW) + addrSize + nodeNameLen;
+        HANDLE hHeap = DNS_GetFilterHeap();
+        if (!hHeap) return NULL;
+        BYTE* pBlock = (BYTE*)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, totalSize);
+        if (!pBlock) {
+            // Free already allocated entries on failure
+            while (pHead) {
+                PADDRINFOW pNext = pHead->ai_next;
+                HeapFree(hHeap, 0, pHead);
+                pHead = pNext;
+            }
+            return NULL;
+        }
+
+        PADDRINFOW pInfo = (PADDRINFOW)pBlock;
+
+        // Mark this as our allocation with magic marker in ai_flags (bit 31)
+        // This allows free functions to distinguish our allocations from system allocations
+        pInfo->ai_flags = AI_SBIE_MARKER;
+        pInfo->ai_family = entry->Type;
+        pInfo->ai_socktype = socktype;
+        pInfo->ai_protocol = protocol;
+        pInfo->ai_addrlen = addrSize;
+        pInfo->ai_addr = (struct sockaddr*)(pBlock + sizeof(ADDRINFOW));
+        pInfo->ai_next = NULL;
+
+        // Fill in the sockaddr
+        if (entry->Type == AF_INET6) {
+            SOCKADDR_IN6_LH* pAddr6 = (SOCKADDR_IN6_LH*)pInfo->ai_addr;
+            pAddr6->sin6_family = AF_INET6;
+            pAddr6->sin6_port = 0;
+            pAddr6->sin6_flowinfo = 0;
+            pAddr6->sin6_scope_id = 0;
+            memcpy(pAddr6->sin6_addr.u.Byte, entry->IP.Data, 16);
+        } else if (entry->Type == AF_INET) {
+            SOCKADDR_IN* pAddr4 = (SOCKADDR_IN*)pInfo->ai_addr;
+            pAddr4->sin_family = AF_INET;
+            pAddr4->sin_port = 0;
+            pAddr4->sin_addr.S_un.S_addr = entry->IP.Data32[3];
+        } else {
+            // Invalid address family - skip this entry
+            Dll_Free(pBlock);
+            continue;
+        }
+
+        // Copy canonical name if provided
+        if (pNodeName && nodeNameLen > 0) {
+            pInfo->ai_canonname = (PWSTR)(pBlock + sizeof(ADDRINFOW) + addrSize);
+            wcscpy(pInfo->ai_canonname, pNodeName);
+        }
+
+        // Link into list
+        if (!pHead) {
+            pHead = pInfo;
+            pTail = pInfo;
+        } else {
+            pTail->ai_next = pInfo;
+            pTail = pInfo;
+        }
+    }
+
+    return pHead;
+}
+
+//---------------------------------------------------------------------------
+// WSA_IsSbieAddrInfoCore
+//
+// Core detection logic for all ADDRINFO variants.
+// Checks if a structure was allocated by our hook using the magic marker.
+//
+// CRITICAL: Detection must be 100% reliable. False positive → LocalFree crash.
+// False negative → system HeapFree crash.
+//
+// Parameters:
+//   pBlock        - Pointer to the ADDRINFO structure
+//   structSize    - Size of the specific structure (ADDRINFOW, ADDRINFOA, ADDRINFOEXW)
+//   ai_addr       - The ai_addr field value
+//   ai_addrlen    - The ai_addrlen field value
+//   ai_family     - The ai_family field value
+//   ai_canonname  - The ai_canonname field (as raw pointer for position check)
+//   isWideChar    - TRUE if canonname is wide string (WCHAR*), FALSE for ANSI (char*)
+//
+// Returns TRUE if this is our allocation, FALSE otherwise.
+//---------------------------------------------------------------------------
+
+static BOOLEAN WSA_IsSbieAddrInfoCore(
+    BYTE* pBlock,
+    SIZE_T structSize,
+    struct sockaddr* ai_addr,
+    SIZE_T ai_addrlen,
+    int ai_family,
+    void* ai_canonname,
+    BOOLEAN isWideChar)
+{
+    if (!pBlock)
+        return FALSE;
+
+    // Validate ai_addrlen is reasonable (IPv4 or IPv6 sockaddr size)
+    if (ai_addrlen != sizeof(SOCKADDR_IN) && ai_addrlen != sizeof(SOCKADDR_IN6_LH))
+        return FALSE;
+
+    // First check: ai_addr MUST point exactly to structSize offset
+    // This is how we allocate - sockaddr immediately follows the structure
+    if ((BYTE*)ai_addr != pBlock + structSize)
+        return FALSE;
+    
+    // Second check: validate sockaddr family matches ai_family
+    if (ai_addr) {
+        ADDRESS_FAMILY sockFamily = ai_addr->sa_family;
+        if (sockFamily != ai_family)
+            return FALSE;
+    }
+    
+    // Calculate where magic marker should be
+    SIZE_T canonLen = 0;
+    if (ai_canonname) {
+        // Canonname must point exactly to expected offset: structSize + ai_addrlen
+        BYTE* expectedCanonPos = pBlock + structSize + ai_addrlen;
+        if ((BYTE*)ai_canonname != expectedCanonPos)
+            return FALSE;  // Canonname at wrong position - not ours
+        
+        // Calculate canonname length with bounded read
+        __try {
+            if (isWideChar) {
+                SIZE_T len = wcsnlen((WCHAR*)ai_canonname, 256);
+                if (len >= 256)
+                    return FALSE;  // Suspiciously long
+                canonLen = (len + 1) * sizeof(WCHAR);
+            } else {
+                SIZE_T len = strnlen((char*)ai_canonname, 256);
+                if (len >= 256)
+                    return FALSE;
+                canonLen = len + 1;  // ANSI: 1 byte per char + null
+            }
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            return FALSE;  // Can't read canonname - not ours
+        }
+    }
+    
+    // Calculate total block size and magic location
+    SIZE_T totalSize = structSize + ai_addrlen + canonLen + sizeof(ULONG);
+    ULONG* pMagic = (ULONG*)(pBlock + totalSize - sizeof(ULONG));
+    
+    // Final check: read magic marker
+    __try {
+        if (*pMagic == ADDRINFO_SBIE_MAGIC)
+            return TRUE;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Access violation reading magic - not ours
+    }
+
+    return FALSE;
+}
+
+//---------------------------------------------------------------------------
+// WSA_IsSbieAddrInfoW / WSA_IsSbieAddrInfoA / WSA_IsSbieAddrInfoExW
+//
+// Type-safe wrappers around WSA_IsSbieAddrInfoCore
+//---------------------------------------------------------------------------
+
+static BOOLEAN WSA_IsSbieAddrInfoW(PADDRINFOW pAddrInfo)
+{
+    if (!pAddrInfo)
+        return FALSE;
+    return WSA_IsSbieAddrInfoCore(
+        (BYTE*)pAddrInfo,
+        sizeof(ADDRINFOW),
+        pAddrInfo->ai_addr,
+        pAddrInfo->ai_addrlen,
+        pAddrInfo->ai_family,
+        pAddrInfo->ai_canonname,
+        TRUE);  // Wide string
+}
+
+static BOOLEAN WSA_IsSbieAddrInfoA(PADDRINFOA pAddrInfo)
+{
+    if (!pAddrInfo)
+        return FALSE;
+    return WSA_IsSbieAddrInfoCore(
+        (BYTE*)pAddrInfo,
+        sizeof(ADDRINFOA),
+        pAddrInfo->ai_addr,
+        pAddrInfo->ai_addrlen,
+        pAddrInfo->ai_family,
+        pAddrInfo->ai_canonname,
+        FALSE);  // ANSI string
+}
+
+static BOOLEAN WSA_IsSbieAddrInfoExW(PADDRINFOEXW pAddrInfo)
+{
+    if (!pAddrInfo)
+        return FALSE;
+    
+    // Additional check for ADDRINFOEXW: our allocations have these fields NULL/0
+    if (pAddrInfo->ai_blob != NULL || pAddrInfo->ai_bloblen != 0 || pAddrInfo->ai_provider != NULL)
+        return FALSE;
+    
+    return WSA_IsSbieAddrInfoCore(
+        (BYTE*)pAddrInfo,
+        sizeof(ADDRINFOEXW),
+        pAddrInfo->ai_addr,
+        pAddrInfo->ai_addrlen,
+        pAddrInfo->ai_family,
+        pAddrInfo->ai_canonname,
+        TRUE);  // Wide string
+}
+
+//---------------------------------------------------------------------------
+// WSA_ValidateAndFindFilter
+//
+// Helper function to validate domain name and locate matching filter entry
+// Returns: PATTERN* if filter found (domain is filtered), NULL if passthrough
+// Caller must free nameOut_Lwr when done
+// Output parameters:
+//   nameOut_Lwr: Lowercase version of domain (caller must Dll_Free)
+//   ppAux: Pointer to filter aux data (for DNS_ExtractFilterAux)
+//---------------------------------------------------------------------------
+
+static PATTERN* WSA_ValidateAndFindFilter(
+    PCWSTR          pNodeName,
+    WCHAR**         nameOut_Lwr,
+    PVOID**         ppAux)
+{
+    if (!pNodeName || !nameOut_Lwr || !ppAux) {
+        return NULL;
+    }
+
+    // Validate domain name length
+    SIZE_T nameLen = wcslen(pNodeName);
+    if (nameLen == 0 || nameLen > 255) {
+        return NULL;
+    }
+
+    // Allocate and convert to lowercase
+    WCHAR* nameLwr = (WCHAR*)Dll_AllocTemp((ULONG)((nameLen + 1) * sizeof(WCHAR)));
+    if (!nameLwr) {
+        return NULL;
+    }
+    wmemcpy(nameLwr, pNodeName, nameLen);
+    nameLwr[nameLen] = L'\0';
+    _wcslwr(nameLwr);
+
+    // Check exclusion list
+    if (DNS_IsExcluded(nameLwr)) {
+        Dll_Free(nameLwr);
+        return NULL;
+    }
+
+    // Check if domain matches any filter
+    PATTERN* found = DNS_FindPatternInFilterList(nameLwr, (ULONG)-1);
+    if (!found) {
+        Dll_Free(nameLwr);
+        return NULL;
+    }
+
+    // Get aux data
+    PVOID* aux = Pattern_Aux(found);
+    if (!aux || !*aux) {
+        Dll_Free(nameLwr);
+        return NULL;
+    }
+
+    // Check certificate
+    if (!DNS_HasValidCertificate) {
+        Dll_Free(nameLwr);
+        return NULL;
+    }
+
+    *nameOut_Lwr = nameLwr;
+    *ppAux = aux;
+    return found;
+}
+
+//---------------------------------------------------------------------------
+// DNS_TryDoHQuery
+//
+// Helper function to attempt DoH query for passthrough domains
+// Returns: TRUE if DoH succeeded and pResult contains valid response
+//          FALSE if DoH disabled, failed, or no results
+// 
+// Used by: DnsQuery_A, DnsQuery_W, DnsQuery_UTF8, GetAddrInfoW
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNS_TryDoHQuery(
+    const WCHAR* domain,
+    USHORT qtype,
+    LIST* pListOut,  // Output: IP_ENTRY list
+    DOH_RESULT* pFullResult)  // Output: Full DoH result (including CNAME)
+{
+    if (!DoH_IsEnabled() || !domain || !pListOut) {
+        return FALSE;
+    }
+
+    // For non-A/AAAA queries, return success with empty result (NODATA)
+    // This ensures DoH-only mode doesn't leak non-address queries to system DNS
+    // The caller will see an empty result, which is the correct response for
+    // APIs like GetAddrInfo that only return addresses
+    if (qtype != DNS_TYPE_A && qtype != DNS_TYPE_AAAA) {
+        List_Init(pListOut);
+        if (pFullResult) {
+            memset(pFullResult, 0, sizeof(DOH_RESULT));
+            pFullResult->Success = TRUE;
+            pFullResult->Status = 0;  // NOERROR but no records
+            pFullResult->AnswerCount = 0;
+        }
+        return TRUE;  // Success with empty result
+    }
+
+    DOH_RESULT doh_result;
+    if (!DoH_Query(domain, qtype, &doh_result)) {
+        return FALSE;
+    }
+
+    // Don't follow CNAME for passthrough queries - return DoH response as-is
+    // The DoH server already resolved any CNAME and returned both CNAME and A records
+    // Following CNAME here causes issues and duplication
+    
+    // Check for failure cases
+    if (!doh_result.Success || doh_result.Status != 0) {
+        return FALSE;
+    }
+
+    // Return full result (including CNAME info)
+    if (pFullResult) {
+        memcpy(pFullResult, &doh_result, sizeof(DOH_RESULT));
+    }
+
+    // Convert DOH_RESULT to IP_ENTRY list
+    List_Init(pListOut);
+    for (int i = 0; i < doh_result.AnswerCount; i++) {
+        IP_ENTRY* pEntry = (IP_ENTRY*)Dll_Alloc(sizeof(IP_ENTRY));
+        if (pEntry) {
+            pEntry->Type = doh_result.Answers[i].Type;
+            memcpy(&pEntry->IP, &doh_result.Answers[i].IP, sizeof(IP_ADDRESS));
+            List_Insert_After(pListOut, NULL, pEntry);
+        }
+    }
+
+    // Return TRUE even for empty result (NODATA/CNAME-only)
+    // This is a valid DNS response - domain exists but has no records of requested type
+    // Examples: AAAA query for a domain with only A records, or CNAME pointing to IPv4-only target
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_FreeIPEntryList
+//
+// Helper function to free IP_ENTRY list created by DNS_TryDoHQuery
+//---------------------------------------------------------------------------
+
+static void DNS_FreeIPEntryList(LIST* pList)
+{
+    if (!pList) return;
+    
+    IP_ENTRY* pEntry = (IP_ENTRY*)List_Head(pList);
+    while (pEntry) {
+        IP_ENTRY* pNext = (IP_ENTRY*)List_Next(pEntry);
+        Dll_Free(pEntry);
+        pEntry = pNext;
+    }
+}
+
+//---------------------------------------------------------------------------
+// DNS_DoHQueryForFamily
+//
+// Unified DoH query helper for address-family-based lookups (GetAddrInfo style)
+// Handles AF_UNSPEC by querying both A and AAAA, merging results.
+//
+// Parameters:
+//   domain       - Domain name to query
+//   family       - AF_INET, AF_INET6, or AF_UNSPEC
+//   pListOut     - Output: Combined IP_ENTRY list (caller must free with DNS_FreeIPEntryList)
+//
+// Returns: TRUE if any records were returned, FALSE on failure
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNS_DoHQueryForFamily(
+    const WCHAR* domain,
+    int family,
+    LIST* pListOut)
+{
+    if (!DoH_IsEnabled() || !domain || !pListOut) {
+        return FALSE;
+    }
+
+    List_Init(pListOut);
+    BOOLEAN hasResults = FALSE;
+
+    if (family == AF_UNSPEC) {
+        // Query both A and AAAA records
+        LIST doh_list_a;
+        DOH_RESULT doh_result_a;
+        if (DNS_TryDoHQuery(domain, DNS_TYPE_A, &doh_list_a, &doh_result_a)) {
+            // Move A records to combined list
+            IP_ENTRY* pEntry = (IP_ENTRY*)List_Head(&doh_list_a);
+            while (pEntry) {
+                IP_ENTRY* pNext = (IP_ENTRY*)List_Next(pEntry);
+                List_Remove(&doh_list_a, pEntry);
+                List_Insert_After(pListOut, NULL, pEntry);
+                pEntry = pNext;
+            }
+            hasResults = TRUE;
+        }
+
+        LIST doh_list_aaaa;
+        DOH_RESULT doh_result_aaaa;
+        if (DNS_TryDoHQuery(domain, DNS_TYPE_AAAA, &doh_list_aaaa, &doh_result_aaaa)) {
+            // Append AAAA records to combined list
+            IP_ENTRY* pEntry = (IP_ENTRY*)List_Head(&doh_list_aaaa);
+            while (pEntry) {
+                IP_ENTRY* pNext = (IP_ENTRY*)List_Next(pEntry);
+                List_Remove(&doh_list_aaaa, pEntry);
+                List_Insert_After(pListOut, NULL, pEntry);
+                pEntry = pNext;
+            }
+            hasResults = TRUE;
+        }
+    }
+    else {
+        // Query specific family
+        WORD qtype = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+        DOH_RESULT doh_result;
+        if (DNS_TryDoHQuery(domain, qtype, pListOut, &doh_result)) {
+            hasResults = TRUE;
+        }
+    }
+
+    return hasResults;
+}
+
+//---------------------------------------------------------------------------
+// DNS_DoHBuildWSALookup
+//
+// Unified DoH helper for WSALookupService - creates a WSA_LOOKUP structure
+// with DoH results ready to be returned by WSALookupServiceNextW.
+//
+// Parameters:
+//   lpqsRestrictions - Original WSA query parameters
+//   lphLookup        - Output handle
+//
+// Returns: NO_ERROR on success, SOCKET_ERROR on failure (call GetLastError)
+//---------------------------------------------------------------------------
+
+static int DNS_DoHBuildWSALookup(
+    LPWSAQUERYSETW lpqsRestrictions,
+    LPHANDLE lphLookup)
+{
+    if (!DoH_IsEnabled() || !lpqsRestrictions || !lpqsRestrictions->lpszServiceInstanceName || !lphLookup) {
+        return SOCKET_ERROR;
+    }
+
+    WORD queryType = WSA_IsIPv6Query(lpqsRestrictions->lpServiceClassId) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+    
+    LIST doh_list;
+    DOH_RESULT doh_result;
+    if (!DNS_TryDoHQuery(lpqsRestrictions->lpszServiceInstanceName, queryType, &doh_list, &doh_result)) {
+        SetLastError(WSAHOST_NOT_FOUND);
+        return SOCKET_ERROR;
+    }
+
+    HANDLE fakeHandle = (HANDLE)Dll_Alloc(sizeof(ULONG_PTR));
+    if (!fakeHandle) {
+        DNS_FreeIPEntryList(&doh_list);
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return SOCKET_ERROR;
+    }
+
+    *lphLookup = fakeHandle;
+    
+    WSA_LOOKUP* pLookup = WSA_GetLookup(fakeHandle, TRUE);
+    if (!pLookup) {
+        Dll_Free(fakeHandle);
+        DNS_FreeIPEntryList(&doh_list);
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return SOCKET_ERROR;
+    }
+
+    pLookup->Filtered = TRUE;
+    pLookup->NoMore = FALSE;
+    pLookup->QueryType = queryType;
+
+    ULONG nameLen = (ULONG)wcslen(lpqsRestrictions->lpszServiceInstanceName);
+    pLookup->DomainName = Dll_Alloc((nameLen + 1) * sizeof(WCHAR));
+    if (pLookup->DomainName) {
+        wcscpy_s(pLookup->DomainName, nameLen + 1, lpqsRestrictions->lpszServiceInstanceName);
+    }
+
+    pLookup->Namespace = lpqsRestrictions->dwNameSpace;
+
+    if (lpqsRestrictions->lpServiceClassId) {
+        pLookup->ServiceClassId = Dll_Alloc(sizeof(GUID));
+        if (pLookup->ServiceClassId) {
+            memcpy(pLookup->ServiceClassId, lpqsRestrictions->lpServiceClassId, sizeof(GUID));
+        }
+    }
+
+    // Convert DoH results to IP_ENTRY list in lookup structure
+    pLookup->pEntries = Dll_Alloc(sizeof(LIST));
+    if (pLookup->pEntries) {
+        List_Init(pLookup->pEntries);
+        
+        IP_ENTRY* entry = (IP_ENTRY*)List_Head(&doh_list);
+        while (entry) {
+            IP_ENTRY* newEntry = (IP_ENTRY*)Dll_Alloc(sizeof(IP_ENTRY));
+            if (newEntry) {
+                newEntry->Type = entry->Type;
+                memcpy(&newEntry->IP, &entry->IP, sizeof(IP_ADDRESS));
+                List_Insert_After(pLookup->pEntries, NULL, newEntry);
+            }
+            entry = (IP_ENTRY*)List_Next(entry);
+        }
+    }
+
+    // Check if we have any IP entries matching the query type
+    BOOLEAN has_matching_ips = FALSE;
+    if (pLookup->pEntries) {
+        IP_ENTRY* check_entry = (IP_ENTRY*)List_Head(pLookup->pEntries);
+        BOOLEAN isIPv6Query = WSA_IsIPv6Query(lpqsRestrictions->lpServiceClassId);
+        while (check_entry) {
+            if ((isIPv6Query && check_entry->Type == AF_INET6) ||
+                (!isIPv6Query && check_entry->Type == AF_INET)) {
+                has_matching_ips = TRUE;
+                break;
+            }
+            check_entry = (IP_ENTRY*)List_Next(check_entry);
+        }
+    }
+
+    // If no matching IPs (CNAME-only or NODATA), mark as NoMore for proper WSA_E_NO_MORE handling
+    if (!has_matching_ips) {
+        pLookup->NoMore = TRUE;
+    }
+
+    WSA_LogIntercepted(lpqsRestrictions->lpszServiceInstanceName,
+        lpqsRestrictions->lpServiceClassId,
+        lpqsRestrictions->dwNameSpace,
+        fakeHandle,
+        FALSE,  // not blocked
+        pLookup->pEntries,
+        TRUE);  // is_doh = TRUE (DoH resolution)
+
+    DNS_FreeIPEntryList(&doh_list);
+    return NO_ERROR;
+}
+
+//---------------------------------------------------------------------------
+// WSA_ConvertAddrInfoWToEx
+//
+// Convert ADDRINFOW chain to ADDRINFOEXW chain for GetAddrInfoExW responses.
+// Uses the DNS filter private heap for allocations.
+//
+// Parameters:
+//   pResultW   - Input ADDRINFOW chain (will be freed after conversion)
+//   ppResultEx - Output: ADDRINFOEXW chain
+//
+// Returns: TRUE on success, FALSE on failure (result freed on failure)
+//---------------------------------------------------------------------------
+
+static BOOLEAN WSA_ConvertAddrInfoWToEx(
+    PADDRINFOW pResultW,
+    PADDRINFOEXW* ppResultEx)
+{
+    if (!pResultW || !ppResultEx) {
+        return FALSE;
+    }
+
+    PADDRINFOEXW pHead = NULL;
+    PADDRINFOEXW pTail = NULL;
+    HANDLE hHeap = DNS_GetFilterHeap();
+    
+    if (!hHeap) {
+        WSA_FreeAddrInfoW(pResultW);
+        return FALSE;
+    }
+
+    for (PADDRINFOW pW = pResultW; pW; pW = pW->ai_next) {
+        SIZE_T canonLen = 0;
+        if (pW->ai_canonname) {
+            SIZE_T len = wcslen(pW->ai_canonname) + 1;
+            if (len > 256) len = 256;  // DNS hostname limit (defensive cap)
+            canonLen = len * sizeof(WCHAR);
+        }
+        SIZE_T blockSize = sizeof(ADDRINFOEXW) + pW->ai_addrlen + canonLen;
+        
+        BYTE* pBlock = (BYTE*)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, blockSize);
+        if (!pBlock) {
+            // Cleanup on failure
+            while (pHead) {
+                PADDRINFOEXW pNext = pHead->ai_next;
+                HeapFree(hHeap, 0, pHead);
+                pHead = pNext;
+            }
+            WSA_FreeAddrInfoW(pResultW);
+            return FALSE;
+        }
+
+        PADDRINFOEXW pEx = (PADDRINFOEXW)pBlock;
+        pEx->ai_flags = pW->ai_flags;
+        pEx->ai_family = pW->ai_family;
+        pEx->ai_socktype = pW->ai_socktype;
+        pEx->ai_protocol = pW->ai_protocol;
+        pEx->ai_addrlen = pW->ai_addrlen;
+        pEx->ai_addr = (struct sockaddr*)(pBlock + sizeof(ADDRINFOEXW));
+        memcpy(pEx->ai_addr, pW->ai_addr, pW->ai_addrlen);
+        pEx->ai_blob = NULL;
+        pEx->ai_bloblen = 0;
+        pEx->ai_provider = NULL;
+        pEx->ai_next = NULL;
+
+        if (pW->ai_canonname && canonLen > 0) {
+            pEx->ai_canonname = (PWSTR)(pBlock + sizeof(ADDRINFOEXW) + pW->ai_addrlen);
+            wcscpy(pEx->ai_canonname, pW->ai_canonname);
+        }
+
+        if (!pHead) {
+            pHead = pEx;
+            pTail = pEx;
+        } else {
+            pTail->ai_next = pEx;
+            pTail = pEx;
+        }
+    }
+
+    WSA_FreeAddrInfoW(pResultW);
+    *ppResultEx = pHead;
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_DoHQueryForGetAddrInfoExW
+//
+// Unified DoH query helper for GetAddrInfoExW - handles family-based queries
+// and conversion to ADDRINFOEXW.
+//
+// Parameters:
+//   pName      - Domain name
+//   family     - AF_INET, AF_INET6, or AF_UNSPEC
+//   hints      - Optional ADDRINFOEXW hints
+//   pServiceName - Optional service name for port resolution
+//   ppResult   - Output: ADDRINFOEXW chain
+//
+// Returns: TRUE on success, FALSE on failure
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNS_DoHQueryForGetAddrInfoExW(
+    PCWSTR pName,
+    int family,
+    const ADDRINFOEXW* hints,
+    PCWSTR pServiceName,
+    PADDRINFOEXW* ppResult)
+{
+    if (!DoH_IsEnabled() || !pName || !ppResult) {
+        return FALSE;
+    }
+
+    LIST doh_list;
+    if (!DNS_DoHQueryForFamily(pName, family, &doh_list)) {
+        return FALSE;
+    }
+
+    // Build basic ADDRINFOW first
+    ADDRINFOW hintsW = {0};
+    if (hints) {
+        hintsW.ai_flags = hints->ai_flags;
+        hintsW.ai_family = hints->ai_family;
+        hintsW.ai_socktype = hints->ai_socktype;
+        hintsW.ai_protocol = hints->ai_protocol;
+    }
+    
+    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, &doh_list);
+    DNS_FreeIPEntryList(&doh_list);
+    
+    if (!pResultW) {
+        return FALSE;
+    }
+
+    // Convert to ADDRINFOEXW
+    if (!WSA_ConvertAddrInfoWToEx(pResultW, ppResult)) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// WSA_GetAddrInfoW
+//
+// Hook for GetAddrInfoW - filters DNS queries and synthesizes responses
+// Used by WinHTTP, curl, and many modern applications
+//---------------------------------------------------------------------------
+
+_FX INT WSAAPI WSA_GetAddrInfoW(
+    PCWSTR          pNodeName,
+    PCWSTR          pServiceName,
+    const ADDRINFOW* pHints,
+    PADDRINFOW*     ppResult)
+{
+    int family = pHints ? pHints->ai_family : AF_UNSPEC;
+    
+    // Debug log entry
+    GAI_LogDebugEntry(L"GetAddrInfoW", pNodeName, pServiceName, family);
+    
+    // Check if we're being called from within system's getaddrinfo (ANSI)
+    // If so, passthrough to avoid returning our private heap allocations
+    // that the system will try to free during ANSI conversion
+    if (WSA_SystemGetAddrInfoDepth > 0) {
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+    
+    if (!DNS_FilterEnabled || !pNodeName || !ppResult) {
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // Convert to lowercase for checking
+    SIZE_T nameLen = wcslen(pNodeName);
+    if (nameLen == 0 || nameLen > 255) {
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+    
+    WCHAR* nameLwr = (WCHAR*)Dll_AllocTemp((ULONG)((nameLen + 1) * sizeof(WCHAR)));
+    if (!nameLwr) {
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+    wmemcpy(nameLwr, pNodeName, nameLen);
+    nameLwr[nameLen] = L'\0';
+    _wcslwr(nameLwr);
+
+    // Check if excluded - if so, bypass all filtering and DoH
+    if (DNS_IsExcluded(nameLwr)) {
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"excluded from filtering");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // Exclude DoH server hostnames to prevent re-entrancy
+    if (DoH_IsServerHostname(nameLwr)) {
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"DoH server");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // If a DoH query is already active, bypass to prevent re-entrancy from worker threads
+    if (DoH_IsQueryActive()) {
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"DoH query active");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // Use shared validation helper
+    PVOID* aux = NULL;
+    PATTERN* found = DNS_FindPatternInFilterList(nameLwr, (ULONG)-1);
+    
+    if (!found) {
+        // No filter match - use DoH exclusively if enabled, otherwise system DNS
+        if (DoH_IsEnabled()) {
+            if (DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"[GetAddrInfoW] DoH path: domain=%s, family=%d", 
+                    pNodeName, family);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
+            
+            LIST doh_list;
+            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list)) {
+                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
+                if (pResult) {
+                    GAI_LogIntercepted(L"GetAddrInfoW DoH", pNodeName, family, &doh_list, TRUE);
+                    DNS_FreeIPEntryList(&doh_list);
+                    Dll_Free(nameLwr);
+                    *ppResult = pResult;
+                    return 0;
+                }
+            }
+            
+            // DoH query failed or returned no records - return error instead of fallback
+            DNS_FreeIPEntryList(&doh_list);
+            GAI_LogPassthrough(L"GetAddrInfoW DoH", pNodeName, family, L"no DoH records");
+            Dll_Free(nameLwr);
+            return WSAHOST_NOT_FOUND;
+        }
+        
+        // DoH disabled - use system DNS
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no filter match");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // Domain matches filter - check certificate
+    extern BOOLEAN DNS_HasValidCertificate;
+    if (!DNS_HasValidCertificate) {
+        // Domain matches filter but no cert - use DoH exclusively if enabled, otherwise passthrough
+        if (DoH_IsEnabled()) {
+            LIST doh_list;
+            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list)) {
+                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
+                if (pResult) {
+                    GAI_LogIntercepted(L"GetAddrInfoW DoH (no cert)", pNodeName, family, &doh_list, TRUE);
+                    DNS_FreeIPEntryList(&doh_list);
+                    Dll_Free(nameLwr);
+                    *ppResult = pResult;
+                    return 0;
+                }
+            }
+            
+            // DoH query failed or returned no records - return error instead of fallback
+            DNS_FreeIPEntryList(&doh_list);
+            GAI_LogPassthrough(L"GetAddrInfoW DoH (no cert)", pNodeName, family, L"no DoH records");
+            Dll_Free(nameLwr);
+            return WSAHOST_NOT_FOUND;
+        }
+        
+        // DoH disabled - use system DNS
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no certificate");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    aux = Pattern_Aux(found);
+    if (!aux || !*aux) {
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    LIST* pEntries = NULL;
+    DNS_TYPE_FILTER* type_filter = NULL;
+    DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
+
+    // Block mode (no IPs configured)
+    if (!pEntries) {
+        GAI_LogBlocked(L"GetAddrInfoW", pNodeName, family);
+        Dll_Free(nameLwr);
+        *ppResult = NULL;
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+        return WSAHOST_NOT_FOUND;
+    }
+
+    // Determine query type from hints
+    WORD wType = DNS_TYPE_A;  // Default to A
+    if (pHints) {
+        if (pHints->ai_family == AF_INET6)
+            wType = DNS_TYPE_AAAA;
+        else if (pHints->ai_family == AF_UNSPEC)
+            wType = DNS_TYPE_A;  // Will return both if available
+    }
+
+    // Check type filter
+    if (type_filter && !DNS_IsTypeInFilterList(type_filter, wType)) {
+        // Type not in filter list or negated - try DoH first, then passthrough
+        if (DoH_IsEnabled()) {
+            LIST doh_list;
+            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list)) {
+                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
+                if (pResult) {
+                    GAI_LogIntercepted(L"GetAddrInfoW DoH (type passthrough)", pNodeName, family, &doh_list, TRUE);
+                    DNS_FreeIPEntryList(&doh_list);
+                    Dll_Free(nameLwr);
+                    *ppResult = pResult;
+                    return 0;
+                }
+            }
+            
+            // DoH query failed or returned no records - return error instead of fallback
+            DNS_FreeIPEntryList(&doh_list);
+            GAI_LogPassthrough(L"GetAddrInfoW DoH (type passthrough)", pNodeName, family, L"no DoH records");
+            Dll_Free(nameLwr);
+            return WSAHOST_NOT_FOUND;
+        }
+        
+        // DoH disabled - passthrough to system DNS
+        GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"type not in filter");
+        Dll_Free(nameLwr);
+        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    }
+
+    // Build synthesized response
+    PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, pEntries);
+    if (!pResult) {
+        // No matching entries for requested family - return NODATA-like error
+        GAI_LogNoData(L"GetAddrInfoW", pNodeName, family);
+        Dll_Free(nameLwr);
+        *ppResult = NULL;
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSANO_DATA);
+        return WSANO_DATA;
+    }
+
+    // Log successful interception
+    if (pEntries) {
+        GAI_LogIntercepted(L"GetAddrInfoW", pNodeName, family, pEntries, FALSE);
+    }
+    
+    Dll_Free(nameLwr);
+    *ppResult = pResult;
+    return 0;  // Success
+}
+
+//---------------------------------------------------------------------------
+// WSA_getaddrinfo
+//
+// Hook for getaddrinfo (ANSI version) - Just pass through to system
+// The system's getaddrinfo will internally call GetAddrInfoW which we intercept
+// This avoids heap ownership issues with Unicode->ANSI conversion
+//---------------------------------------------------------------------------
+
+_FX INT WSAAPI WSA_getaddrinfo(
+    PCSTR           pNodeName,
+    PCSTR           pServiceName,
+    const ADDRINFOA* pHints,
+    PADDRINFOA*     ppResult)
+{
+    // Increment re-entrancy counter before calling system
+    // System's getaddrinfo will internally call GetAddrInfoW, which we hook
+    // We need to passthrough in that case to avoid heap allocation mismatches
+    InterlockedIncrement(&WSA_SystemGetAddrInfoDepth);
+    
+    INT result = __sys_getaddrinfo(pNodeName, pServiceName, pHints, ppResult);
+    
+    InterlockedDecrement(&WSA_SystemGetAddrInfoDepth);
+    
+    return result;
+}
+
+//---------------------------------------------------------------------------
+// WSA_GetAddrInfoExW
+//
+// Hook for GetAddrInfoExW - extended async version
+// For async calls, we passthrough to system - DnsQueryEx hook handles filtering
+// For sync calls, we intercept directly when a filter matches
+//---------------------------------------------------------------------------
+
+_FX INT WSAAPI WSA_GetAddrInfoExW(
+    PCWSTR          pName,
+    PCWSTR          pServiceName,
+    DWORD           dwNameSpace,
+    LPGUID          lpNspId,
+    const ADDRINFOEXW* hints,
+    PADDRINFOEXW*   ppResult,
+    struct timeval* timeout,
+    LPOVERLAPPED    lpOverlapped,
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE lpCompletionRoutine,
+    LPHANDLE        lpHandle)
+{
+    int family = hints ? hints->ai_family : AF_UNSPEC;
+    BOOLEAN isAsync = (lpOverlapped || lpCompletionRoutine) ? TRUE : FALSE;
+    
+    // Debug log entry
+    GAI_LogDebugEntry(L"GetAddrInfoExW", pName, pServiceName, family);
+    
+    // Check basic preconditions - passthrough if not filterable
+    if (!DNS_FilterEnabled || !pName || !ppResult) {
+        if (isAsync) {
+            // Set re-entrancy flag to prevent WSALookupService from double-intercepting
+            WSA_SetInGetAddrInfoEx(TRUE);
+            INT result = __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                         hints, ppResult, timeout, lpOverlapped,
+                                         lpCompletionRoutine, lpHandle);
+            WSA_SetInGetAddrInfoEx(FALSE);
+            return result;
+        }
+        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                     hints, ppResult, timeout, lpOverlapped,
+                                     lpCompletionRoutine, lpHandle);
+    }
+
+    // Use shared validation helper to check domain and find filter
+    WCHAR* nameLwr = NULL;
+    PVOID* aux = NULL;
+    PATTERN* found = WSA_ValidateAndFindFilter(pName, &nameLwr, &aux);
+    if (!found) {
+        GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, L"excluded or no filter match");
+        if (nameLwr) Dll_Free(nameLwr);
+        if (isAsync) {
+            // Set re-entrancy flag to prevent WSALookupService from double-intercepting
+            WSA_SetInGetAddrInfoEx(TRUE);
+            INT result = __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                         hints, ppResult, timeout, lpOverlapped,
+                                         lpCompletionRoutine, lpHandle);
+            WSA_SetInGetAddrInfoEx(FALSE);
+            return result;
+        }
+        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                     hints, ppResult, timeout, lpOverlapped,
+                                     lpCompletionRoutine, lpHandle);
+    }
+
+    if (!nameLwr) {
+        if (isAsync) {
+            WSA_SetInGetAddrInfoEx(TRUE);
+            INT result = __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                         hints, ppResult, timeout, lpOverlapped,
+                                         lpCompletionRoutine, lpHandle);
+            WSA_SetInGetAddrInfoEx(FALSE);
+            return result;
+        }
+        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                     hints, ppResult, timeout, lpOverlapped,
+                                     lpCompletionRoutine, lpHandle);
+    }
+
+    // --- Domain matches a filter, we handle it directly (sync or async) ---
+    
+    LIST* pEntries = NULL;
+    DNS_TYPE_FILTER* type_filter = NULL;
+    DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
+
+    Dll_Free(nameLwr);
+
+    // Determine query type from hints
+    WORD wType = DNS_TYPE_A;  // Default to A
+    if (hints) {
+        if (hints->ai_family == AF_INET6)
+            wType = DNS_TYPE_AAAA;
+        else if (hints->ai_family == AF_UNSPEC)
+            wType = DNS_TYPE_A;  // Will return both if available
+    }
+
+    // Check type filter (e.g., NetworkDnsFilter=example.com/A,AAAA)
+    // If the requested type isn't allowed, try DoH first, then passthrough to system (async or sync)
+    if (type_filter && !DNS_IsTypeInFilterList(type_filter, wType)) {
+        // Try DoH for negated type passthrough queries
+        PADDRINFOEXW pResultEx = NULL;
+        if (DNS_DoHQueryForGetAddrInfoExW(pName, family, hints, pServiceName, &pResultEx)) {
+            GAI_LogPassthrough(L"GetAddrInfoExW DoH (type passthrough)", pName, family, L"success");
+            *ppResult = pResultEx;
+            if (lpHandle) *lpHandle = NULL;
+            return 0;
+        }
+        
+        // DoH failed or disabled
+        if (DoH_IsEnabled()) {
+            // DoH enabled but failed - return error instead of fallback
+            GAI_LogPassthrough(L"GetAddrInfoExW DoH (type passthrough)", pName, family, L"no DoH records");
+            if (ppResult) *ppResult = NULL;
+            if (lpHandle) *lpHandle = NULL;
+            if (__sys_WSASetLastError)
+                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+            return WSAHOST_NOT_FOUND;
+        }
+        
+        // DoH disabled - passthrough to system DNS
+        GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, L"type not in filter");
+        if (isAsync) {
+            WSA_SetInGetAddrInfoEx(TRUE);
+            INT result = __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                         hints, ppResult, timeout, lpOverlapped,
+                                         lpCompletionRoutine, lpHandle);
+            WSA_SetInGetAddrInfoEx(FALSE);
+            return result;
+        }
+        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                     hints, ppResult, timeout, lpOverlapped,
+                                     lpCompletionRoutine, lpHandle);
+    }
+
+    // Block mode - domain is blocked
+    if (!pEntries) {
+        GAI_LogBlocked(L"GetAddrInfoExW", pName, family);
+        
+        if (ppResult)
+            *ppResult = NULL;
+        if (lpHandle)
+            *lpHandle = NULL;
+        
+        // Set error for both sync and async
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+        
+        // For async calls that we're blocking synchronously:
+        // Return error immediately - don't call completion routine
+        // The application will see the error return value and handle it
+        // (Completion routine is only called for truly async operations)
+        
+        // Return immediate error (not WSA_IO_PENDING) - operation never started
+        return WSAHOST_NOT_FOUND;
+    }
+
+    // For GetAddrInfoExW, we need to build ADDRINFOEXW structures
+    // For simplicity, we'll use the simpler ADDRINFOW version and adapt
+    ADDRINFOW hintsW = {0};
+    if (hints) {
+        hintsW.ai_flags = hints->ai_flags;
+        hintsW.ai_family = hints->ai_family;
+        hintsW.ai_socktype = hints->ai_socktype;
+        hintsW.ai_protocol = hints->ai_protocol;
+    }
+
+    // Build basic ADDRINFOW first
+    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, pEntries);
+    if (!pResultW) {
+        GAI_LogNoData(L"GetAddrInfoExW", pName, family);
+        
+        if (ppResult)
+            *ppResult = NULL;
+        if (lpHandle)
+            *lpHandle = NULL;
+        
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSANO_DATA);
+        
+        // For async calls, return error immediately (don't call completion routine)
+        // The application will see the error return value
+        
+        return WSANO_DATA;
+    }
+
+    // Convert ADDRINFOW to ADDRINFOEXW using helper
+    PADDRINFOEXW pResultEx = NULL;
+    if (!WSA_ConvertAddrInfoWToEx(pResultW, &pResultEx)) {
+        // pResultW is freed by the helper on failure
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSA_NOT_ENOUGH_MEMORY);
+        return WSA_NOT_ENOUGH_MEMORY;
+    }
+
+    // Log successful interception
+    if (pEntries) {
+        GAI_LogIntercepted(L"GetAddrInfoExW", pName, family, pEntries, FALSE);
+    }
+    
+    *ppResult = pResultEx;
+    
+    // For async calls that we complete synchronously:
+    // According to GetAddrInfoExW behavior, if we complete immediately, we should:
+    // 1. Return 0 (not WSA_IO_PENDING)
+    // 2. NOT call the completion routine (only called for truly async operations)
+    // 3. Results are immediately available in *ppResult
+    // The application will see return value 0 and use *ppResult directly
+    
+    // Return immediate success (not WSA_IO_PENDING)
+    // For both sync and async, the result is immediately available in *ppResult
+    return 0;
+}
+
+//---------------------------------------------------------------------------
+// DNS_IsOurAddrInfo
+//
+// Helper function to check if an ADDRINFO structure belongs to us
+// Returns TRUE if it has our magic marker (AI_SBIE_MARKER in ai_flags)
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN DNS_IsOurAddrInfo(int ai_flags)
+{
+    return (ai_flags & AI_SBIE_MARKER) != 0;
+}
+
+//---------------------------------------------------------------------------
+// WSA_freeaddrinfo
+//
+// Hook for freeaddrinfo (ANSI) - frees ADDRINFOA structures
+// FIX: Now uses HeapAlloc/HeapFree instead of LocalAlloc to match system allocator
+//---------------------------------------------------------------------------
+
+_FX VOID WSAAPI WSA_freeaddrinfo(PADDRINFOA pAddrInfo)
+{
+    if (!pAddrInfo) {
+        if (__sys_freeaddrinfo)
+            __sys_freeaddrinfo(pAddrInfo);
+        return;
+    }
+
+    // Check for our magic marker using helper function
+    // If not ours, pass to system free
+    if (!DNS_IsOurAddrInfo(pAddrInfo->ai_flags)) {
+        if (__sys_freeaddrinfo)
+            __sys_freeaddrinfo(pAddrInfo);
+        return;
+    }
+
+    // This is our allocation - free from our private heap
+    // FIX: Use private heap to distinguish OUR allocations from system allocations
+    HANDLE hHeap = DNS_GetFilterHeap();
+    if (!hHeap) {
+        // Private heap not initialized - pass to system
+        if (__sys_freeaddrinfo)
+            __sys_freeaddrinfo(pAddrInfo);
+        return;
+    }
+    
+    // CRITICAL: WSA_BuildAddrInfoList allocates everything in ONE block!
+    // ADDRINFOW + sockaddr + canonname are all part of the same allocation
+    // We must NOT try to free ai_addr or ai_canonname separately!
+    
+    BOOLEAN freedByUs = FALSE;
+    
+    // Free our allocations from private heap
+    while (pAddrInfo) {
+        PADDRINFOA pNext = pAddrInfo->ai_next;
+        
+        // Validate heap before freeing to catch corruption early
+        // This prevents crashes in HeapFree if heap metadata is corrupted
+        if (!HeapValidate(hHeap, 0, pAddrInfo)) {
+            // Heap corruption detected - don't attempt to free
+            // This could be double-free, buffer overflow, or use-after-free
+            break;
+        }
+        
+        // Just free the main block - ai_addr and ai_canonname are offsets within it!
+        // DO NOT free embedded pointers separately - they're not separate allocations
+        HeapFree(hHeap, 0, pAddrInfo);
+        freedByUs = TRUE;
+        pAddrInfo = pNext;
+    }
+}
+
+//---------------------------------------------------------------------------
+// WSA_FreeAddrInfoW
+//
+// Hook for FreeAddrInfoW - frees ADDRINFOW structures
+// FIX: Uses private heap to distinguish our allocations from system allocations
+//---------------------------------------------------------------------------
+
+_FX VOID WSAAPI WSA_FreeAddrInfoW(PADDRINFOW pAddrInfo)
+{
+    if (!pAddrInfo) {
+        if (__sys_FreeAddrInfoW)
+            __sys_FreeAddrInfoW(pAddrInfo);
+        return;
+    }
+
+    // Check for our magic marker using helper function
+    // If not ours, pass to system free
+    if (!DNS_IsOurAddrInfo(pAddrInfo->ai_flags)) {
+        if (__sys_FreeAddrInfoW)
+            __sys_FreeAddrInfoW(pAddrInfo);
+        return;
+    }
+
+    // This is our allocation - free from our private heap
+    // FIX: Use private heap to distinguish OUR allocations from system allocations
+    HANDLE hHeap = DNS_GetFilterHeap();
+    if (!hHeap) {
+        // Private heap not initialized - pass to system
+        if (__sys_FreeAddrInfoW)
+            __sys_FreeAddrInfoW(pAddrInfo);
+        return;
+    }
+    
+    // CRITICAL: WSA_BuildAddrInfoList allocates everything in ONE block!
+    // ADDRINFOW + sockaddr + canonname are all part of the same allocation
+    // We must NOT try to free ai_addr or ai_canonname separately!
+    
+    BOOLEAN freedByUs = FALSE;
+    
+    // Free our allocations from private heap
+    while (pAddrInfo) {
+        PADDRINFOW pNext = pAddrInfo->ai_next;
+        
+        // Validate heap before freeing to catch corruption early
+        // This prevents crashes in HeapFree if heap metadata is corrupted
+        if (!HeapValidate(hHeap, 0, pAddrInfo)) {
+            // Heap corruption detected - don't attempt to free
+            // This could be double-free, buffer overflow, or use-after-free
+            break;
+        }
+        
+        // Just free the main block - ai_addr and ai_canonname are offsets within it!
+        // DO NOT free embedded pointers separately - they're not separate allocations
+        HeapFree(hHeap, 0, pAddrInfo);
+        freedByUs = TRUE;
+        pAddrInfo = pNext;
+    }
+}
+
+//---------------------------------------------------------------------------
+// WSA_FreeAddrInfoExW
+//
+// Hook for FreeAddrInfoExW - frees ADDRINFOEXW structures
+// FIX: Uses private heap to distinguish our allocations from system allocations
+//---------------------------------------------------------------------------
+
+_FX VOID WSAAPI WSA_FreeAddrInfoExW(PADDRINFOEXW pAddrInfoEx)
+{
+    if (!pAddrInfoEx) {
+        if (__sys_FreeAddrInfoExW)
+            __sys_FreeAddrInfoExW(pAddrInfoEx);
+        return;
+    }
+
+    // Check for our magic marker using helper function
+    // If not ours, pass to system free
+    if (!DNS_IsOurAddrInfo(pAddrInfoEx->ai_flags)) {
+        if (__sys_FreeAddrInfoExW)
+            __sys_FreeAddrInfoExW(pAddrInfoEx);
+        return;
+    }
+
+    // This is our allocation - free from our private heap
+    // FIX: Use private heap to distinguish OUR allocations from system allocations
+    HANDLE hHeap = DNS_GetFilterHeap();
+    if (!hHeap) {
+        // Private heap not initialized - pass to system
+        if (__sys_FreeAddrInfoExW)
+            __sys_FreeAddrInfoExW(pAddrInfoEx);
+        return;
+    }
+    
+    // CRITICAL: Our implementation allocates everything in ONE block!
+    // ADDRINFOEXW + sockaddr + canonname are all part of the same allocation
+    // We must NOT try to free ai_addr or ai_canonname separately!
+    
+    BOOLEAN freedByUs = FALSE;
+    
+    // Free our allocations from private heap
+    while (pAddrInfoEx) {
+        PADDRINFOEXW pNext = pAddrInfoEx->ai_next;
+        
+        // Validate heap before freeing to catch corruption early
+        // This prevents crashes in HeapFree if heap metadata is corrupted
+        if (!HeapValidate(hHeap, 0, pAddrInfoEx)) {
+            // Heap corruption detected - don't attempt to free
+            // This could be double-free, buffer overflow, or use-after-free
+            break;
+        }
+        
+        // Just free the main block - ai_addr and ai_canonname are offsets within it!
+        // DO NOT free embedded pointers separately - they're not separate allocations
+        HeapFree(hHeap, 0, pAddrInfoEx);
+        freedByUs = TRUE;
+        pAddrInfoEx = pNext;
+    }
+}
+
+//---------------------------------------------------------------------------
+// DNS_Cleanup
+//
+// Cleanup DNS filter resources (called at DLL unload)
+//---------------------------------------------------------------------------
+
+_FX void DNS_Cleanup(void)
+{
+    DoH_Cleanup();
+    
+    // Destroy our private heap if it was created
+    HANDLE hHeap = InterlockedExchangePointer(&g_DnsFilterHeap, NULL);
+    if (hHeap) {
+        HeapDestroy(hHeap);
+    }
+}

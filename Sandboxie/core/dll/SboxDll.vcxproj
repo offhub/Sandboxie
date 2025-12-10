@@ -499,6 +499,7 @@
     <ClCompile Include="dllmain.c" />
     <ClCompile Include="dllmem.c" />
     <ClCompile Include="dllpath.c" />
+    <ClCompile Include="dns_doh.c" />
     <ClCompile Include="dump.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="file.c" />
@@ -810,6 +811,7 @@
     <ClInclude Include="advapi.h" />
     <ClInclude Include="debug.h" />
     <ClInclude Include="dll.h" />
+    <ClInclude Include="dns_doh.h" />
     <ClInclude Include="dns_logging.h" />
     <ClCompile Include="dns_filter.c">
       <FileType>CppCode</FileType>
