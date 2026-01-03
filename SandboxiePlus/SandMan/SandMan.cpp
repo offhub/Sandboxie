@@ -98,8 +98,15 @@ public:
 			else if (msg->message == WM_SHOWWINDOW && msg->wParam)
 			{
 				QWidget* pWidget = QWidget::find((WId)msg->hwnd);
-				if (theGUI && pWidget && (pWidget->windowType() | Qt::Dialog) == Qt::Dialog)
-					theGUI->UpdateTitleTheme(msg->hwnd);
+				if (theGUI && pWidget) {
+					if (theConf->GetBool("Options/CoverWindows", false) && pWidget->isWindow()) {
+						ProtectWindow((HWND)pWidget->winId(), 0x0);    // Clear
+						ProtectWindow((HWND)pWidget->winId());         // Apply protection
+					}
+
+					if (pWidget && (pWidget->windowType() | Qt::Dialog) == Qt::Dialog)
+						theGUI->UpdateTitleTheme(msg->hwnd);
+				}
 			}
 		}
 		return false;
