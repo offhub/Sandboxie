@@ -460,9 +460,29 @@ int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst, USHORT *type)
 	wmemcpy(tmp, src, src_len);
 	tmp[src_len] = L'\0';
 	
+	// Strip IPv6 bracket notation: "[::1]" -> "::1"
+	// Common in URLs and some configuration strings.
+	if (tmp[0] == L'[') {
+		size_t len = wcslen(tmp);
+		if (len >= 2 && tmp[len - 1] == L']') {
+			memmove(tmp, tmp + 1, (len - 2) * sizeof(WCHAR));
+			tmp[len - 2] = L'\0';
+		}
+	}
+	
 	USHORT af = wcschr(tmp, L':') != NULL ? AF_INET6 : AF_INET;
-	//dst->Type = af
-    int ret = _inet_pton(af, tmp, dst->Data);
+	
+	// For IPv4, store at Data[12-15] to maintain consistent format with IPv4-mapped IPv6
+	// IPv6 uses full Data[0-15], IPv4 uses Data[12-15] (same as Data32[3])
+    int ret;
+	if (af == AF_INET) {
+		// Clear first 12 bytes for consistency
+		memset(dst->Data, 0, 12);
+		ret = _inet_pton(af, tmp, &dst->Data[12]);
+	} else {
+		ret = _inet_pton(af, tmp, dst->Data);
+	}
+	
 	if (type) *type = af;
     return ret;
 }
@@ -702,16 +722,9 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 	const wchar_t *p, *op;
 
 	if (af == AF_INET) {
-		struct in_addr temp;
-		int ret = _inet_aton(src, &temp);
-		// IPv4-mapped IPv6 addresses, eg. ::FFFF:192.168.0.1
-		ULONG* Data32 = (ULONG*)dst;
-        Data32[0] = 0;
-        Data32[1] = 0;
-        Data32[2] = 0xFFFF0000;
-		Data32[3] = temp.S_un.S_addr;
-		return ret;
-		//return _inet_aton(src, dst);
+		// Store raw IPv4 address (4 bytes) at dst
+		// Note: dst may point to Data[12] for IPv4-in-IPv6 format, so don't write IPv4-mapped format here
+		return _inet_aton(src, dst);
 	}
 
 	if(af != AF_INET6){
@@ -723,20 +736,38 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 	memset(to, 0, 16);
 
 	p = src;
-	for(i = 0; i < 16 && ipcharok(*p); i+=2){
+	for(i = 0; i < 16 && *p; ){
+		// Handle IPv4-embedded IPv6 tail (e.g., ::ffff:1.2.3.4)
+		// Standard inet_pton allows a dotted-quad only in the last 32 bits.
+		if (wcschr(p, L'.') != NULL) {
+			if (i > 12)
+				return 0;
+			if (_inet_aton(p, (struct in_addr*)&to[i]) != 1)
+				return 0;
+			i += 4;
+			p += wcslen(p);
+			break;
+		}
+
+		if (!ipcharok(*p))
+			break;
+
 		op = p;
 		x = wcstoul(p, (wchar_t**)&p, 16);
 
-		if(x != (unsigned short)x || *p != L':' && !delimchar(*p))
+		if(x != (unsigned short)x || (*p != L':' && !delimchar(*p)))
 			return 0;                       /* parse error */
 
+		if (i + 1 >= 16)
+			return 0;
 		to[i] = (unsigned char)(x>>8);
 		to[i+1] = (unsigned char)x;
+		i += 2;
 		if(*p == L':'){
 			if(*++p == L':'){        /* :: is elided zero short(s) */
 				if (ellipsis)
 					return 0;       /* second :: */
-				ellipsis = i+2;
+				ellipsis = i;
 				p++;
 			}
 		} else if (p == op)             /* strtoul made no progress? */
@@ -745,6 +776,8 @@ int _inet_pton(int af, const wchar_t *src, void *dst) // ip is always in network
 	if (p == src || !delimchar(*p))
 		return 0;                               /* parse error */
 	if(i < 16){
+		if (!ellipsis)
+			return 0; // not enough groups and no '::' elision
 		memmove(&to[ellipsis+16-i], &to[ellipsis], i-ellipsis);
 		memset(&to[ellipsis], 0, 16-i);
 	}

@@ -239,6 +239,24 @@ typedef struct _THREAD_DATA {
 
     ULONG_PTR       rpc_caller;
 
+    //
+    // dns_filter module: re-entrancy flag for GetAddrInfoExW
+    //
+
+    BOOLEAN         dns_in_getaddrinfoex;
+
+    //
+    // dns_doh module: re-entrancy flag for DoH queries
+    //
+
+    BOOLEAN         dns_in_doh_query;
+
+    //
+    // msquic_filter module: DoQ initialization exclusion flag
+    //
+
+    BOOLEAN         msquic_doq_initializing;
+
 } THREAD_DATA;
 
 
@@ -698,6 +716,18 @@ BOOLEAN Trust_Init(HMODULE);
 BOOLEAN HNet_Init(HMODULE);
 
 BOOLEAN WSA_Init(HMODULE);
+
+BOOLEAN WSA_IsBindIPLoopback(void);
+BOOLEAN WSA_IsBindIPEnabled(void);
+BOOLEAN WSA_IsBindIPValid(void);
+
+BOOLEAN WSA_ShouldDisableQuicProtocols(void);
+
+BOOLEAN DNSAPI_Init(HMODULE);
+
+BOOLEAN WINHTTP_Init(HMODULE);
+
+BOOLEAN MsQuic_Init(HMODULE);
 
 BOOLEAN NSI_Init(HMODULE);
 

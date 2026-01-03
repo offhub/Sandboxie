@@ -57,6 +57,18 @@ typedef int (*P_select)(
     void *exceptfds,
     const void *timeout);
 
+// WSAPOLLFD structure for WSAPoll
+typedef struct _WSAPOLLFD_COMPAT {
+    SOCKET  fd;
+    SHORT   events;
+    SHORT   revents;
+} WSAPOLLFD_COMPAT;
+
+typedef int (*P_WSAPoll)(
+    WSAPOLLFD_COMPAT *fdArray,
+    ULONG            nfds,
+    INT              timeout);
+
 typedef int (*P_WSAAsyncSelect)(
     SOCKET  s,
     HWND    hWnd,
@@ -104,6 +116,11 @@ typedef int (*P_bind)(
 typedef int (*P_getsockname)(
     SOCKET         s,
     const void     *name,
+    int            *namelen);
+
+typedef int (*P_getpeername)(
+    SOCKET         s,
+    void           *name,
     int            *namelen);
 
 typedef int (*P_WSAFDIsSet)(
@@ -165,6 +182,15 @@ typedef int (*P_recv)(
     int         len,
     int         flags);
 
+typedef int (*P_WSARecv)(
+    SOCKET                             s,
+    LPWSABUF                           lpBuffers,
+    DWORD                              dwBufferCount,
+    LPDWORD                            lpNumberOfBytesRecvd,
+    LPDWORD                            lpFlags,
+    LPWSAOVERLAPPED                    lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
+
 typedef int (*P_send)(
     SOCKET      s,
     const char* buf,
@@ -178,6 +204,15 @@ typedef int (*P_sendto)(
     int            flags,
     const void     *to,
     int            tolen);
+
+typedef int (*P_WSASend)(
+    SOCKET                             s,
+    LPWSABUF                           lpBuffers,
+    DWORD                              dwBufferCount,
+    LPDWORD                            lpNumberOfBytesSent,
+    DWORD                              dwFlags,
+    LPWSAOVERLAPPED                    lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 
 typedef int (*P_WSASendTo)(
     SOCKET                             s,
@@ -245,6 +280,17 @@ typedef struct _CSADDR_INFO {
     INT iSocketType ;
     INT iProtocol ;
 } CSADDR_INFO, *PCSADDR_INFO, FAR * LPCSADDR_INFO ;
+
+// BLOB structure - defined in Windows SDK (wtypes.h via oleauto.h)
+// Define it here if not already defined to ensure wsa_defs.h is self-contained
+#ifndef _tagBLOB_DEFINED
+#define _tagBLOB_DEFINED
+typedef struct _BLOB {
+    ULONG cbSize;
+    BYTE *pBlobData;
+} BLOB;
+typedef BLOB *LPBLOB;
+#endif
 
 typedef struct _WSAQuerySetW
 {
@@ -322,4 +368,4 @@ typedef ULONG (*P_GetAdaptersAddresses)(
     void* AdapterAddresses,
     PULONG SizePointer);
 
-#endif _WSA_DEFS_H
+#endif // _WSA_DEFS_H

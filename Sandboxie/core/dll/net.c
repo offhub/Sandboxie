@@ -31,6 +31,8 @@
 #include "common/map.h"
 #include "common/str_util.h"
 #include "wsa_defs.h"
+#include "dns_filter.h"
+#include "socket_hooks.h"
 #include "core/svc/sbieiniwire.h"
 #include "common/base64.c"
 #include "core/drv/api_defs.h"
@@ -54,6 +56,10 @@
 #define WSAID_ACCEPTEX \
     {0xb5367df1,0xcbac,0x11cf,{0x95,0xca,0x00,0x80,0x5f,0x48,0xa1,0x92}}
 
+// GUID for WSARecvMsg extension function (needed for Cygwin recvmsg support)
+#define WSAID_WSARECVMSG \
+    {0xf689d7c8,0x6f1f,0x436b,{0x8a,0x53,0xe5,0x4f,0xe3,0x51,0xc3,0x22}}
+
 //---------------------------------------------------------------------------
 // Types
 //---------------------------------------------------------------------------
@@ -74,11 +80,11 @@ static BOOLEAN WSA_InitBindIP();
 
 static BOOLEAN WSA_GetStrictBindIP();
 
-static BOOLEAN WSA_IsBindIPValid();
+BOOLEAN WSA_IsBindIPValid(void);
 
 static BOOLEAN WSA_RefreshBindIPState();
 
-BOOLEAN WSA_InitNetDnsFilter(HMODULE module);
+BOOLEAN DNSAPI_Init(HMODULE module);
 
 static int WSA_IsBlockedTraffic(const short *addr, int addrlen, int protocol);
 
@@ -378,9 +384,14 @@ typedef struct _WSA_SOCK {
     // Binding
     BOOLEAN Bound;
 
+    // Encrypted DNS marker: TRUE if socket created during encrypted DNS operation
+    BOOLEAN IsEncryptedDns;
+
 } WSA_SOCK;
 
 static HASH_MAP   WSA_SockMap;
+static CRITICAL_SECTION WSA_SockMap_CritSec;
+static BOOLEAN WSA_SockMap_Initialized = FALSE;
 
 //---------------------------------------------------------------------------
 // Debug helpers (controlled by NetFwTrace setting)
@@ -398,6 +409,11 @@ static HASH_MAP   WSA_SockMap;
         } \
     } while (0)
 
+//---------------------------------------------------------------------------
+// Forward declaration - defined in dns_encrypted.c
+//---------------------------------------------------------------------------
+
+extern BOOLEAN EncryptedDns_IsQueryActive(void);
 
 //---------------------------------------------------------------------------
 // WSA_GetSock
@@ -406,11 +422,21 @@ static HASH_MAP   WSA_SockMap;
 
 _FX WSA_SOCK* WSA_GetSock(SOCKET s, BOOLEAN bCanAdd)
 {
+    if (!WSA_SockMap_Initialized)
+        return NULL;
+    
+    EnterCriticalSection(&WSA_SockMap_CritSec);
+    
     WSA_SOCK* pSock = (WSA_SOCK*)map_get(&WSA_SockMap, (void*)s);
     if (pSock == NULL && bCanAdd)
         pSock = (WSA_SOCK*)map_insert(&WSA_SockMap, (void*)s, NULL, sizeof(WSA_SOCK)); // returns a MemZero'ed object
+    
+    LeaveCriticalSection(&WSA_SockMap_CritSec);
     return pSock;
 }
+
+
+
 
 
 //---------------------------------------------------------------------------
@@ -461,7 +487,9 @@ _FX int WSA_WSAStartup(
 
     if (WSA_ProxyHack || WSA_BindIP) {
 
+        InitializeCriticalSection(&WSA_SockMap_CritSec);
         map_init(&WSA_SockMap, Dll_Pool);
+        WSA_SockMap_Initialized = TRUE;
     }
 
     return 0;
@@ -501,6 +529,7 @@ _FX int WSA_WSAIoctl(
         && lpvInBuffer && cbInBuffer >= sizeof(GUID) && lpvOutBuffer && cbOutBuffer >= sizeof(void*)) {
 
         GUID guidConnectEx = WSAID_CONNECTEX;
+        GUID guidWSARecvMsg = WSAID_WSARECVMSG;
         //GUID guidAcceptEx = WSAID_ACCEPTEX;
 
         if (memcmp(lpvInBuffer, &guidConnectEx, sizeof(guidConnectEx)) == 0)
@@ -508,6 +537,17 @@ _FX int WSA_WSAIoctl(
             memcpy(&__sys_ConnectEx, lpvOutBuffer, sizeof(void*)); // save the original function address
             void* detour_func = WSA_ConnectEx;
             memcpy(lpvOutBuffer, &detour_func, sizeof(void*)); // and return our detour function instead
+        }
+        else if (memcmp(lpvInBuffer, &guidWSARecvMsg, sizeof(guidWSARecvMsg)) == 0)
+        {
+            // WSARecvMsg interception for Cygwin recvmsg support
+            // This allows DNS filtering for applications using POSIX recvmsg() via Cygwin
+            void* realWSARecvMsg;
+            memcpy(&realWSARecvMsg, lpvOutBuffer, sizeof(void*)); // get the real function address
+            void* wrapper_func = Socket_GetWSARecvMsgWrapper(realWSARecvMsg);
+            if (wrapper_func) {
+                memcpy(lpvOutBuffer, &wrapper_func, sizeof(void*)); // return our wrapper instead
+            }
         }
         /*else if (memcmp(lpvInBuffer, &guidAcceptEx, sizeof(guidAcceptEx)) == 0)
         {
@@ -603,6 +643,10 @@ _FX int WSA_WSAEnumNetworkEvents(
     LPWSANETWORKEVENTS lpNetworkEvents)
 {
     int ret = __sys_WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents);
+
+    // NOTE: DNS FD_READ injection is done in socket_hooks.c's Socket_WSAEnumNetworkEvents
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+    // socket_hooks.c version also handles the critical SetEvent re-signaling for Cygwin
 
     if (WSA_ProxyHack) {
         WSA_SOCK* pSock = WSA_GetSock(s, TRUE);
@@ -709,8 +753,12 @@ static SOCKET WSA_WSASocketW(
 
     SOCKET s = __sys_WSASocketW(af, type, protocol, lpProtocolInfo, g, dwFlags);
 
-    if (WSA_ProxyHack || WSA_BindIP)
-        WSA_GetSock(s, TRUE)->af = af;
+    if (WSA_ProxyHack || WSA_BindIP) {
+        WSA_SOCK* pSock = WSA_GetSock(s, TRUE);
+        pSock->af = af;
+        // Mark socket as encrypted DNS if query is active
+        pSock->IsEncryptedDns = EncryptedDns_IsQueryActive();
+    }
 
     return s;
 }
@@ -806,6 +854,13 @@ _FX int WSA_bind(
     int            namelen)
 {
     BOOLEAN new_name = WSA_HandleAfUnix(&name, &namelen);
+
+    // Log ALL bind attempts to help diagnose StrictBindIP issues
+    //const SOCKADDR* sa = (const SOCKADDR*)name;
+    //int fam = (name && namelen >= (int)sizeof(USHORT)) ? sa->sa_family : -1;
+    //    BOOLEAN StrictBindIP = WSA_GetStrictBindIP();
+    //WSA_DebugBindMsg(L"bind: ENTRY af=%d BindIP=%d Strict=%d cfg(v4=%d,v6=%d)\n",
+    //        fam, (int)WSA_BindIP, (int)StrictBindIP, (int)WSA_BindIPv4Configured, (int)WSA_BindIPv6Configured);
 
     if (WSA_BindIP) {
         const SOCKADDR* sa = (const SOCKADDR*)name;
@@ -1060,13 +1115,24 @@ _FX void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr)
 {
     pStr = wcschr(pStr, L'\0');
 
-    if (af == AF_INET6 && pIP->Data32[0] == 0 && pIP->Data32[1] == 0 && pIP->Data32[2] == 0xFFFF0000)
-        af = AF_INET; // print mapped ipv4 addresses natively
+    // Check for IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+    // Bytes 0-9 must be zero, bytes 10-11 must be 0xFF
+    BOOLEAN is_mapped_ipv4 = (af == AF_INET6 && 
+                              pIP->Data32[0] == 0 && pIP->Data32[1] == 0 && 
+                              pIP->Data[10] == 0xFF && pIP->Data[11] == 0xFF &&
+                              pIP->Data[8] == 0 && pIP->Data[9] == 0);
 
     if (af == AF_INET6) {
-		Sbie_snwprintf(pStr, 45+10, L"; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-			pIP->Data[0], pIP->Data[1], pIP->Data[2], pIP->Data[3], pIP->Data[4], pIP->Data[5], pIP->Data[6], pIP->Data[7],
-			pIP->Data[8], pIP->Data[9], pIP->Data[10], pIP->Data[11], pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        if (is_mapped_ipv4) {
+            // Display IPv4-mapped IPv6 address clearly
+            Sbie_snwprintf(pStr, 30+10, L"; IPv4-mapped-IPv6: %d.%d.%d.%d",
+                pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        } else {
+            // Native IPv6 address
+            Sbie_snwprintf(pStr, 45+10, L"; IPv6: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                pIP->Data[0], pIP->Data[1], pIP->Data[2], pIP->Data[3], pIP->Data[4], pIP->Data[5], pIP->Data[6], pIP->Data[7],
+                pIP->Data[8], pIP->Data[9], pIP->Data[10], pIP->Data[11], pIP->Data[12], pIP->Data[13], pIP->Data[14], pIP->Data[15]);
+        }
 	}
 	else if (af == AF_INET) {
 		Sbie_snwprintf(pStr, 15+10, L"; IPv4: %d.%d.%d.%d",
@@ -1370,6 +1436,9 @@ _FX int WSA_WSAConnect(
     LPQOS          lpSQOS,
     LPQOS          lpGQOS)
 {
+    // NOTE: DNS connection tracking is done in socket_hooks.c's Socket_WSAConnect
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
@@ -1451,6 +1520,47 @@ _FX int WSA_ConnectEx(
     LPDWORD lpdwBytesSent,
     LPOVERLAPPED lpOverlapped)
 {
+    // DNS tracking: Check if connecting to port 53 (must be declared before first use)
+    extern BOOLEAN DNS_FilterEnabled;
+    extern BOOLEAN DNS_DebugFlag;
+    extern BOOLEAN DNS_HasValidCertificate;
+    extern BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
+    extern void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
+    
+    // FilterRawDns=y enables hooks/logging (cert not required for hooks), same as socket_hooks.c logic
+    BOOLEAN DNS_RawSocketHooksEnabled = Socket_GetRawDnsFilterEnabled(TRUE);
+    
+    // Debug log ConnectEx calls when DNS filtering is enabled (controlled by DnsDebug flag)
+    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && DNS_DebugFlag && name) {
+        USHORT destPort = 0;
+        USHORT addrFamily = ((struct sockaddr*)name)->sa_family;
+
+        if (addrFamily == AF_INET && namelen >= sizeof(struct sockaddr_in)) {
+            destPort = _ntohs(((struct sockaddr_in*)name)->sin_port);
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP: ConnectEx() called, AF_INET, port=%d, socket=%p",
+                destPort, (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        else if (addrFamily == AF_INET6 && namelen >= sizeof(struct sockaddr_in6)) {
+            destPort = _ntohs(((struct sockaddr_in6*)name)->sin6_port);
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP: ConnectEx() called, AF_INET6, port=%d, socket=%p",
+                destPort, (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        
+        // Mark socket as DNS if connecting to port 53
+        if (destPort == 53) {
+            Socket_MarkDnsSocket(s, TRUE);
+            
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"TCP DNS: ConnectEx detected port 53, socket=%p marked as DNS",
+                (void*)(ULONG_PTR)s);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+    }
+    
     if (WSA_IsBlockedTraffic(name, namelen, IPPROTO_TCP))
         return SOCKET_ERROR;
 
@@ -1669,6 +1779,9 @@ _FX int WSA_WSASendTo(
     LPWSAOVERLAPPED                    lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
+    // NOTE: DNS query interception is done in socket_hooks.c's Socket_WSASendTo
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     if (WSA_IsBlockedTraffic(lpTo, iTolen, IPPROTO_UDP))
         return SOCKET_ERROR;
 
@@ -1758,6 +1871,9 @@ _FX int WSA_WSARecvFrom(
     LPWSAOVERLAPPED                    lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine)
 {
+    // NOTE: DNS response injection is done in socket_hooks.c's Socket_WSARecvFrom
+    // which runs before this hook (hooks chain: socket_hooks → net.c → real)
+
     // If BindIP is configured, try to bind the socket
     // With StrictBindIP=n, allow receiving even if adapter unavailable
     if (WSA_BindIP) {
@@ -1800,8 +1916,11 @@ _FX int WSA_WSARecvFrom(
 
 _FX int WSA_closesocket(SOCKET s)
 {
-    if (WSA_ProxyHack || WSA_BindIP)
+    if ((WSA_ProxyHack || WSA_BindIP) && WSA_SockMap_Initialized) {
+        EnterCriticalSection(&WSA_SockMap_CritSec);
         map_remove(&WSA_SockMap, (void*)s);
+        LeaveCriticalSection(&WSA_SockMap_CritSec);
+    }
     return __sys_closesocket(s);
 }
 
@@ -2477,6 +2596,99 @@ _FX BOOLEAN WSA_InitBindIP()
     }
 
     return FoundLevel4 != -1 || FoundLevel6 != -1;
+}
+
+
+//---------------------------------------------------------------------------
+// WSA_IsBindIPLoopback
+//
+// Check if the bind IP is configured to a loopback address (127.x.x.x or ::1).
+// Returns TRUE if bind IP is loopback, which would prevent outbound internet
+// connections like EncryptedDnsServer from working.
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN WSA_IsBindIPLoopback(void)
+{
+    // Not using bind IP feature - not loopback
+    if (!WSA_BindIP)
+        return FALSE;
+
+    // Check IPv4: 127.0.0.0/8 (loopback network)
+    if (WSA_BindIPv4Configured) {
+        // In network byte order, 127.x.x.x has first byte = 127
+        BYTE* ipv4_bytes = (BYTE*)&WSA_BindIP4.sin_addr;
+        if (ipv4_bytes[0] == 127) {
+            return TRUE;
+        }
+    }
+
+    // Check IPv6: ::1 (loopback)
+    if (WSA_BindIPv6Configured) {
+        // ::1 is 15 zeros followed by 0x01
+        BYTE* ipv6_bytes = WSA_BindIP6.sin6_addr.u.Byte;
+        BOOLEAN is_loopback = TRUE;
+        for (int i = 0; i < 15; i++) {
+            if (ipv6_bytes[i] != 0) {
+                is_loopback = FALSE;
+                break;
+            }
+        }
+        if (is_loopback && ipv6_bytes[15] == 1) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+
+//---------------------------------------------------------------------------
+// WSA_IsBindIPEnabled
+//
+// Returns TRUE when BindAdapter or BindAdapterIP is configured for this image.
+// This is used by other subsystems (e.g., EncDns) to avoid treating
+// "not configured" as "adapter down".
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN WSA_IsBindIPEnabled(void)
+{
+    return WSA_BindIP;
+}
+
+
+//---------------------------------------------------------------------------
+// WSA_ShouldDisableQuicProtocols
+//
+// Check if MsQuic-based protocols (DoQ) should be disabled due to
+// StrictBindIP configuration that conflicts with MsQuic's requirements.
+//
+// MsQuic Requirements (affects DoQ only, not DoH3):
+//   - MsQuic always creates both IPv4 AND IPv6 UDP sockets for dual-stack QUIC
+//   - Binds to wildcard addresses (0.0.0.0 and ::) internally
+//
+// DoH3 vs DoQ:
+//   - DoH3 uses WinHTTP's internal HTTP/3 implementation (Windows 11 22H2+)
+//   - DoQ uses standalone MsQuic library
+//
+// Returns:
+//   TRUE  - Disable MsQuic protocols (DoQ only)
+//   FALSE - MsQuic protocols can work normally
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN WSA_ShouldDisableQuicProtocols(void)
+{
+    // Not using bind IP feature - MsQuic can work
+    if (!WSA_BindIP)
+        return FALSE;
+
+    // StrictBindIP not enabled - MsQuic can work (failed bind won't block)
+    BOOLEAN strict = WSA_GetStrictBindIP();
+    if (!strict)
+        return FALSE;
+
+    // ANY StrictBindIP configuration with BindIP will conflict with QUIC
+    // QUIC requires dual-stack wildcard binding which StrictBindIP interferes with
+    return TRUE;
 }
 
 
