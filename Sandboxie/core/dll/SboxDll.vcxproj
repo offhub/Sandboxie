@@ -502,6 +502,7 @@
     <ClCompile Include="dns_doh.c" />
     <ClCompile Include="dns_doq.c" />
     <ClCompile Include="dns_encrypted.c" />
+    <ClCompile Include="dns_rebind.c" />
     <ClCompile Include="dump.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="file.c" />
@@ -832,6 +833,7 @@
     </ClCompile>
     <ClInclude Include="dnsapi_defs.h" />
     <ClInclude Include="dns_filter.h" />
+    <ClInclude Include="dns_rebind.h" />
     <ClInclude Include="dns_wire.h" />
     <ClInclude Include="dump.h" />
     <ClInclude Include="guidlg.h" />

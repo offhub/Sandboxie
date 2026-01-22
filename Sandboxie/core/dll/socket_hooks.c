@@ -66,31 +66,32 @@
 #include "dns_filter.h"
 #include "dns_logging.h"
 #include "dns_doh.h"  // Includes dns_encrypted.h for EncryptedDns_* and ENCRYPTED_DNS_* types
+#include "dns_rebind.h"
 
 //---------------------------------------------------------------------------
-// sockaddr_storage Definition (for IPv4/IPv6 address storage)
-// Standard Windows structure from ws2def.h, needed for proper IPv6 support
-// Using fixed sizes that match Windows ABI (128 bytes total)
+// Forward Declarations of Socket Types (used locally, not from winsock2.h)
+// These are minimal definitions needed for socket filtering operations
 //---------------------------------------------------------------------------
 
-#ifndef _SOCKADDR_STORAGE_DEFINED
-#define _SOCKADDR_STORAGE_DEFINED
+// sockaddr_storage - For IPv4/IPv6 address storage (RFC 3493)
+// Sized to hold both IPv4 (sockaddr_in) and IPv6 (sockaddr_in6) addresses
 typedef struct sockaddr_storage {
     ADDRESS_FAMILY ss_family;
-    CHAR __ss_pad1[6];      // Padding to 8-byte alignment
-    __int64 __ss_align;     // Force 8-byte alignment
-    CHAR __ss_pad2[112];    // Remaining padding to reach 128 bytes
+    CHAR __ss_pad1[6];          // Padding
+    __int64 __ss_align;         // Force alignment
+    CHAR __ss_pad2[112];        // Remaining padding (total 128 bytes)
 } SOCKADDR_STORAGE, *PSOCKADDR_STORAGE;
-#endif
 
-//---------------------------------------------------------------------------
-// WSABUF Definition
-//---------------------------------------------------------------------------
-
+// WSABUF structure for scatter/gather operations
 typedef struct _WSABUF_REAL {
     ULONG len;
     CHAR FAR *buf;
 } WSABUF_REAL, *LPWSABUF_REAL;
+
+// WSAMSG structure for WSARecvMsg compatibility
+// Note: Duplicate definition removed - see line 343-349 for the correct definition
+
+//---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
 // DNS Packet Structure (RFC 1035)
@@ -430,7 +431,8 @@ static BOOLEAN Socket_TryHandleIpLiteralDnsQuery(
         response,
         DNS_RESPONSE_SIZE,
         qtype,
-        NULL);
+        NULL,
+        domainName);
 
     // Free temporary IP list
     IP_ENTRY* pFree = (IP_ENTRY*)List_Head(&ip_list);
@@ -594,7 +596,8 @@ int Socket_BuildDnsResponse(
     BYTE*          response,
     int            response_size,
     USHORT         qtype,
-    struct _DNS_TYPE_FILTER* type_filter);
+    struct _DNS_TYPE_FILTER* type_filter,
+    const WCHAR*   domain);
 
 static BOOLEAN Socket_HasFakeResponse(SOCKET s);
 
@@ -1010,7 +1013,8 @@ static int Socket_HandleDnsQuery(
     USHORT qtype,
     BYTE* response,
     int response_size,
-    const WCHAR* error_prefix)
+    const WCHAR* error_prefix,
+    const WCHAR* domain)
 {
     // Extract filter configuration
     LIST* pEntries = NULL;
@@ -1020,7 +1024,7 @@ static int Socket_HandleDnsQuery(
     // Build DNS response
     int response_len = Socket_BuildDnsResponse(
         dns_payload, dns_payload_len, pEntries, pEntries == NULL, 
-        response, response_size, qtype, type_filter);
+        response, response_size, qtype, type_filter, domain);
     
     // Handle errors
     if (response_len < 0 && DNS_TraceFlag) {
@@ -1200,7 +1204,7 @@ static int Socket_BuildDoHResponse(
     
     // Build DNS response using existing function
     int response_len = Socket_BuildDnsResponse(
-        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL);
+        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, domain);
     
     // Free the IP list
     IP_ENTRY* entry = (IP_ENTRY*)List_Head(&ip_list);
@@ -1267,9 +1271,18 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
     }
 
     // Load FilterRawDns setting (default: disabled, user must explicitly enable)
-    // FilterRawDns controls both hooks and logging, similar to FilterDnsApi behavior
+    // FilterRawDns controls both hooks and filtering:
+    //   - When enabled: installs hooks, applies NetworkDnsFilter rules AND rebind protection
+    //   - When disabled: no hooks, no filtering, no rebind protection
     DNS_RawSocketFilterEnabled = Socket_GetRawDnsFilterEnabled(has_valid_certificate); // filtering only (requires cert)
     DNS_RawSocketHooksEnabled   = Socket_GetRawDnsFilterEnabled(TRUE);                 // hooks enabled when FilterRawDns=y (ignoring cert)
+
+    // Also enable raw socket hooks when EncryptedDnsServer is configured.
+    // This allows EncryptedDns passthrough for tools like nslookup even when FilterRawDns=n.
+    // Note: Rebind protection still requires FilterRawDns=y (controlled by DNS_RawSocketFilterEnabled).
+    if (!DNS_RawSocketHooksEnabled && EncryptedDns_IsEnabled()) {
+        DNS_RawSocketHooksEnabled = TRUE;
+    }
 
     // Certificate validation logic has been moved to filtering time (in send hooks)
     // Here we only control whether hooks are installed at all
@@ -1778,7 +1791,7 @@ static BOOLEAN Socket_DetectTcpLengthPrefix(
     
     USHORT tcp_length = _ntohs(*(USHORT*)buf);
     
-    // SECURITY FIX: Removed 512-byte limit that allowed filter bypass via EDNS0 padding
+    // Removed 512-byte limit that allowed filter bypass via EDNS0 padding
     // TCP DNS supports up to 65535 bytes, we accept up to 4096 (common EDNS0 size)
     if (tcp_length + 2 == len && 
         tcp_length >= sizeof(DNS_WIRE_HEADER) && 
@@ -1941,7 +1954,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     BYTE response[DNS_RESPONSE_SIZE];
     int response_len = Socket_HandleDnsQuery(
         aux, dns_payload, dns_payload_len, qtype, response, DNS_RESPONSE_SIZE, 
-        protocol);
+        protocol, domainName);
     
     Dll_Free(domain_lwr);
     
@@ -2215,8 +2228,9 @@ _FX int Socket_sendto(
     const void     *to,
     int            tolen)
 {
-    // Only inspect if DNS filtering is enabled and we have a valid destination
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
+    // Track DNS queries (for response sanitization/logging) whenever raw socket hooks are installed.
+    // Interception/blocking still requires DNS filtering to be enabled.
+    if (DNS_RawSocketHooksEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         // Check if destination is DNS port 53
         USHORT destPort = 0;
@@ -2243,12 +2257,23 @@ _FX int Socket_sendto(
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
             }
+
+            // Always track pending DNS query for passthrough response rebind sanitization.
+            {
+                WCHAR domainName[256];
+                USHORT qtype = 0;
+                if (Socket_ParseDnsQuery((const BYTE*)buf, len, domainName, 256, &qtype)) {
+                    Socket_SetPendingQuery(s, domainName, qtype, FALSE, DNS_PASSTHROUGH_NONE);
+                }
+            }
             
-            // Process DNS query
-            DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, (const BYTE*)buf, len, to, L"UDP", L"sendto");
-            
-            if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
-                return len;  // Return success (intercepted or error - don't send)
+            // Process DNS query (interception) only when DNS filtering is enabled.
+            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled) {
+                DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, (const BYTE*)buf, len, to, L"UDP", L"sendto");
+                
+                if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
+                    return len;  // Return success (intercepted or error - don't send)
+                }
             }
             // DNS_PROCESS_PASSTHROUGH: fall through to real sendto
         }
@@ -2495,7 +2520,7 @@ _FX int Socket_WSASendTo(
                     // Build fake DNS response
                     BYTE response[DNS_RESPONSE_SIZE];
                     int response_len = Socket_HandleDnsQuery(
-                        aux, dns_payload, dns_payload_len, qtype, response, DNS_RESPONSE_SIZE, L"TCP DNS: WSASendTo(conn)");
+                        aux, dns_payload, dns_payload_len, qtype, response, DNS_RESPONSE_SIZE, L"TCP DNS: WSASendTo(conn)", domainName);
                     
                     if (response_len < 0) {
                         if (lpNumberOfBytesSent) *lpNumberOfBytesSent = totalLen;
@@ -2564,7 +2589,7 @@ _FX int Socket_WSASendTo(
     // =========================================================================
     // CASE 2: UDP with destination address (lpTo != NULL)
     // =========================================================================
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && lpTo && buffers) {
+    if (DNS_RawSocketHooksEnabled && lpTo && buffers) {
         
         // Check if destination is DNS port 53
         USHORT destPort = 0;
@@ -2591,14 +2616,25 @@ _FX int Socket_WSASendTo(
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
             }
+
+            // Always track pending DNS query for passthrough response rebind sanitization.
+            {
+                WCHAR domainName[256];
+                USHORT qtype = 0;
+                if (Socket_ParseDnsQuery((const BYTE*)buffers[0].buf, buffers[0].len, domainName, 256, &qtype)) {
+                    Socket_SetPendingQuery(s, domainName, qtype, FALSE, DNS_PASSTHROUGH_NONE);
+                }
+            }
             
-            // Process DNS query
-            DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(
-                s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, L"UDP", L"WSASendTo");
-            
-            if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
-                if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
-                return 0;  // Return success (intercepted or error - don't send)
+            // Process DNS query (interception) only when DNS filtering is enabled.
+            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled) {
+                DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(
+                    s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, L"UDP", L"WSASendTo");
+                
+                if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
+                    if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
+                    return 0;  // Return success (intercepted or error - don't send)
+                }
             }
             // DNS_PROCESS_PASSTHROUGH: fall through to real WSASendTo
         }
@@ -2832,7 +2868,7 @@ _FX int Socket_DecodeDnsName(
 
         // Check for DNS name compression (pointer - top 2 bits set)
         if ((labelLen & 0xC0) == 0xC0) {
-            // SECURITY FIX: Properly follow compression pointers with loop detection
+            // Follow compression pointers with loop detection
             // DNS compression pointer format: 11xxxxxx xxxxxxxx (14-bit offset)
             if (offset + 1 >= packetLen)
                 return -1;  // Incomplete pointer
@@ -3119,7 +3155,8 @@ _FX int Socket_BuildDnsResponse(
     BYTE*          response,
     int            response_size,
     USHORT         qtype,
-    struct _DNS_TYPE_FILTER* type_filter)
+    struct _DNS_TYPE_FILTER* type_filter,
+    const WCHAR*   domain)
 {
     if (!query || !response || query_len < sizeof(DNS_WIRE_HEADER) || response_size < 512)
         return -1;
@@ -3259,6 +3296,9 @@ _FX int Socket_BuildDnsResponse(
     int offset = copy_len;
     IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
     BOOLEAN is_any_query = (qtype_host == 255);  // Check if this is ANY query
+
+    // Actual number of answer RRs emitted (may differ from pre-count due to rebind filtering).
+    USHORT built_answers = 0;
     
     // Check if we need IPv4-to-IPv6 mapping (AAAA query with no IPv6 addresses)
     BOOLEAN need_ipv4_mapping = FALSE;
@@ -3282,6 +3322,12 @@ _FX int Socket_BuildDnsResponse(
         int rdata_len = 0;
         USHORT record_type = 0;  // Actual type for this record (A or AAAA)
         BYTE ipv6_mapped[16];  // For IPv4-mapped IPv6 addresses
+
+        // Apply DNS rebind protection: omit filtered IPs entirely.
+        if (domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP)) {
+            entry = (IP_ENTRY*)List_Next(entry);
+            continue;
+        }
         
         if ((qtype_host == DNS_TYPE_A || is_any_query) && entry->Type == AF_INET) {
             match = TRUE;
@@ -3325,7 +3371,7 @@ _FX int Socket_BuildDnsResponse(
             
             offset += sizeof(DNS_RR);
             
-            // Copy IP address data
+            // Copy IP address data (apply DNS rebind protection if needed)
             if (record_type == DNS_TYPE_A && entry->Type == AF_INET) {
                 // IPv4: stored in Data32[3] (last 4 bytes) per codebase convention
                 memcpy(response + offset, &entry->IP.Data32[3], 4);
@@ -3339,10 +3385,15 @@ _FX int Socket_BuildDnsResponse(
                 memcpy(response + offset, ipv6_mapped, 16);
                 offset += 16;
             }
+
+            built_answers++;
         }
         
         entry = (IP_ENTRY*)List_Next(entry);
     }
+
+    // Fix up AnswerRRs to reflect the actual number of RRs emitted.
+    resp_header->AnswerRRs = _htons(built_answers);
 
     return offset;
 }
@@ -3792,6 +3843,41 @@ _FX int Socket_GetFakeResponse(
 }
 
 //---------------------------------------------------------------------------
+// Socket_ApplyRebindProtection
+//
+// Apply DNS rebind protection to a passthrough DNS response buffer.
+// Updates *io_len in-place when sanitized.
+//---------------------------------------------------------------------------
+
+static void Socket_ApplyRebindProtection(SOCKET s, BYTE* buf, int* io_len)
+{
+    if (!buf || !io_len || *io_len <= 0)
+        return;
+
+    // Only apply if FilterRawDns is enabled (respects user's hook enablement choice)
+    if (!DNS_RawSocketFilterEnabled || !Socket_IsDnsSocket(s))
+        return;
+
+    WCHAR domain[256];
+    USHORT qtype;
+    BOOLEAN isTcp;
+    DNS_PASSTHROUGH_REASON reason;
+
+    if (Socket_GetPendingQuery(s, domain, 256, &qtype, &isTcp, &reason, FALSE)) {
+        ULONG filteredA = 0;
+        ULONG filteredAAAA = 0;
+        (void)qtype;
+        (void)reason;
+
+        int new_len = *io_len;
+        if (DNS_Rebind_SanitizeDnsWireResponse(buf, *io_len, domain, isTcp, &filteredA, &filteredAAAA, &new_len)) {
+            if (new_len > 0 && new_len <= *io_len)
+                *io_len = new_len;
+        }
+    }
+}
+
+//---------------------------------------------------------------------------
 // Socket_recv
 //
 // Hook for recv() - returns fake DNS responses if available
@@ -3832,6 +3918,14 @@ _FX int Socket_recv(
     // No fake response - pass through to real recv
     int result = __sys_recv(s, buf, len, flags);
     
+    // Apply DNS rebind protection to passthrough DNS responses (TCP and connected UDP)
+    if (result > 0) {
+        int new_len = result;
+        Socket_ApplyRebindProtection(s, (BYTE*)buf, &new_len);
+        if (new_len > 0 && new_len <= result)
+            result = new_len;
+    }
+
     // Check if there's a pending passthrough query to log
     if (result > 0 && DNS_TraceFlag) {
         WCHAR domain[256];
@@ -3885,6 +3979,14 @@ _FX int Socket_recvfrom(
 
     // No fake response - pass through to real recvfrom
     int result = __sys_recvfrom(s, buf, len, flags, from, fromlen);
+
+    // Apply DNS rebind protection to passthrough DNS responses (UDP)
+    if (result > 0) {
+        int new_len = result;
+        Socket_ApplyRebindProtection(s, (BYTE*)buf, &new_len);
+        if (new_len > 0 && new_len <= result)
+            result = new_len;
+    }
     
     // Check if there's a pending passthrough query to log
     if (result > 0 && DNS_TraceFlag) {
@@ -3962,6 +4064,15 @@ _FX int Socket_WSARecv(
     // No fake response - pass through to real WSARecv
     int ret = __sys_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
     
+    // Apply DNS rebind protection to passthrough DNS responses (synchronous only)
+    if (ret == 0 && lpOverlapped == NULL && lpNumberOfBytesRecvd && *lpNumberOfBytesRecvd > 0 &&
+        lpBuffers && dwBufferCount > 0) {
+        int new_len = (int)*lpNumberOfBytesRecvd;
+        Socket_ApplyRebindProtection(s, (BYTE*)buffers[0].buf, &new_len);
+        if (new_len > 0 && new_len <= (int)*lpNumberOfBytesRecvd)
+            *lpNumberOfBytesRecvd = (DWORD)new_len;
+    }
+
     // Check if there's a pending passthrough query to log (synchronous only)
     if (ret == 0 && lpOverlapped == NULL && lpNumberOfBytesRecvd && *lpNumberOfBytesRecvd > 0 && 
         DNS_TraceFlag && lpBuffers && dwBufferCount > 0) {
@@ -4041,6 +4152,16 @@ _FX int Socket_WSARecvFrom(
 
     // No fake response - pass through to real WSARecvFrom
     int ret = __sys_WSARecvFrom(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpFrom, lpFromlen, lpOverlapped, lpCompletionRoutine);
+
+    // Apply DNS rebind protection to passthrough DNS responses (UDP, synchronous only)
+    if (ret == 0 && lpOverlapped == NULL && lpNumberOfBytesRecvd && *lpNumberOfBytesRecvd > 0 &&
+        lpBuffers && dwBufferCount > 0)
+    {
+        int new_len = (int)*lpNumberOfBytesRecvd;
+        Socket_ApplyRebindProtection(s, (BYTE*)buffers[0].buf, &new_len);
+        if (new_len > 0 && new_len <= (int)*lpNumberOfBytesRecvd)
+            *lpNumberOfBytesRecvd = (DWORD)new_len;
+    }
     
     // Check if there's a pending passthrough query to log (synchronous only)
     if (ret == 0 && lpOverlapped == NULL && lpNumberOfBytesRecvd && *lpNumberOfBytesRecvd > 0 && 
@@ -4084,7 +4205,7 @@ _FX int Socket_select(
     const struct timeval *timeout_typed = (const struct timeval*)timeout;
     
     // If DNS filtering is not enabled, pass through
-    if (!DNS_FilterEnabled || !DNS_RawSocketFilterEnabled || !readfds_typed) {
+    if (!DNS_FilterEnabled || !DNS_RawSocketHooksEnabled || !readfds_typed) {
         return __sys_select(nfds, readfds, writefds, exceptfds, timeout);
     }
 
@@ -4154,7 +4275,7 @@ _FX int Socket_WSAPoll(
     INT              timeout)
 {
     // If DNS filtering is not enabled or no array, pass through
-    if (!DNS_FilterEnabled || !DNS_RawSocketFilterEnabled || !fdArray || nfds == 0) {
+    if (!DNS_FilterEnabled || !DNS_RawSocketHooksEnabled || !fdArray || nfds == 0) {
         return __sys_WSAPoll(fdArray, nfds, timeout);
     }
 
@@ -4360,6 +4481,15 @@ _FX INT PASCAL FAR Socket_WSARecvMsg(
     if (__sys_WSARecvMsg) {
         int ret = __sys_WSARecvMsg(s, lpMsg, lpdwNumberOfBytesRecvd, lpOverlapped, lpCompletionRoutine);
         
+        // Apply DNS rebind protection to passthrough DNS responses (synchronous only)
+        if (ret == 0 && lpOverlapped == NULL && lpdwNumberOfBytesRecvd && *lpdwNumberOfBytesRecvd > 0 &&
+            lpMsg && lpMsg->lpBuffers && lpMsg->dwBufferCount > 0) {
+            int new_len = (int)*lpdwNumberOfBytesRecvd;
+            Socket_ApplyRebindProtection(s, (BYTE*)buffers[0].buf, &new_len);
+            if (new_len > 0 && new_len <= (int)*lpdwNumberOfBytesRecvd)
+                *lpdwNumberOfBytesRecvd = (DWORD)new_len;
+        }
+
         // Check if there's a pending passthrough query to log (synchronous only)
         if (ret == 0 && lpOverlapped == NULL && lpdwNumberOfBytesRecvd && *lpdwNumberOfBytesRecvd > 0 && 
             DNS_TraceFlag && lpMsg && lpMsg->lpBuffers && lpMsg->dwBufferCount > 0) {

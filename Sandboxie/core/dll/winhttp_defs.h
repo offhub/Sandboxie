@@ -162,10 +162,6 @@ typedef BOOL (WINAPI *P_WinHttpQueryOption)(
 #define INTERNET_DEFAULT_HTTPS_PORT 443
 #endif
 
-#ifndef INTERNET_OPTION_SECURITY_FLAGS
-#define INTERNET_OPTION_SECURITY_FLAGS 31
-#endif
-
 #ifndef WINHTTP_OPTION_SECURITY_FLAGS
 #define WINHTTP_OPTION_SECURITY_FLAGS 31
 #endif
@@ -182,28 +178,12 @@ typedef BOOL (WINAPI *P_WinHttpQueryOption)(
 #define SECURITY_FLAG_IGNORE_CERT_DATE_INVALID 0x00002000
 #endif
 
-#ifndef SECURITY_FLAG_IGNORE_REVOCATION
-#define SECURITY_FLAG_IGNORE_REVOCATION 0x00000080
-#endif
-
 #ifndef WINHTTP_OPTION_ENABLE_FEATURE
 #define WINHTTP_OPTION_ENABLE_FEATURE 79
 #endif
 
 #ifndef WINHTTP_ENABLE_SSL_REVOCATION
 #define WINHTTP_ENABLE_SSL_REVOCATION 0x00000001
-#endif
-
-#ifndef INTERNET_OPTION_CONNECT_TIMEOUT
-#define INTERNET_OPTION_CONNECT_TIMEOUT 2
-#endif
-
-#ifndef INTERNET_OPTION_SEND_TIMEOUT
-#define INTERNET_OPTION_SEND_TIMEOUT 5
-#endif
-
-#ifndef INTERNET_OPTION_RECEIVE_TIMEOUT
-#define INTERNET_OPTION_RECEIVE_TIMEOUT 6
 #endif
 
 // HTTP/2 protocol support (Windows 10 1607+)
@@ -281,19 +261,24 @@ typedef BOOL (WINAPI *P_WinHttpQueryOption)(
 #endif
 
 //---------------------------------------------------------------------------
-// WinHTTP Error Codes (for user-friendly error messages)
+// WinHTTP Error Codes (matches Windows SDK winhttp.h naming)
+// Base: WINHTTP_ERROR_BASE = 12000
 //---------------------------------------------------------------------------
 
-#ifndef WINHTTP_ERROR_CANNOT_CONNECT
-#define WINHTTP_ERROR_CANNOT_CONNECT 12029
+#ifndef WINHTTP_ERROR_BASE
+#define WINHTTP_ERROR_BASE 12000
 #endif
 
-#ifndef WINHTTP_ERROR_TIMEOUT
-#define WINHTTP_ERROR_TIMEOUT 12002
+#ifndef ERROR_WINHTTP_TIMEOUT
+#define ERROR_WINHTTP_TIMEOUT (WINHTTP_ERROR_BASE + 2)
 #endif
 
-#ifndef WINHTTP_ERROR_CONNECTION_RESET
-#define WINHTTP_ERROR_CONNECTION_RESET 12030
+#ifndef ERROR_WINHTTP_CANNOT_CONNECT
+#define ERROR_WINHTTP_CANNOT_CONNECT (WINHTTP_ERROR_BASE + 29)
+#endif
+
+#ifndef ERROR_WINHTTP_CONNECTION_ERROR
+#define ERROR_WINHTTP_CONNECTION_ERROR (WINHTTP_ERROR_BASE + 30)
 #endif
 
 #endif /* _WINHTTP_DEFS_H */

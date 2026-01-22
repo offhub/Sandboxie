@@ -46,7 +46,7 @@ BOOLEAN EncryptedDns_IsEnabled(void);
 BOOLEAN DNS_TraceFlag = FALSE;
 BOOLEAN DNS_DebugFlag = FALSE;
 
-#if !defined(_DEBUG)
+#if !defined(_DNSDEBUG)
 // Release builds: compile out debug-only logging paths.
 // Note: this is file-local and does NOT remove the exported DNS_DebugFlag variable.
 #undef DNS_DebugFlag
@@ -88,6 +88,12 @@ static void DNS_InitSuppressCache(void)
     InitializeCriticalSection(&g_DnsSuppressLock);
     memset(g_DnsSuppressCache, 0, sizeof(g_DnsSuppressCache));
     g_DnsSuppressInitialized = TRUE;
+}
+
+// Query SuppressDnsLog effective state
+BOOLEAN DNS_IsSuppressLogEnabled(void)
+{
+    return g_SuppressDnsLogEnabled;
 }
 
 // Improved string hash (FNV-1a variant with per-process salt)

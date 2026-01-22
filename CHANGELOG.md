@@ -9,7 +9,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ## [1.16.10 / 5.71.10] - 2026-01-??
 
 ### Added
-- Add icons to Sandboxie service applications #5160https://github.com/sandboxie-plus/Sandboxie/issues/5160#issuecomment-3706138019
+- added icons to Sandboxie service applications #5160https://github.com/sandboxie-plus/Sandboxie/issues/5160#issuecomment-3706138019
+- added expand-all / collapse-all buttons to the search bar so users can quickly adjust the tree view while filtering
+
+### Changed
+- improved Qt 6.10+ compatibility of file search filtering
+
+### Fixed
+- fixed file search bar crash [#5166](https://github.com/sandboxie-plus/Sandboxie/issues/5166)
 
  
 

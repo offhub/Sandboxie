@@ -193,7 +193,7 @@ typedef enum _ENCRYPTED_DNS_ERROR_TYPE {
 
 // Pending queries
 #define ENCRYPTED_DNS_MAX_PENDING_QUERIES     32      // Max concurrent pending queries
-#define ENCRYPTED_DNS_MAX_CONCURRENT_QUERIES  2       // Semaphore limit
+#define ENCRYPTED_DNS_MAX_CONCURRENT_QUERIES  8       // Semaphore limit
 
 // DNS response limits
 #define ENCRYPTED_DNS_MAX_ANSWERS             32      // Max IP addresses per response

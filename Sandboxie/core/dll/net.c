@@ -79,6 +79,7 @@ static BOOLEAN WSA_InitNetProxy();
 static BOOLEAN WSA_InitBindIP();
 
 static BOOLEAN WSA_GetStrictBindIP();
+static BOOLEAN WSA_GetBindIPAllowLoopback();
 
 BOOLEAN WSA_IsBindIPValid(void);
 
@@ -384,6 +385,10 @@ typedef struct _WSA_SOCK {
     // Binding
     BOOLEAN Bound;
 
+    // TRUE if this socket was bound via the temporary loopback bypass
+    // (BindIPAllowLoopback=y while BindIP was not valid).
+    BOOLEAN LoopbackBypassBound;
+
     // Encrypted DNS marker: TRUE if socket created during encrypted DNS operation
     BOOLEAN IsEncryptedDns;
 
@@ -408,6 +413,58 @@ static BOOLEAN WSA_SockMap_Initialized = FALSE;
                 SbieApi_MonitorPutMsg(MONITOR_OTHER, _msg); \
         } \
     } while (0)
+
+//---------------------------------------------------------------------------
+// Loopback bypass cleanup
+//---------------------------------------------------------------------------
+
+static void WSA_CloseLoopbackBypassSocketsOnBindIPRecovery(void)
+{
+    if (!WSA_SockMap_Initialized)
+        return;
+
+    // Close in small batches to avoid holding the map lock while calling closesocket.
+    enum { WSA_LOOPBACK_BYPASS_CLOSE_BATCH = 32 };
+    SOCKET sockets[WSA_LOOPBACK_BYPASS_CLOSE_BATCH];
+    int totalClosed = 0;
+
+    for (;;) {
+        int batchCount = 0;
+
+        EnterCriticalSection(&WSA_SockMap_CritSec);
+        map_iter_t iter = map_iter();
+        while (map_next(&WSA_SockMap, &iter)) {
+            WSA_SOCK* pSock = (WSA_SOCK*)iter.value;
+            if (!pSock || !pSock->LoopbackBypassBound)
+                continue;
+
+            // iter.key points to key storage inside the map node; dereference to get the SOCKET value.
+            SOCKET s = (SOCKET)*(ULONG_PTR*)iter.key;
+
+            // Remove from map first so the entry can't be reused.
+            map_erase(&WSA_SockMap, &iter);
+            sockets[batchCount++] = s;
+
+            if (batchCount >= WSA_LOOPBACK_BYPASS_CLOSE_BATCH)
+                break;
+        }
+        LeaveCriticalSection(&WSA_SockMap_CritSec);
+
+        if (batchCount == 0)
+            break;
+
+        for (int i = 0; i < batchCount; i++) {
+            __sys_shutdown(sockets[i], SD_BOTH);
+            __sys_closesocket(sockets[i]);
+        }
+
+        totalClosed += batchCount;
+    }
+
+    if (totalClosed > 0) {
+        WSA_DebugBindMsg(L"BindIP: closed %d loopback-bypass sockets after BindIP recovery\n", totalClosed);
+    }
+}
 
 //---------------------------------------------------------------------------
 // Forward declaration - defined in dns_encrypted.c
@@ -848,12 +905,43 @@ finish:
 // WSA_bind
 //---------------------------------------------------------------------------
 
+static BOOLEAN WSA_IsLoopbackBindRequest(const void* name, int namelen)
+{
+    if (!name || namelen < (int)sizeof(USHORT))
+        return FALSE;
+
+    const SOCKADDR* sa = (const SOCKADDR*)name;
+
+    if (sa->sa_family == AF_INET) {
+        if (namelen < (int)sizeof(SOCKADDR_IN))
+            return FALSE;
+        const SOCKADDR_IN* addr_in = (const SOCKADDR_IN*)name;
+        const BYTE* ipv4_bytes = (const BYTE*)&addr_in->sin_addr;
+        return (ipv4_bytes[0] == 127);
+    }
+
+    if (sa->sa_family == AF_INET6) {
+        if (namelen < (int)sizeof(SOCKADDR_IN6_LH))
+            return FALSE;
+        const SOCKADDR_IN6_LH* addr6_in = (const SOCKADDR_IN6_LH*)name;
+        const BYTE* ipv6_bytes = (const BYTE*)addr6_in->sin6_addr.u.Byte;
+        for (int i = 0; i < 15; i++) {
+            if (ipv6_bytes[i] != 0)
+                return FALSE;
+        }
+        return (ipv6_bytes[15] == 1);
+    }
+
+    return FALSE;
+}
+
 _FX int WSA_bind(
     SOCKET         s,
     const void     *name,
     int            namelen)
 {
     BOOLEAN new_name = WSA_HandleAfUnix(&name, &namelen);
+    BOOLEAN loopback_bypass_used = FALSE;
 
     // Log ALL bind attempts to help diagnose StrictBindIP issues
     //const SOCKADDR* sa = (const SOCKADDR*)name;
@@ -863,6 +951,20 @@ _FX int WSA_bind(
     //        fam, (int)WSA_BindIP, (int)StrictBindIP, (int)WSA_BindIPv4Configured, (int)WSA_BindIPv6Configured);
 
     if (WSA_BindIP) {
+        // For compatibility during transient network transitions (VPN disconnect, hibernate,
+        // adapter restart), optionally allow loopback bind() only while the configured
+        // BindAdapter/BindAdapterIP is not currently valid.
+        // When BindIP becomes valid again, any sockets that were created via this bypass
+        // are proactively closed so the app can recreate them under normal BindIP rules.
+        BOOLEAN bind_valid = WSA_IsBindIPValid();
+        if (!bind_valid && WSA_GetBindIPAllowLoopback() && WSA_IsLoopbackBindRequest(name, namelen)) {
+            const SOCKADDR* sa = (const SOCKADDR*)name;
+            int fam = (name && namelen >= (int)sizeof(USHORT)) ? sa->sa_family : -1;
+            WSA_DebugBindMsg(L"bind: loopback bypass active (BindIPAllowLoopback=y, BindIP valid=n) af=%d\n", fam);
+            loopback_bypass_used = TRUE;
+            goto do_bind;
+        }
+
         const SOCKADDR* sa = (const SOCKADDR*)name;
         int fam = (name && namelen >= (int)sizeof(USHORT)) ? sa->sa_family : -1;
         BOOLEAN StrictBindIP = WSA_GetStrictBindIP();
@@ -871,7 +973,7 @@ _FX int WSA_bind(
         
         // Validate that the configured bind IP is still available on the system
         // If not available, fail the bind to prevent fallback to default adapter
-        if (!WSA_IsBindIPValid()) {
+        if (!bind_valid) {
             if (new_name) Dll_Free((void*)name);
             __sys_WSASetLastError(WSAEADDRNOTAVAIL);
             return SOCKET_ERROR;
@@ -998,7 +1100,14 @@ _FX int WSA_bind(
         }
     }
 
+do_bind:
     int ret = __sys_bind(s, name, namelen);
+
+    if (ret == 0 && loopback_bypass_used) {
+        WSA_SOCK* pSock = WSA_GetSock(s, TRUE);
+        if (pSock)
+            pSock->LoopbackBypassBound = TRUE;
+    }
 
     if (new_name) Dll_Free((void*)name);
 
@@ -2207,6 +2316,25 @@ _FX BOOLEAN WSA_GetStrictBindIP()
     return Config_GetSettingsForImageName_bool(L"StrictBindIP", TRUE);
 }
 
+//---------------------------------------------------------------------------
+// WSA_GetBindIPAllowLoopback
+//
+// When BindAdapter/BindAdapterIP is used with StrictBindIP, transient adapter
+// changes (VPN disconnect, hibernate, network restart) can make WSA_IsBindIPValid()
+// return FALSE. Some libraries (notably Boost.Asio) rely on being able to
+// bind loopback sockets (127.0.0.0/8 or ::1) to signal reactor wakeups.
+//
+// When enabled, Sandboxie will temporarily allow loopback bind() ONLY while
+// BindIP is not valid; once BindIP becomes valid again, sockets created via this
+// bypass are closed to force re-creation under normal BindIP enforcement.
+// Default: FALSE.
+//---------------------------------------------------------------------------
+
+static BOOLEAN WSA_GetBindIPAllowLoopback()
+{
+    return Config_GetSettingsForImageName_bool(L"BindIPAllowLoopback", FALSE);
+}
+
 _FX BOOLEAN WSA_RefreshBindIPState()
 {
     HMODULE Iphlpapi = LoadLibraryW(L"Iphlpapi.dll");
@@ -2370,12 +2498,19 @@ _FX BOOLEAN WSA_IsBindIPValid()
     // SECURITY: Always re-check if cached result was FALSE to prevent IP leakage
     // Only use cache when last check was successful AND within time window
     if (lastRefreshTime == 0 || (now - lastRefreshTime) > 5000 || !cachedValid) {
+        BOOLEAN prevValid = cachedValid;
         cachedValid = WSA_RefreshBindIPState();
         lastRefreshTime = now;
         
         // If refresh failed, invalidate the cache immediately
         if (!cachedValid) {
             lastRefreshTime = 0;
+        }
+
+        // If BindIP just recovered, close any sockets that were created while
+        // we temporarily allowed loopback bind() during the invalid period.
+        if (!prevValid && cachedValid && WSA_GetBindIPAllowLoopback()) {
+            WSA_CloseLoopbackBypassSocketsOnBindIPRecovery();
         }
     }
     
