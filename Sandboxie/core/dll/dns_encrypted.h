@@ -165,9 +165,12 @@ typedef enum _ENCRYPTED_DNS_ERROR_TYPE {
 //---------------------------------------------------------------------------
 
 // Timeouts (milliseconds)
-#define ENCRYPTED_DNS_HTTP_TIMEOUT_MS         5000    // HTTP request timeout
-#define ENCRYPTED_DNS_QUIC_TIMEOUT_MS         5000    // QUIC request timeout
-#define ENCRYPTED_DNS_SEMAPHORE_TIMEOUT_MS    5000    // Semaphore wait timeout
+// AUTO mode uses shorter timeouts for faster fallback to next protocol when failures occur.
+// Since AUTO mode tries DoQ → DoH3 → DoH2 → DoH, quick failures allow rapid fallback.
+// Reduced from 5s to 2s to prevent user-visible delays when protocol doesn't work.
+#define ENCRYPTED_DNS_HTTP_TIMEOUT_MS         2000    // HTTP request timeout (reduced for faster fallback)
+#define ENCRYPTED_DNS_QUIC_TIMEOUT_MS         2000    // QUIC request timeout (reduced for faster fallback)
+#define ENCRYPTED_DNS_SEMAPHORE_TIMEOUT_MS    2000    // Semaphore wait timeout (reduced for fail-fast behavior)
 #define ENCRYPTED_DNS_REENTRANT_WAIT_MS       50      // Per-iteration wait for re-entrancy
 #define ENCRYPTED_DNS_REENTRANT_MAX_ATTEMPTS  10      // Max re-entrancy wait iterations
 

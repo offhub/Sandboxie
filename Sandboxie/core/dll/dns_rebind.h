@@ -24,6 +24,24 @@
 #include "wsa_defs.h"
 #include "common/netfw.h"
 
+//---------------------------------------------------------------------------
+// DNS Log Suppression Tags (shared with dns_logging.c suppression cache)
+//---------------------------------------------------------------------------
+
+// FourCC-like tags for DNS_ShouldSuppressLogTagged(domain, tag)
+// Use readable ASCII identifiers.
+#define DNS_REBIND_LOG_TAG_DEFAULT 0x444E4252u /* 'RBND' */
+#define DNS_REBIND_LOG_TAG_FILTER  0x50494252u /* 'RBIP' */
+#define DNS_REBIND_LOG_TAG_WIRE    0x45524957u /* 'WIRE' */
+
+// Helper: append a WSA_DumpIP-formatted fragment (includes its own delimiter) to a caller buffer.
+// Used to aggregate multiple filtered IPs into a single log line.
+void DNS_Rebind_AppendFilteredIpMsg(
+	WCHAR* msg,
+	SIZE_T msg_cch,
+	ADDRESS_FAMILY af,
+	const IP_ADDRESS* pIP);
+
 // ANSI version of addrinfo (not in wsa_defs.h). Keep local to core/dll code.
 // Note: This intentionally avoids pulling in winsock2.h.
 typedef struct addrinfo {
@@ -53,6 +71,7 @@ typedef struct addrinfo {
 //     * domain is the optional second parameter and ends with ':' (default: all domains)
 //     * action (y|n) is the last/only token; missing/invalid is treated as 'n'
 //     * <domain> supports '*' and '?' wildcards (case-insensitive)
+//     * Special token: @nodot@ matches single-label names (no dots, trailing dot ignored)
 //     * Examples:
 //         DnsRebindProtection=*.local:y
 //         DnsRebindProtection=*.example.com:n
@@ -60,17 +79,19 @@ typedef struct addrinfo {
 //     * Requires valid certificate (DNS_HasValidCertificate)
 //
 // Filtered IP Rules:
-//   - FilterDnsRebindIP=[process,][domain:]ip_pattern[;y|n]
+//   - FilterDnsIP=[process,][domain:]ip_pattern[;y|n]
 //     * action defaults to 'y' (filter)
 //     * action delimiter is ';' (preferred)
 //     * for backward compatibility, action also accepts ':y|n' and ',y|n'
-//     * ip_pattern supports IPv4/IPv6 and optional CIDR prefix (e.g. 10.0.0.0/8, fc00::/7)
+//     * ip_pattern supports:
+//         - IPv4/IPv6 with optional CIDR prefix (e.g. 10.0.0.0/8, fc00::/7)
+//         - IPv4/IPv6 inclusive ranges using '-' (e.g. 10.0.0.10-10.0.0.99, 2001:db8::1-2001:db8::ffff)
 //     * process and domain support '*' and '?' wildcards (case-insensitive)
 //     * more specific rules override less specific rules
 //     * defaults are provided by [TemplateDnsRebindProtection] in Templates.ini
 //
 // Notes:
-//   - Default FilterDnsRebindIP rules should be provided by Templates.ini.
+//   - Default FilterDnsIP rules should be provided by Templates.ini.
 //
 // Priority/Integration:
 //   NetworkDnsFilterExclude and NetworkDnsFilter rules take precedence.

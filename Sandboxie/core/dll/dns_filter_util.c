@@ -26,6 +26,7 @@
 #include "common/my_wsa.h" // _htons
 
 #include "dns_filter_util.h"
+#include "dns_rebind.h"
 
 //---------------------------------------------------------------------------
 // DNS_GetTypeName
@@ -138,6 +139,30 @@ BOOLEAN DNS_IsTypeInFilterListEx(const DNS_TYPE_FILTER* type_filter, USHORT quer
 BOOLEAN DNS_CanSynthesizeResponse(USHORT query_type)
 {
     return (query_type == DNS_TYPE_A || query_type == DNS_TYPE_AAAA || query_type == 255);
+}
+
+//---------------------------------------------------------------------------
+// DNS_IsSingleLabelDomain
+//---------------------------------------------------------------------------
+
+BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain)
+{
+    if (!domain || !*domain)
+        return FALSE;
+
+    size_t len = wcslen(domain);
+    while (len > 0 && domain[len - 1] == L'.')
+        len--;
+
+    if (len == 0)
+        return FALSE;
+
+    for (size_t i = 0; i < len; ++i) {
+        if (domain[i] == L'.')
+            return FALSE;
+    }
+
+    return TRUE;
 }
 
 //---------------------------------------------------------------------------
@@ -323,10 +348,25 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
         CharSet = DnsCharSetUnicode;
     }
 
+    WCHAR filtered_msg[512];
+    filtered_msg[0] = L'\0';
+
     for (IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (!is_any_query && entry->Type != targetType) {
             if (!(wType == DNS_TYPE_AAAA && DNS_MapIpv4ToIpv6 && !has_ipv6 && entry->Type == AF_INET))
                 continue;
+        }
+
+        // Apply DNS rebind protection: omit filtered IPs entirely.
+        // Only apply if FilterDnsApi is enabled (respects user's hook enablement choice).
+        // Do NOT synthesize 0.0.0.0/:: placeholders, as that leaks into callers (e.g., ping 0.0.0.0).
+        if (DNS_DnsApiHookEnabled && DNS_Rebind_ShouldFilterIpForDomain(domainName, &entry->IP)) {
+            DNS_Rebind_AppendFilteredIpMsg(
+                filtered_msg,
+                (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                entry->Type,
+                &entry->IP);
+            continue;
         }
 
         PDNSAPI_DNS_RECORD pRecord = (PDNSAPI_DNS_RECORD)LocalAlloc(LPTR, sizeof(DNSAPI_DNS_RECORD));
@@ -400,6 +440,10 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
             pLastRecord->pNext = pRecord;
             pLastRecord = pRecord;
         }
+    }
+
+    if (filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domainName, DNS_REBIND_LOG_TAG_FILTER)) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domainName, filtered_msg);
     }
 
     return pFirstRecord;

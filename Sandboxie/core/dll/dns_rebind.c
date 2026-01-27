@@ -32,11 +32,44 @@
 #include "dns_rebind.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_filter_util.h"
 #include "dns_wire.h"
 #include "dns_encrypted.h"  // For EncryptedDns_IsServerHostname()
 #include "common/netfw.h"
 #include "common/list.h"
 #include "common/pattern.h"
+
+// External from net.c
+extern void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
+
+//---------------------------------------------------------------------------
+// DNS_Rebind_AppendFilteredIpMsg
+//---------------------------------------------------------------------------
+
+_FX void DNS_Rebind_AppendFilteredIpMsg(
+    WCHAR* msg,
+    SIZE_T msg_cch,
+    ADDRESS_FAMILY af,
+    const IP_ADDRESS* pIP)
+{
+    if (!msg || msg_cch == 0 || !pIP)
+        return;
+
+    msg[msg_cch - 1] = L'\0';
+
+    SIZE_T len = wcslen(msg);
+    if (len >= msg_cch - 1)
+        return;
+
+    WCHAR ip_msg[128] = L"";
+    WSA_DumpIP(af, (IP_ADDRESS*)pIP, ip_msg);
+
+    SIZE_T avail = msg_cch - 1 - len;
+    if (avail == 0)
+        return;
+
+    Sbie_snwprintf(msg + len, avail + 1, L"%s", ip_msg);
+}
 
 //---------------------------------------------------------------------------
 // Configuration
@@ -165,9 +198,19 @@ typedef struct _REBIND_IP_RULE {
     WCHAR* ip_pattern;          // IP pattern string (for logging)
     BOOLEAN enabled;            // TRUE = filter, FALSE = allow/override
     USHORT af;                  // AF_INET or AF_INET6
-    UCHAR prefix_len;           // CIDR prefix bits (0-32 or 0-128)
-    IP_ADDRESS ip;              // Address bytes (AF_INET stored in Data[12..15])
+    UCHAR prefix_len;           // CIDR prefix bits (0-32 or 0-128), or range specificity
+    IP_ADDRESS ip;              // CIDR address, or range start (AF_INET stored in Data[12..15])
+    BOOLEAN is_range;           // TRUE if ip..ip_end is used (inclusive range)
+    IP_ADDRESS ip_end;          // Range end address (only valid when is_range=TRUE)
 } REBIND_IP_RULE;
+
+//---------------------------------------------------------------------------
+// Module State
+//---------------------------------------------------------------------------
+
+// Indicates whether DnsRebindProtection has any enabled patterns.
+// Used to suppress FilterDnsIP-related logging when protection is disabled.
+static BOOLEAN DNS_Rebind_ProtectionEnabled = FALSE;
 
 //---------------------------------------------------------------------------
 // Simple wildcard pattern matcher (supports * and ? wildcards)
@@ -181,69 +224,12 @@ static BOOLEAN DNS_Rebind_ParseProtectionConfig(
     BOOLEAN* pEnabledOut);
 static BOOLEAN DNS_Rebind_AddPattern(const WCHAR* process_pattern, const WCHAR* domain_pattern, BOOLEAN enabled);
 
-// Suppress duplicate rebind-check debug logs for the same domain
-#define DNS_REBIND_LOG_SUPPRESS_SIZE 32
-#define DNS_REBIND_LOG_SUPPRESS_MS   2000
-typedef struct _DNS_REBIND_LOG_ENTRY {
-    ULONG     hash;
-    ULONGLONG tick;
-    BOOLEAN   valid;
-} DNS_REBIND_LOG_ENTRY;
-
-static DNS_REBIND_LOG_ENTRY g_RebindLogCache[DNS_REBIND_LOG_SUPPRESS_SIZE];
-static CRITICAL_SECTION g_RebindLogLock;
-static BOOLEAN g_RebindLogInit = FALSE;
-
-static ULONG DNS_Rebind_HashString(const WCHAR* str)
-{
-    ULONG hash = 2166136261u;
-    if (!str)
-        return hash;
-    for (const WCHAR* p = str; *p; ++p) {
-        hash ^= (ULONG)towlower(*p);
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-static void DNS_Rebind_InitLogCache(void)
-{
-    if (!g_RebindLogInit) {
-        InitializeCriticalSection(&g_RebindLogLock);
-        memset(g_RebindLogCache, 0, sizeof(g_RebindLogCache));
-        g_RebindLogInit = TRUE;
-    }
-}
-
-static BOOLEAN DNS_Rebind_ShouldSuppressLog(const WCHAR* domain)
-{
-    if (!DNS_IsSuppressLogEnabled())
-        return FALSE;
-
-    if (!domain || !domain[0])
-        return FALSE;
-
-    DNS_Rebind_InitLogCache();
-
-    ULONG h = DNS_Rebind_HashString(domain);
-    ULONG idx = h % DNS_REBIND_LOG_SUPPRESS_SIZE;
-    ULONGLONG now = GetTickCount64();
-
-    EnterCriticalSection(&g_RebindLogLock);
-    DNS_REBIND_LOG_ENTRY* entry = &g_RebindLogCache[idx];
-    if (entry->valid && entry->hash == h && (now - entry->tick) < DNS_REBIND_LOG_SUPPRESS_MS) {
-        LeaveCriticalSection(&g_RebindLogLock);
-        return TRUE;
-    }
-    entry->valid = TRUE;
-    entry->hash = h;
-    entry->tick = now;
-    LeaveCriticalSection(&g_RebindLogLock);
-    return FALSE;
-}
-
 static BOOLEAN DNS_Rebind_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
     if (!pattern || !str) return FALSE;
+
+    if (_wcsicmp(pattern, L"@nodot@") == 0) {
+        return DNS_IsSingleLabelDomain(str);
+    }
     while (*pattern) {
         if (*pattern == L'*') {
             pattern++;
@@ -265,7 +251,7 @@ static BOOLEAN DNS_Rebind_MatchWildcard(const WCHAR* pattern, const WCHAR* str) 
 }
 
 //---------------------------------------------------------------------------
-// FilterDnsRebindIP parsing helpers
+// FilterDnsIP parsing helpers
 //---------------------------------------------------------------------------
 
 static WCHAR* DNS_Rebind_FindCharOutsideBrackets(WCHAR* s, WCHAR ch)
@@ -317,16 +303,16 @@ static WCHAR* DNS_Rebind_TrimInPlace(WCHAR* s)
     return s;
 }
 
-static BOOLEAN DNS_Rebind_ParseIpPattern(const WCHAR* ip_pattern, USHORT* pAf, UCHAR* pPrefix, IP_ADDRESS* pIpOut)
+static BOOLEAN DNS_Rebind_ParseIpAddressString(const WCHAR* ip_string, USHORT* pAf, IP_ADDRESS* pIpOut)
 {
-    if (!ip_pattern || !ip_pattern[0] || !pAf || !pPrefix || !pIpOut)
+    if (!ip_string || !ip_string[0] || !pAf || !pIpOut)
         return FALSE;
 
-    WCHAR tmp[80];
-    size_t in_len = wcslen(ip_pattern);
+    WCHAR tmp[256];
+    size_t in_len = wcslen(ip_string);
     if (in_len >= ARRAYSIZE(tmp))
         return FALSE;
-    wmemcpy(tmp, ip_pattern, in_len + 1);
+    wmemcpy(tmp, ip_string, in_len + 1);
 
     WCHAR* s = DNS_Rebind_TrimInPlace(tmp);
     size_t len = wcslen(s);
@@ -343,42 +329,7 @@ static BOOLEAN DNS_Rebind_ParseIpPattern(const WCHAR* ip_pattern, USHORT* pAf, U
             return FALSE;
     }
 
-    UCHAR prefix = 0;
-    BOOLEAN has_prefix = FALSE;
-    WCHAR* slash = wcschr(s, L'/');
-    if (slash) {
-        *slash = 0;
-        WCHAR* pfx = DNS_Rebind_TrimInPlace(slash + 1);
-        if (!pfx || !pfx[0])
-            return FALSE;
-        int pfx_i = _wtoi(pfx);
-        if (pfx_i < 0)
-            return FALSE;
-        prefix = (UCHAR)pfx_i;
-        has_prefix = TRUE;
-    }
-
-    // Trim whitespace after CIDR prefix removal
-    s = DNS_Rebind_TrimInPlace(s);
-    if (!s || !s[0])
-        return FALSE;
-
-    // Strip IPv6 bracket notation [ipv6addr] used in config format
-    WCHAR stripped_ipv6[256] = {0};
     const WCHAR* addr = s;
-    if (s[0] == L'[') {
-        // IPv6 in brackets - find closing bracket
-        WCHAR* closing = wcschr(s, L']');
-        if (!closing || closing == s + 1)
-            return FALSE;  // Mismatched brackets or empty
-        // Copy content between brackets
-        int len = (int)(closing - s - 1);
-        if (len >= (int)sizeof(stripped_ipv6) / sizeof(WCHAR))
-            return FALSE;  // Address too long
-        wcsncpy(stripped_ipv6, s + 1, len);
-        stripped_ipv6[len] = 0;
-        addr = stripped_ipv6;
-    }
 
     // Basic validation: check for invalid patterns like multiple consecutive dots
     // This catches malformed IPs like "224.0.0.0.1" that _inet_pton would partially parse
@@ -412,6 +363,54 @@ static BOOLEAN DNS_Rebind_ParseIpPattern(const WCHAR* ip_pattern, USHORT* pAf, U
     if (_inet_xton(addr, (ULONG)wcslen(addr), &ip, &af) != 1)
         return FALSE;
 
+    if (af != AF_INET && af != AF_INET6)
+        return FALSE;
+
+    *pAf = af;
+    *pIpOut = ip;
+    return TRUE;
+}
+
+static BOOLEAN DNS_Rebind_ParseIpCidrPattern(const WCHAR* ip_pattern, USHORT* pAf, UCHAR* pPrefix, IP_ADDRESS* pIpOut)
+{
+    if (!ip_pattern || !ip_pattern[0] || !pAf || !pPrefix || !pIpOut)
+        return FALSE;
+
+    WCHAR tmp[256];
+    size_t in_len = wcslen(ip_pattern);
+    if (in_len >= ARRAYSIZE(tmp))
+        return FALSE;
+    wmemcpy(tmp, ip_pattern, in_len + 1);
+
+    WCHAR* s = DNS_Rebind_TrimInPlace(tmp);
+    if (!s || !s[0])
+        return FALSE;
+
+    UCHAR prefix = 0;
+    BOOLEAN has_prefix = FALSE;
+    WCHAR* slash = wcschr(s, L'/');
+    if (slash) {
+        *slash = 0;
+        WCHAR* pfx = DNS_Rebind_TrimInPlace(slash + 1);
+        if (!pfx || !pfx[0])
+            return FALSE;
+        int pfx_i = _wtoi(pfx);
+        if (pfx_i < 0)
+            return FALSE;
+        prefix = (UCHAR)pfx_i;
+        has_prefix = TRUE;
+    }
+
+    s = DNS_Rebind_TrimInPlace(s);
+    if (!s || !s[0])
+        return FALSE;
+
+    IP_ADDRESS ip;
+    USHORT af = 0;
+    memset(&ip, 0, sizeof(ip));
+    if (!DNS_Rebind_ParseIpAddressString(s, &af, &ip))
+        return FALSE;
+
     if (af == AF_INET) {
         if (!has_prefix)
             prefix = 32;
@@ -430,6 +429,132 @@ static BOOLEAN DNS_Rebind_ParseIpPattern(const WCHAR* ip_pattern, USHORT* pAf, U
     *pPrefix = prefix;
     *pIpOut = ip;
     return TRUE;
+}
+
+static int DNS_Rebind_CommonPrefixBits(const BYTE* a, const BYTE* b, int bytes)
+{
+    if (!a || !b || bytes <= 0)
+        return 0;
+
+    int bits = 0;
+    for (int i = 0; i < bytes; ++i) {
+        BYTE x = (BYTE)(a[i] ^ b[i]);
+        if (x == 0) {
+            bits += 8;
+            continue;
+        }
+        for (int bit = 7; bit >= 0; --bit) {
+            if ((x & (1u << bit)) == 0)
+                bits++;
+            else
+                return bits;
+        }
+    }
+    return bits;
+}
+
+static BOOLEAN DNS_Rebind_ParseIpRangePattern(const WCHAR* ip_pattern, USHORT* pAf, IP_ADDRESS* pStartOut, IP_ADDRESS* pEndOut, UCHAR* pSpecificityOut)
+{
+    if (!ip_pattern || !ip_pattern[0] || !pAf || !pStartOut || !pEndOut || !pSpecificityOut)
+        return FALSE;
+
+    WCHAR tmp[256];
+    size_t in_len = wcslen(ip_pattern);
+    if (in_len >= ARRAYSIZE(tmp))
+        return FALSE;
+    wmemcpy(tmp, ip_pattern, in_len + 1);
+
+    WCHAR* s = DNS_Rebind_TrimInPlace(tmp);
+    if (!s || !s[0])
+        return FALSE;
+
+    // Range syntax: <start> - <end> (dash outside brackets)
+    WCHAR* dash = DNS_Rebind_FindCharOutsideBrackets(s, L'-');
+    if (!dash)
+        return FALSE;
+
+    *dash = 0;
+    WCHAR* s_start = DNS_Rebind_TrimInPlace(s);
+    WCHAR* s_end = DNS_Rebind_TrimInPlace(dash + 1);
+    if (!s_start || !s_start[0] || !s_end || !s_end[0])
+        return FALSE;
+
+    IP_ADDRESS ip_start, ip_end;
+    USHORT af_start = 0, af_end = 0;
+    memset(&ip_start, 0, sizeof(ip_start));
+    memset(&ip_end, 0, sizeof(ip_end));
+    if (!DNS_Rebind_ParseIpAddressString(s_start, &af_start, &ip_start))
+        return FALSE;
+    if (!DNS_Rebind_ParseIpAddressString(s_end, &af_end, &ip_end))
+        return FALSE;
+    if (af_start != af_end)
+        return FALSE;
+
+    // Normalize ordering so start <= end (memcmp works for big-endian address bytes).
+    int bytes = (af_start == AF_INET) ? 4 : 16;
+    const BYTE* a = (af_start == AF_INET) ? &ip_start.Data[12] : (const BYTE*)ip_start.Data;
+    const BYTE* b = (af_start == AF_INET) ? &ip_end.Data[12] : (const BYTE*)ip_end.Data;
+    if (memcmp(a, b, (size_t)bytes) > 0) {
+        IP_ADDRESS tmp_ip = ip_start;
+        ip_start = ip_end;
+        ip_end = tmp_ip;
+    }
+
+    // Specificity for scoring: common-prefix length between start/end.
+    const BYTE* a2 = (af_start == AF_INET) ? &ip_start.Data[12] : (const BYTE*)ip_start.Data;
+    const BYTE* b2 = (af_start == AF_INET) ? &ip_end.Data[12] : (const BYTE*)ip_end.Data;
+    int common_bits = DNS_Rebind_CommonPrefixBits(a2, b2, bytes);
+    if (common_bits < 0)
+        common_bits = 0;
+    if (af_start == AF_INET && common_bits > 32)
+        common_bits = 32;
+    if (af_start == AF_INET6 && common_bits > 128)
+        common_bits = 128;
+
+    *pAf = af_start;
+    *pStartOut = ip_start;
+    *pEndOut = ip_end;
+    *pSpecificityOut = (UCHAR)common_bits;
+    return TRUE;
+}
+
+static BOOLEAN DNS_Rebind_ParseIpSpec(const WCHAR* ip_pattern, USHORT* pAf, UCHAR* pPrefix, IP_ADDRESS* pIpStartOut, BOOLEAN* pIsRangeOut, IP_ADDRESS* pIpEndOut)
+{
+    if (!ip_pattern || !ip_pattern[0] || !pAf || !pPrefix || !pIpStartOut || !pIsRangeOut || !pIpEndOut)
+        return FALSE;
+
+    // Prefer explicit range parsing if a dash exists outside brackets.
+    {
+        USHORT af = 0;
+        IP_ADDRESS start_ip, end_ip;
+        UCHAR spec = 0;
+        memset(&start_ip, 0, sizeof(start_ip));
+        memset(&end_ip, 0, sizeof(end_ip));
+        if (DNS_Rebind_ParseIpRangePattern(ip_pattern, &af, &start_ip, &end_ip, &spec)) {
+            *pAf = af;
+            *pPrefix = spec;
+            *pIpStartOut = start_ip;
+            *pIpEndOut = end_ip;
+            *pIsRangeOut = TRUE;
+            return TRUE;
+        }
+    }
+
+    // Fall back to single IP/CIDR.
+    {
+        USHORT af = 0;
+        UCHAR prefix = 0;
+        IP_ADDRESS ip;
+        memset(&ip, 0, sizeof(ip));
+        if (!DNS_Rebind_ParseIpCidrPattern(ip_pattern, &af, &prefix, &ip))
+            return FALSE;
+        *pAf = af;
+        *pPrefix = prefix;
+        *pIpStartOut = ip;
+        memset(pIpEndOut, 0, sizeof(*pIpEndOut));
+        *pIsRangeOut = FALSE;
+        return TRUE;
+    }
 }
 
 static BOOLEAN DNS_Rebind_MatchPrefixBits(const BYTE* addr, const BYTE* rule, int bits, int bytes)
@@ -456,6 +581,17 @@ static BOOLEAN DNS_Rebind_MatchPrefixBits(const BYTE* addr, const BYTE* rule, in
 
     BYTE mask = (BYTE)(0xFF << (8 - rem_bits));
     return (addr[full_bytes] & mask) == (rule[full_bytes] & mask);
+}
+
+static BOOLEAN DNS_Rebind_IsBytesInRangeInclusive(const BYTE* value, const BYTE* start, const BYTE* end, int bytes)
+{
+    if (!value || !start || !end || bytes <= 0)
+        return FALSE;
+    if (memcmp(value, start, (size_t)bytes) < 0)
+        return FALSE;
+    if (memcmp(value, end, (size_t)bytes) > 0)
+        return FALSE;
+    return TRUE;
 }
 
 static void DNS_Rebind_GetV4Candidates(const IP_ADDRESS* pIP, BYTE out1[4], BYTE out2[4])
@@ -507,7 +643,7 @@ static BOOLEAN DNS_Rebind_IpRuleMatches(const REBIND_IP_RULE* rule, const WCHAR*
         if (inv)
             match = !match;
         if (!match) {
-            if (!DNS_Rebind_ShouldSuppressLog(domain)) {
+            if (DNS_Rebind_ProtectionEnabled && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
                 DNS_TRACE_LOG(L"[DNS Rebind IP] Process mismatch: pat=%s, image=%s", rule->process_pattern, image_name);
             }
             return FALSE;
@@ -526,16 +662,29 @@ static BOOLEAN DNS_Rebind_IpRuleMatches(const REBIND_IP_RULE* rule, const WCHAR*
             return FALSE;
         BYTE cand1[4], cand2[4];
         DNS_Rebind_GetV4Candidates(pIP, cand1, cand2);
-        const BYTE* rule4 = &rule->ip.Data[12];
-        int bits = (int)rule->prefix_len;
-        if (DNS_Rebind_MatchPrefixBits(cand1, rule4, bits, 4))
-            return TRUE;
-        if (DNS_Rebind_MatchPrefixBits(cand2, rule4, bits, 4))
-            return TRUE;
-        return FALSE;
+        if (rule->is_range) {
+            const BYTE* start4 = &rule->ip.Data[12];
+            const BYTE* end4 = &rule->ip_end.Data[12];
+            if (DNS_Rebind_IsBytesInRangeInclusive(cand1, start4, end4, 4))
+                return TRUE;
+            if (DNS_Rebind_IsBytesInRangeInclusive(cand2, start4, end4, 4))
+                return TRUE;
+            return FALSE;
+        } else {
+            const BYTE* rule4 = &rule->ip.Data[12];
+            int bits = (int)rule->prefix_len;
+            if (DNS_Rebind_MatchPrefixBits(cand1, rule4, bits, 4))
+                return TRUE;
+            if (DNS_Rebind_MatchPrefixBits(cand2, rule4, bits, 4))
+                return TRUE;
+            return FALSE;
+        }
     }
 
     if (rule->af == AF_INET6) {
+        if (rule->is_range) {
+            return DNS_Rebind_IsBytesInRangeInclusive((const BYTE*)pIP->Data, (const BYTE*)rule->ip.Data, (const BYTE*)rule->ip_end.Data, 16);
+        }
         return DNS_Rebind_MatchPrefixBits((const BYTE*)pIP->Data, (const BYTE*)rule->ip.Data, (int)rule->prefix_len, 16);
     }
 
@@ -590,7 +739,10 @@ static BOOLEAN DNS_Rebind_AddFilteredIpRule(const WCHAR* process_pattern, const 
     UCHAR prefix = 0;
     IP_ADDRESS ip;
     memset(&ip, 0, sizeof(ip));
-    if (!DNS_Rebind_ParseIpPattern(ip_pattern, &af, &prefix, &ip))
+    BOOLEAN is_range = FALSE;
+    IP_ADDRESS ip_end;
+    memset(&ip_end, 0, sizeof(ip_end));
+    if (!DNS_Rebind_ParseIpSpec(ip_pattern, &af, &prefix, &ip, &is_range, &ip_end))
         return FALSE;
 
     REBIND_IP_RULE* rule = (REBIND_IP_RULE*)Dll_Alloc(sizeof(REBIND_IP_RULE));
@@ -602,6 +754,8 @@ static BOOLEAN DNS_Rebind_AddFilteredIpRule(const WCHAR* process_pattern, const 
     rule->af = af;
     rule->prefix_len = prefix;
     rule->ip = ip;
+    rule->is_range = is_range;
+    rule->ip_end = ip_end;
     rule->process_pattern = DNS_Rebind_DuplicateString(process_pattern);
     rule->domain_pattern = DNS_Rebind_DuplicateString(domain_pattern);
     rule->ip_pattern = DNS_Rebind_DuplicateString(ip_pattern);
@@ -680,8 +834,11 @@ static BOOLEAN DNS_Rebind_ParseFilteredIpRuleValue(WCHAR* buf, WCHAR** pProcOut,
         USHORT af = 0;
         UCHAR prefix = 0;
         IP_ADDRESS ip_tmp;
+        IP_ADDRESS ip_end_tmp;
+        BOOLEAN is_range_tmp = FALSE;
         memset(&ip_tmp, 0, sizeof(ip_tmp));
-        if (DNS_Rebind_ParseIpPattern(s, &af, &prefix, &ip_tmp)) {
+        memset(&ip_end_tmp, 0, sizeof(ip_end_tmp));
+        if (DNS_Rebind_ParseIpSpec(s, &af, &prefix, &ip_tmp, &is_range_tmp, &ip_end_tmp)) {
             WCHAR* ip = DNS_Rebind_TrimInPlace(s);
             if (ip && ip[0])
                 *pIpOut = ip;
@@ -710,9 +867,17 @@ static BOOLEAN DNS_Rebind_ParseFilteredIpRuleValue(WCHAR* buf, WCHAR** pProcOut,
 
 static void DNS_Rebind_LoadFilteredIpRulesFromSection(const WCHAR* section_name)
 {
+    if (!DNS_Rebind_ProtectionEnabled)
+        return;
+
     static const WCHAR* kSettingNames[] = {
-        L"FilterDnsRebindIP"
+        L"FilterDnsIP"
     };
+
+    const WCHAR* log_section = section_name;
+    if (!log_section || !log_section[0]) {
+        log_section = (Dll_BoxName && Dll_BoxName[0]) ? Dll_BoxName : L"<box>";
+    }
 
     WCHAR conf_buf[256];
     for (int setting_index = 0; setting_index < ARRAYSIZE(kSettingNames); ++setting_index) {
@@ -728,8 +893,9 @@ static void DNS_Rebind_LoadFilteredIpRulesFromSection(const WCHAR* section_name)
                 continue;
 
             // Debug: log each rule value read from config
-            DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsRebindIP read from [%s][%d]: %s",
-                          section_name ? section_name : L"<box>", index, value);
+            DNS_TRACE_LOG(L"[DNS Rebind] %s read from [%s][%d]: %s",
+                          setting_name,
+                          log_section, index, value);
 
             size_t value_len = wcslen(value);
             WCHAR* buf = (WCHAR*)Dll_Alloc((value_len + 1) * sizeof(WCHAR));
@@ -744,21 +910,23 @@ static void DNS_Rebind_LoadFilteredIpRulesFromSection(const WCHAR* section_name)
 
             if (DNS_Rebind_ParseFilteredIpRuleValue(buf, &proc_pat, &dom_pat, &ip_pat, &enabled)) {
                 if (!DNS_Rebind_AddFilteredIpRule(proc_pat, dom_pat, ip_pat, enabled)) {
-                    DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsRebindIP add failed in [%s]: proc=%s, dom=%s, ip=%s",
-                                  section_name ? section_name : L"<box>",
+                    DNS_TRACE_LOG(L"[DNS Rebind] %s add failed in [%s]: proc=%s, dom=%s, ip=%s",
+                                  setting_name,
+                                  log_section,
                                   proc_pat ? proc_pat : L"(all)",
                                   dom_pat ? dom_pat : L"(all)",
                                   ip_pat ? ip_pat : L"(null)");
                 } else {
-                    DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsRebindIP added from [%s]: proc=%s, dom=%s, ip=%s, enabled=%d",
-                                  section_name ? section_name : L"<box>",
+                    DNS_TRACE_LOG(L"[DNS Rebind] %s added from [%s]: proc=%s, dom=%s, ip=%s, enabled=%d",
+                                  setting_name,
+                                  log_section,
                                   proc_pat ? proc_pat : L"(all)",
                                   dom_pat ? dom_pat : L"(all)",
                                   ip_pat ? ip_pat : L"(null)",
                                   enabled ? 1 : 0);
                 }
             } else {
-                DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsRebindIP parse failed in [%s]: %s", section_name ? section_name : L"<box>", value);
+                DNS_TRACE_LOG(L"[DNS Rebind] %s parse failed in [%s]: %s", setting_name, log_section, value);
             }
 
             Dll_Free(buf);
@@ -818,7 +986,7 @@ static BOOLEAN DNS_Rebind_IsFilteredIpByRuleList(const WCHAR* domain, const IP_A
                              (pIP->Data32[2] == 0 || (pIP->Data[10] == 0xFF && pIP->Data[11] == 0xFF))) ? AF_INET : AF_INET6;
         WSA_DumpIP(af, (IP_ADDRESS*)pIP, msg);
         
-        if (!DNS_Rebind_ShouldSuppressLog(domain)) {
+        if (DNS_Rebind_ProtectionEnabled && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
             DNS_TRACE_LOG(L"[DNS Rebind IP] Rule matched: proc=%s, dom=%s, ip_pattern=%s, score=%ld, enabled=%d%s",
                           entry->process_pattern ? entry->process_pattern : L"(all)",
                           entry->domain_pattern ? entry->domain_pattern : L"(all)",
@@ -863,6 +1031,9 @@ static int DNS_Rebind_SpecificityScore(const WCHAR* pattern)
 
 _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
 {
+    if (!DNS_Rebind_ProtectionEnabled)
+        return FALSE;
+
     // Check if protection is enabled for this domain
     // Returns TRUE if rebind protection should be applied
     // 
@@ -951,7 +1122,7 @@ _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
     }
 
     if (best) {
-        if (!DNS_Rebind_ShouldSuppressLog(domain)) {
+        if (best->enabled && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
             DNS_DEBUG_LOG(L"[DNS Rebind Check] Domain %s matched best rule (score=%ld) enabled=%d proc=%s dom=%s",
                           domain,
                           best_score,
@@ -960,10 +1131,6 @@ _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
                           best->domain_pattern ? best->domain_pattern : L"(all)");
         }
         return best->enabled;
-    }
-
-    if (!DNS_Rebind_ShouldSuppressLog(domain)) {
-        DNS_DEBUG_LOG(L"[DNS Rebind Check] Domain %s - no match, disabled", domain);
     }
     return FALSE;
 }
@@ -1051,7 +1218,7 @@ _FX void DNS_Rebind_SanitizeAddrInfoW(const WCHAR* domain, PADDRINFOW* ppResult)
             P_FreeAddrInfoW freeW = DNS_Rebind_GetFreeAddrInfoW();
             if (freeW)
                 freeW(cur);
-            else if (!DNS_Rebind_ShouldSuppressLog(domain))
+            else if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
                 DNS_DEBUG_LOG(L"[DNS Rebind] FreeAddrInfoW not available while filtering %s", domain);
             ++filtered;
         } else {
@@ -1061,7 +1228,7 @@ _FX void DNS_Rebind_SanitizeAddrInfoW(const WCHAR* domain, PADDRINFOW* ppResult)
         cur = next;
     }
 
-    if (filtered && !DNS_Rebind_ShouldSuppressLog(domain)) {
+    if (filtered && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
         DNS_TRACE_LOG(L"[DNS Rebind] Filtered ADDRINFOW results for domain: %s (filtered=%lu, kept=%lu)",
                       domain, filtered, kept);
     }
@@ -1091,7 +1258,7 @@ _FX void DNS_Rebind_SanitizeAddrInfoA(const WCHAR* domain, PADDRINFOA* ppResult)
             P_freeaddrinfo freeA = DNS_Rebind_GetFreeAddrInfoA();
             if (freeA)
                 freeA(cur);
-            else if (!DNS_Rebind_ShouldSuppressLog(domain))
+            else if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
                 DNS_DEBUG_LOG(L"[DNS Rebind] freeaddrinfo not available while filtering %s", domain);
             ++filtered;
         } else {
@@ -1101,7 +1268,7 @@ _FX void DNS_Rebind_SanitizeAddrInfoA(const WCHAR* domain, PADDRINFOA* ppResult)
         cur = next;
     }
 
-    if (filtered && !DNS_Rebind_ShouldSuppressLog(domain)) {
+    if (filtered && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
         DNS_TRACE_LOG(L"[DNS Rebind] Filtered ADDRINFOA results for domain: %s (filtered=%lu, kept=%lu)",
                       domain, filtered, kept);
     }
@@ -1187,7 +1354,7 @@ _FX void DNS_Rebind_SanitizeWSAQuerySetW(const WCHAR* domain, LPWSAQUERYSETW lpq
         }
     }
 
-    if ((filtered_csaddr || filtered_hostent) && !DNS_Rebind_ShouldSuppressLog(domain)) {
+    if ((filtered_csaddr || filtered_hostent) && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
         DNS_TRACE_LOG(L"[DNS Rebind] Filtered WSAQUERYSETW for domain: %s (CSADDR filtered=%lu, kept=%lu; HOSTENT filtered=%lu, kept=%lu)",
                       domain, filtered_csaddr, kept_csaddr, filtered_hostent, kept_hostent);
     }
@@ -1236,7 +1403,7 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
             P_DnsRecordListFree freeRec = DNS_Rebind_GetDnsRecordListFree();
             if (freeRec)
                 freeRec(rec, DnsFreeRecordList);
-            else if (!DNS_Rebind_ShouldSuppressLog(domain))
+            else if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
                 DNS_DEBUG_LOG(L"[DNS Rebind] DnsRecordListFree not available while filtering %s", domain);
         } else {
             prev = rec;
@@ -1245,7 +1412,7 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
         rec = next;
     }
 
-    if ((filteredA || filteredAAAA) && !DNS_Rebind_ShouldSuppressLog(domain)) {
+    if ((filteredA || filteredAAAA) && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
         DNS_TRACE_LOG(L"[DNS Rebind] Filtered passthrough DNS_RECORDs for domain: %s (A=%lu, AAAA=%lu)",
                       domain, filteredA, filteredAAAA);
     }
@@ -1329,7 +1496,9 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
         return FALSE;
 
     USHORT answer_count = _ntohs(header->AnswerRRs);
-    if (answer_count == 0)
+    USHORT ns_count = _ntohs(header->AuthorityRRs);
+    USHORT add_count = _ntohs(header->AdditionalRRs);
+    if (answer_count == 0 && ns_count == 0 && add_count == 0)
         return FALSE;
 
     int offset = (int)sizeof(DNS_WIRE_HEADER);
@@ -1346,72 +1515,110 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
 
     ULONG filteredA = 0;
     ULONG filteredAAAA = 0;
-    USHORT kept_answers = 0;
 
-    int answer_start = offset;
+    typedef struct _DNS_REBIND_FILTERED_IP {
+        ADDRESS_FAMILY af;
+        IP_ADDRESS     ip;
+    } DNS_REBIND_FILTERED_IP;
+
+    // Capture a few filtered IPs for logging (avoid unbounded log spam).
+    DNS_REBIND_FILTERED_IP filtered_ips[16];
+    ULONG filtered_ip_count = 0;
+    USHORT kept_answers = 0;
+    USHORT kept_ns = 0;
+    USHORT kept_add = 0;
+
     int read_offset = offset;
     int write_offset = offset;
 
-    for (USHORT a = 0; a < answer_count && read_offset < dns_len; a++) {
-        int rr_start = read_offset;
-        if (!DNS_Rebind_SkipDnsName(dns_data, dns_len, &read_offset))
-            break;
+    // Sanitize A/AAAA RRs across all sections (Answer/Authority/Additional).
+    // This prevents bypasses via glue records in Additional section.
+    struct {
+        USHORT count;
+        USHORT* kept;
+    } sections[3] = {
+        { answer_count, &kept_answers },
+        { ns_count, &kept_ns },
+        { add_count, &kept_add },
+    };
 
-        // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
-        if (read_offset + 10 > dns_len)
-            break;
+    for (int s = 0; s < 3; ++s) {
+        for (USHORT i = 0; i < sections[s].count; ++i) {
+            int rr_start = read_offset;
+            if (!DNS_Rebind_SkipDnsName(dns_data, dns_len, &read_offset))
+                return FALSE;
 
-        USHORT rr_type = _ntohs(*(USHORT*)(dns_data + read_offset));
-        read_offset += 2;
-        read_offset += 2; // CLASS
-        read_offset += 4; // TTL
-        USHORT rdlength = _ntohs(*(USHORT*)(dns_data + read_offset));
-        read_offset += 2;
+            // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
+            if (read_offset + 10 > dns_len)
+                return FALSE;
 
-        if (read_offset + rdlength > dns_len)
-            break;
+            USHORT rr_type = _ntohs(*(USHORT*)(dns_data + read_offset));
+            read_offset += 2;
+            read_offset += 2; // CLASS
+            read_offset += 4; // TTL
+            USHORT rdlength = _ntohs(*(USHORT*)(dns_data + read_offset));
+            read_offset += 2;
 
-        BOOLEAN filtered = FALSE;
-        if (rr_type == DNS_TYPE_A && rdlength == 4) {
-            IP_ADDRESS ip;
-            DNS_Rebind_IPv4ToIpAddress(*(DWORD*)(dns_data + read_offset), &ip);
-            if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
-                filtered = TRUE;
-                filteredA++;
+            if (read_offset + rdlength > dns_len)
+                return FALSE;
+
+            BOOLEAN filtered = FALSE;
+            if (rr_type == DNS_TYPE_A && rdlength == 4) {
+                IP_ADDRESS ip;
+                DNS_Rebind_IPv4ToIpAddress(*(DWORD*)(dns_data + read_offset), &ip);
+                if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
+                    filtered = TRUE;
+                    filteredA++;
+
+                    if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
+                        filtered_ips[filtered_ip_count].af = AF_INET;
+                        filtered_ips[filtered_ip_count].ip = ip;
+                        filtered_ip_count++;
+                    }
+                }
             }
-        }
-        else if (rr_type == DNS_TYPE_AAAA && rdlength == 16) {
-            IP_ADDRESS ip;
-            DNS_Rebind_IPv6ToIpAddress(dns_data + read_offset, &ip);
-            if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
-                filtered = TRUE;
-                filteredAAAA++;
+            else if (rr_type == DNS_TYPE_AAAA && rdlength == 16) {
+                IP_ADDRESS ip;
+                DNS_Rebind_IPv6ToIpAddress(dns_data + read_offset, &ip);
+                if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
+                    filtered = TRUE;
+                    filteredAAAA++;
+
+                    if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
+                        filtered_ips[filtered_ip_count].af = AF_INET6;
+                        filtered_ips[filtered_ip_count].ip = ip;
+                        filtered_ip_count++;
+                    }
+                }
             }
+
+            int rr_end = read_offset + rdlength;
+            int rr_len = rr_end - rr_start;
+
+            if (!filtered) {
+                if (write_offset != rr_start)
+                    memmove(dns_data + write_offset, dns_data + rr_start, (size_t)rr_len);
+                write_offset += rr_len;
+                (*sections[s].kept)++;
+            }
+
+            read_offset = rr_end;
         }
-
-        int rr_end = read_offset + rdlength;
-        int rr_len = rr_end - rr_start;
-
-        if (!filtered) {
-            if (write_offset != rr_start)
-                memmove(dns_data + write_offset, dns_data + rr_start, (size_t)rr_len);
-            write_offset += rr_len;
-            kept_answers++;
-        }
-
-        read_offset = rr_end;
     }
 
-    int answer_end = read_offset;
-    if ((filteredA || filteredAAAA) && write_offset != answer_end) {
-        int tail_len = dns_len - answer_end;
+    int rr_end = read_offset;
+    if ((filteredA || filteredAAAA) && write_offset != rr_end) {
+        int tail_len = dns_len - rr_end;
         if (tail_len > 0)
-            memmove(dns_data + write_offset, dns_data + answer_end, (size_t)tail_len);
-        dns_len -= (answer_end - write_offset);
+            memmove(dns_data + write_offset, dns_data + rr_end, (size_t)tail_len);
+        dns_len -= (rr_end - write_offset);
     }
 
     if (filteredA || filteredAAAA) {
         header->AnswerRRs = _htons(kept_answers);
+        header->AuthorityRRs = _htons(kept_ns);
+        header->AdditionalRRs = _htons(kept_add);
+
         if (pNewLen) {
             if (has_length_prefix) {
                 *(USHORT*)data = _htons((USHORT)dns_len);
@@ -1428,7 +1635,27 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
         *pFilteredAAAA = filteredAAAA;
 
     if (filteredA || filteredAAAA) {
-        if (!DNS_Rebind_ShouldSuppressLog(domain)) {
+        // Use a distinct suppression tag for raw-wire responses, so a prior API
+        // log for the same domain (e.g. -type=A) doesn't suppress raw ANY logs.
+        if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_WIRE)) {
+            // Align raw wire-format filtering logs with other APIs: log filtered IPs once per response.
+            WCHAR msg[1024];
+            msg[0] = L'\0';
+            for (ULONG i = 0; i < filtered_ip_count; ++i) {
+                WCHAR ip_msg[128] = L"";
+                extern void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
+                WSA_DumpIP(filtered_ips[i].af, &filtered_ips[i].ip, ip_msg);
+
+                size_t len = wcslen(msg);
+                size_t avail = (sizeof(msg) / sizeof(msg[0])) - len;
+                if (avail <= 2)
+                    break;
+
+                // WSA_DumpIP output already includes a leading delimiter (e.g. "; IPv4: ...").
+                Sbie_snwprintf(msg + len, avail, L"%s", ip_msg);
+            }
+            DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, msg);
+
             DNS_TRACE_LOG(L"[DNS Rebind] Filtered raw DNS response for domain: %s (A=%lu, AAAA=%lu)",
                           domain, filteredA, filteredAAAA);
         }
@@ -1444,6 +1671,7 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
 
 // Parse a DnsRebindProtection config value into its components.
 // Format: [process_pattern,][domain_pattern:]y|n
+// Special token: @nodot@ matches single-label names (no dots, trailing dot ignored)
 // Returns TRUE if parsing succeeded, FALSE otherwise.
 static BOOLEAN DNS_Rebind_ParseProtectionConfig(
     WCHAR* buf,
@@ -1516,10 +1744,12 @@ static BOOLEAN DNS_Rebind_AddPattern(const WCHAR* process_pattern, const WCHAR* 
 
     List_Insert_After(&DNS_RebindPatterns, NULL, pattern);
 
-    DNS_TRACE_LOG(L"[DNS Rebind] Pattern %s: process=%s, domain=%s",
-                  enabled ? L"added" : L"excluded",
-                  pattern->process_pattern ? pattern->process_pattern : L"(all)",
-                  pattern->domain_pattern ? pattern->domain_pattern : L"(all)");
+    if (enabled) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Pattern %s: process=%s, domain=%s",
+                      L"added",
+                      pattern->process_pattern ? pattern->process_pattern : L"(all)",
+                      pattern->domain_pattern ? pattern->domain_pattern : L"(all)");
+    }
 
     return TRUE;
 }
@@ -1558,11 +1788,13 @@ _FX BOOLEAN DNS_Rebind_Init(void)
         }
     }
 
+    DNS_Rebind_ProtectionEnabled = has_enabled_pattern;
+
     if (has_enabled_pattern) {
         DNS_TRACE_LOG(L"[DNS Rebind] Protection loaded with %d pattern(s)",
                       List_Count(&DNS_RebindPatterns));
 
-        // Load FilterDnsRebindIP rules:
+        // Load FilterDnsIP rules:
         //   1) Always load defaults from Templates.ini template section
         //   2) Then load GlobalSettings overrides (if present)
         //   3) Finally load per-box overrides
@@ -1572,10 +1804,10 @@ _FX BOOLEAN DNS_Rebind_Init(void)
         DNS_Rebind_LoadFilteredIpRulesFromSection(NULL);
 
         if (List_Count(&DNS_RebindFilteredIpRules) > 0) {
-            DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsRebindIP loaded with %d rule(s)",
+            DNS_TRACE_LOG(L"[DNS Rebind] FilterDnsIP loaded with %d rule(s)",
                           List_Count(&DNS_RebindFilteredIpRules));
         } else {
-            DNS_DEBUG_LOG(L"[DNS Rebind] No FilterDnsRebindIP configured - rebind filtering disabled");
+            DNS_DEBUG_LOG(L"[DNS Rebind] No FilterDnsIP configured - rebind filtering disabled");
         }
     } else {
         DNS_DEBUG_LOG(L"[DNS Rebind] No enabled patterns - disabled");

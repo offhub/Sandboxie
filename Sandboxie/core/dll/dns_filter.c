@@ -55,6 +55,7 @@
 //     - Optional resolution mode per pattern:
 //         * sys: resolve via system DNS
 //         * enc: resolve via EncryptedDnsServer (if configured)
+//     - Special token: @nodot@ matches single-label names (no dots, trailing dot ignored)
 //
 // Hook enablement / behavior toggles:
 //   FilterDnsApi=[process,]y|n     (default: y)
@@ -116,6 +117,7 @@
 #include "common/map.h"
 #include "wsa_defs.h"
 #include "dnsapi_defs.h"
+#include "dns_rebind.h"
 
 // Additional getaddrinfo structures not defined in wsa_defs.h
 // (wsa_defs.h already defines ADDRINFOW, PADDRINFOW, P_GetAddrInfoW, P_FreeAddrInfoW)
@@ -130,17 +132,7 @@
 // Standard ai_flags values use lower bits (AI_PASSIVE=0x01, AI_CANONNAME=0x02, etc.)
 #define AI_SBIE_MARKER  0x80000000
 
-// ANSI version of addrinfo (not in wsa_defs.h)
-typedef struct addrinfo {
-    int                 ai_flags;
-    int                 ai_family;
-    int                 ai_socktype;
-    int                 ai_protocol;
-    size_t              ai_addrlen;
-    char*               ai_canonname;
-    struct sockaddr*    ai_addr;
-    struct addrinfo*    ai_next;
-} ADDRINFOA, *PADDRINFOA;
+// ANSI version of addrinfo is defined in dns_rebind.h (ADDRINFOA/PADDRINFOA)
 
 // Extended addrinfo for GetAddrInfoExW (not in wsa_defs.h)
 typedef struct addrinfoexW {
@@ -202,6 +194,8 @@ static int WSA_WSALookupServiceNextW(
     DWORD           dwControlFlags,
     LPDWORD         lpdwBufferLength,
     LPWSAQUERYSETW  lpqsResults);
+
+// DNS rebind sanitizers are implemented in dns_rebind.c
 
 static int WSA_WSALookupServiceEnd(HANDLE hLookup);
 
@@ -321,7 +315,8 @@ int Socket_BuildDnsResponse(
     BYTE*          response,
     int            response_size,
     USHORT         qtype,
-    struct _DNS_TYPE_FILTER* type_filter);
+    struct _DNS_TYPE_FILTER* type_filter,
+    const WCHAR*   domain);
 
 // Initialization functions
 BOOLEAN DNSAPI_Init(HMODULE module);
@@ -495,7 +490,7 @@ extern POOL* Dll_Pool;
 // Shared DNS filter infrastructure (exported for socket_hooks.c)
 LIST       DNS_FilterList;      // Shared by WSA, DNSAPI, and raw socket implementations
 BOOLEAN    DNS_FilterEnabled = FALSE;
-static BOOLEAN DNS_DnsApiHookEnabled = TRUE;  // FilterDnsApi setting (default: enabled)
+BOOLEAN    DNS_DnsApiHookEnabled = TRUE;  // FilterDnsApi setting (default: enabled)
 static BOOLEAN DNS_WinHttpHookEnabled = FALSE;  // FilterWinHttp setting (default: disabled)
 BOOLEAN    DNS_MapIpv4ToIpv6 = FALSE;         // DnsMapIpv4ToIpv6 setting (default: disabled)
 BOOLEAN    DNS_HasValidCertificate = FALSE;  // Certificate validity for NetworkDnsFilter/FilterRawDns (exported)
@@ -778,6 +773,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
         return FALSE;
 
     BOOLEAN isIPv6Query = WSA_IsIPv6Query(pLookup->ServiceClassId);
+    BOOLEAN rebindEnabled = DNS_Rebind_IsEnabledForDomain(pLookup->DomainName);
 
     // Cache string length to avoid repeated wcslen calls
     SIZE_T domainChars = wcslen(pLookup->DomainName);
@@ -798,15 +794,31 @@ _FX BOOLEAN WSA_FillResponseStructure(
     neededSize += domainNameLen;  // for lpszQueryString
 
     // Calc IP size and sockaddr footprint in a single pass
+    // Apply DNS rebind protection by OMITTING filtered IPs (not replacing them with 0.0.0.0/::).
     SIZE_T ipCount = 0;
     SIZE_T sockaddrSize = 0;
     IP_ENTRY* entry;
 
+    WCHAR filtered_msg[512];
+    filtered_msg[0] = L'\0';
+
     for (entry = (IP_ENTRY*)List_Head(pLookup->pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (!DNS_EntryMatchesQueryFamily(entry, isIPv6Query))
             continue;
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP)) {
+            DNS_Rebind_AppendFilteredIpMsg(
+                filtered_msg,
+                (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                entry->Type,
+                &entry->IP);
+            continue;
+        }
         ipCount++;
         sockaddrSize += (entry->Type == AF_INET) ? (sizeof(SOCKADDR_IN) * 2) : (sizeof(SOCKADDR_IN6_LH) * 2);
+    }
+
+    if (filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(pLookup->DomainName, DNS_REBIND_LOG_TAG_FILTER)) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", pLookup->DomainName, filtered_msg);
     }
     
     // Debug: Log IP count and list contents
@@ -921,6 +933,9 @@ _FX BOOLEAN WSA_FillResponseStructure(
     for (entry = (IP_ENTRY*)List_Head(pLookup->pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (!DNS_EntryMatchesQueryFamily(entry, isIPv6Query))
             continue;
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP)) {
+            continue;
+        }
 
         selectedEntries[i] = entry;
         PCSADDR_INFO csaInfo = &lpqsResults->lpcsaBuffer[i++];
@@ -1802,9 +1817,9 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
 
     // Automatically exclude encrypted DNS server hostname to prevent re-entrancy loops
     // (WinHTTP resolves hostname internally, triggering DNS hooks)
+    // This checks ALL configured encrypted DNS servers, not just the first one
     if (EncryptedDns_IsEnabled()) {
-        const WCHAR* doh_hostname = EncryptedDns_GetServerHostname();
-        if (doh_hostname && _wcsicmp(domain, doh_hostname) == 0) {
+        if (EncryptedDns_IsServerHostname(domain)) {
             if (DNS_DebugFlag) {
                 WCHAR msg[512];
                 Sbie_snwprintf(msg, 512, L"[EncDns] Auto-excluded encrypted DNS server hostname: %s", domain);
@@ -1988,6 +2003,9 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
     // Create a temporary pattern list for matching
     LIST temp_list;
     List_Init(&temp_list);
+
+    BOOLEAN has_nodot_token = FALSE;
+    ULONG nodot_index = 0;
     
     // Add all patterns from exclusion list to temp pattern list
     for (ULONG j = 0; j < excl->count; ++j) {
@@ -1996,6 +2014,12 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
             continue;
 
         DNS_LogDebugExclusionTestPattern(j, pattern);
+
+        if (_wcsicmp(pattern, L"@nodot@") == 0) {
+            has_nodot_token = TRUE;
+            nodot_index = j;
+            continue;
+        }
 
         // Use Pattern_MatchPathList for wildcard support
         PATTERN* pat = Pattern_Create(Dll_Pool, pattern, TRUE, 0);
@@ -2055,6 +2079,16 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
                 if (idx < excl->count) {
                     *pModeOut = (DNS_EXCLUDE_RESOLVE_MODE)excl->modes[idx];
                 }
+            }
+        }
+        return TRUE;
+    }
+
+    if (has_nodot_token && DNS_IsSingleLabelDomain(domain)) {
+        DNS_LogDebugExclusionMatch(domain, L"@nodot@");
+        if (pModeOut) {
+            if (nodot_index < excl->count) {
+                *pModeOut = (DNS_EXCLUDE_RESOLVE_MODE)excl->modes[nodot_index];
             }
         }
         return TRUE;
@@ -2394,12 +2428,26 @@ _FX BOOLEAN WSA_InitNetDnsFilter(HMODULE module)
     // (This function will be defined later - forward declaration)
     BOOLEAN winHttpEnabled = (Config_GetSettingsForImageName_bool(L"FilterWinHttp", FALSE));
 
+    // Treat DnsRebindProtection as a feature that requires WSA hooks too.
+    // (Otherwise tools like ping/nslookup can bypass rebind enforcement via WSA APIs.)
+    BOOLEAN rebindConfigured = FALSE;
+    {
+        WCHAR conf_buf[64];
+        if (NT_SUCCESS(SbieApi_QueryConf(NULL, L"DnsRebindProtection", 0, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR))) && conf_buf[0])
+            rebindConfigured = TRUE;
+        else if (NT_SUCCESS(SbieApi_QueryConf(L"GlobalSettings", L"DnsRebindProtection", 0, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR))) && conf_buf[0])
+            rebindConfigured = TRUE;
+        else if (NT_SUCCESS(SbieApi_QueryConf(L"TemplateDnsRebindProtection", L"DnsRebindProtection", 0, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR))) && conf_buf[0])
+            rebindConfigured = TRUE;
+    }
+
     // If none of the DNS features are enabled, skip all hooks
     // - DNS_FilterEnabled: NetworkDnsFilter rules exist
     // - DNS_TraceFlag: DnsTrace=y for logging
     // - rawDnsEnabled: FilterRawDns=y for raw socket filtering
     // - winHttpEnabled: FilterWinHttp=y for WinHTTP API filtering
-    if (!DNS_FilterEnabled && !DNS_TraceFlag && !rawDnsEnabled && !winHttpEnabled) {
+    // - rebindConfigured: DnsRebindProtection configured
+    if (!DNS_FilterEnabled && !DNS_TraceFlag && !rawDnsEnabled && !winHttpEnabled && !rebindConfigured) {
         return TRUE; // Nothing to do; leave original APIs untouched.
     }
 
@@ -2597,6 +2645,9 @@ _FX BOOLEAN DNSAPI_Init(HMODULE module)
     
     // Always initialize encrypted DNS (even if hWinHttp is NULL)
     EncryptedDns_Init(hWinHttp, NULL);
+
+    // Initialize DNS rebind protection (requires valid certificate)
+    DNS_Rebind_Init();
     
     // Always try to load configuration
     EncryptedDns_LoadConfig();
@@ -2969,7 +3020,21 @@ _FX int WSA_WSALookupServiceNextW(
 
     int ret = __sys_WSALookupServiceNextW(hLookup, dwControlFlags, lpdwBufferLength, lpqsResults);
 
+    // Even when passthrough is used (no EncryptedDnsServer), apply DNS rebind protection
+    // by sanitizing the returned addresses for enabled domains.
+    if (ret == NO_ERROR && lpqsResults) {
+        const WCHAR* domain = lpqsResults->lpszServiceInstanceName ? lpqsResults->lpszServiceInstanceName : lpqsResults->lpszQueryString;
+        if (domain)
+            DNS_Rebind_SanitizeWSAQuerySetW(domain, lpqsResults);
+    }
+
     if (ret == NO_ERROR && pLookup && pLookup->pEntries) {
+
+        const WCHAR* rebindDomain = pLookup->DomainName ? pLookup->DomainName : (lpqsResults ? lpqsResults->lpszServiceInstanceName : NULL);
+        BOOLEAN rebindEnabled = (rebindDomain ? DNS_Rebind_IsEnabledForDomain(rebindDomain) : FALSE);
+
+        WCHAR filtered_msg[512];
+        filtered_msg[0] = L'\0';
 
         //
         // This is a bit a simplified implementation, it assumes that all results are always of the same time
@@ -2990,9 +3055,31 @@ _FX int WSA_WSALookupServiceNextW(
                 }
 
                 if (af == AF_INET6)
-                    memcpy(((SOCKADDR_IN6_LH*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr)->sin6_addr.u.Byte, entry->IP.Data, 16);
+                {
+                    SOCKADDR_IN6_LH* sa6 = (SOCKADDR_IN6_LH*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr;
+                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                        DNS_Rebind_AppendFilteredIpMsg(
+                            filtered_msg,
+                            (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                            AF_INET6,
+                            &entry->IP);
+                        memset(sa6->sin6_addr.u.Byte, 0, 16);
+                    } else
+                        memcpy(sa6->sin6_addr.u.Byte, entry->IP.Data, 16);
+                }
                 else if (af == AF_INET)
-                    ((SOCKADDR_IN*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr)->sin_addr.S_un.S_addr = entry->IP.Data32[3];
+                {
+                    SOCKADDR_IN* sa4 = (SOCKADDR_IN*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr;
+                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                        DNS_Rebind_AppendFilteredIpMsg(
+                            filtered_msg,
+                            (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                            AF_INET,
+                            &entry->IP);
+                        sa4->sin_addr.S_un.S_addr = 0;
+                    } else
+                        sa4->sin_addr.S_un.S_addr = entry->IP.Data32[3];
+                }
 
                 entry = (IP_ENTRY*)List_Next(entry);
             }
@@ -3023,14 +3110,36 @@ _FX int WSA_WSALookupServiceNextW(
                     // Convert relative offset to absolute pointer (extract offset, then convert)
                     uintptr_t ipOffset = GET_REL_FROM_PTR(*Addr);
                     PCHAR ptr = (PCHAR)ABS_PTR(hp, ipOffset);
-                    if (hp->h_addrtype == AF_INET6)
-                        memcpy(ptr, entry->IP.Data, 16);
-                    else if (hp->h_addrtype == AF_INET)
-                        *(DWORD*)ptr = entry->IP.Data32[3];
+                    if (hp->h_addrtype == AF_INET6) {
+                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                            DNS_Rebind_AppendFilteredIpMsg(
+                                filtered_msg,
+                                (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                                AF_INET6,
+                                &entry->IP);
+                            memset(ptr, 0, 16);
+                        } else
+                            memcpy(ptr, entry->IP.Data, 16);
+                    }
+                    else if (hp->h_addrtype == AF_INET) {
+                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                            DNS_Rebind_AppendFilteredIpMsg(
+                                filtered_msg,
+                                (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                                AF_INET,
+                                &entry->IP);
+                            *(DWORD*)ptr = 0;
+                        } else
+                            *(DWORD*)ptr = entry->IP.Data32[3];
+                    }
 
                     entry = (IP_ENTRY*)List_Next(entry);
                 }
             }
+        }
+
+        if (rebindDomain && filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(rebindDomain, DNS_REBIND_LOG_TAG_FILTER)) {
+            DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", rebindDomain, filtered_msg);
         }
 
         pLookup->NoMore = TRUE;
@@ -3699,16 +3808,25 @@ passthrough_narrow:
 
     DNS_STATUS status = sysQuery(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
-    // Convert narrow domain to wide for logging
-    if (DNS_TraceFlag && pszName) {
+    // Convert narrow domain to wide when needed (logging and/or DNS rebind enforcement)
+    WCHAR* wName = NULL;
+    if (pszName && (DNS_TraceFlag || (status == 0 && ppQueryResults && *ppQueryResults))) {
         int nameLen = MultiByteToWideChar(codePage, 0, pszName, -1, NULL, 0);
         if (nameLen > 0 && nameLen < 512) {
-            WCHAR* wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
-            if (wName && MultiByteToWideChar(codePage, 0, pszName, -1, wName, nameLen)) {
-                DNS_LogDnsQueryResultWithReason(tagPassthrough, wName, wType,
-                                               status, ppQueryResults, passthroughReason);
+            wName = (WCHAR*)Dll_AllocTemp(nameLen * sizeof(WCHAR));
+            if (!wName || !MultiByteToWideChar(codePage, 0, pszName, -1, wName, nameLen)) {
+                wName = NULL;
             }
         }
+    }
+
+    if (status == 0 && wName && ppQueryResults && *ppQueryResults) {
+        DNS_Rebind_SanitizeDnsRecordList(wName, (PDNS_RECORD*)ppQueryResults);
+    }
+
+    if (DNS_TraceFlag && wName) {
+        DNS_LogDnsQueryResultWithReason(tagPassthrough, wName, wType,
+                                       status, ppQueryResults, passthroughReason);
     }
 
     return status;
@@ -3746,6 +3864,9 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
                 Dll_Free(path_lwr);
                 if (excludeMode == DNS_EXCLUDE_RESOLVE_SYS) {
                             DNS_STATUS ex_status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                            if (ex_status == 0 && ppQueryResults && *ppQueryResults) {
+                                DNS_Rebind_SanitizeDnsRecordList(pszName, (PDNS_RECORD*)ppQueryResults);
+                            }
                             DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType,
                                                            ex_status, ppQueryResults, DNS_PASSTHROUGH_EXCLUDED);
                             return ex_status;
@@ -3768,6 +3889,9 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
                     // Domain matches filter but no cert - call real DNS and log result with IPs
                     Dll_Free(path_lwr);
                     DNS_STATUS status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                    if (status == 0 && ppQueryResults && *ppQueryResults) {
+                        DNS_Rebind_SanitizeDnsRecordList(pszName, (PDNS_RECORD*)ppQueryResults);
+                    }
                     DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
                                                    status, ppQueryResults, DNS_PASSTHROUGH_NO_CERT);
                     return status;
@@ -3859,6 +3983,7 @@ passthrough_dnsquery_w:
                 }
 
                 if (extractStatus == 0 && pRecords) {
+                    DNS_Rebind_SanitizeDnsRecordList(pszName, &pRecords);
                     // Success - return extracted records
                     WCHAR sourceTag[64];
                     Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns(%s)",
@@ -3942,6 +4067,10 @@ passthrough_dnsquery_w:
     // EncDns disabled - use system DNS
     status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
 
+    if (status == 0 && ppQueryResults && *ppQueryResults) {
+        DNS_Rebind_SanitizeDnsRecordList(pszName, (PDNS_RECORD*)ppQueryResults);
+    }
+
     DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
                                    status, ppQueryResults, passthroughReason);
 
@@ -4024,6 +4153,11 @@ _FX VOID WINAPI DNSAPI_AsyncCallbackWrapper(
     if (!ctx)
         return;
 
+    // Apply DNS rebind protection to passthrough results (async)
+    if (pQueryResults && pQueryResults->QueryStatus == 0 && pQueryResults->pQueryRecords) {
+        DNS_Rebind_SanitizeDnsRecordList(ctx->Domain, (PDNS_RECORD*)&pQueryResults->pQueryRecords);
+    }
+
     // Log the final async result
     DNS_STATUS status = pQueryResults ? pQueryResults->QueryStatus : -1;
     DNS_LogDnsRecordsFromQueryResult(L"DnsQueryEx Async Result", ctx->Domain, ctx->QueryType,
@@ -4056,6 +4190,11 @@ _FX VOID WINAPI DNSAPI_RawPassthroughCallbackWrapper(
     // Log the final async result with IPs if available
     DNS_STATUS status = pQueryResults ? pQueryResults->queryStatus : -1;
     
+    // Apply DNS rebind protection to passthrough results (async)
+    if (pQueryResults && pQueryResults->queryStatus == 0 && pQueryResults->queryRecords) {
+        DNS_Rebind_SanitizeDnsRecordList(ctx->Domain, (PDNS_RECORD*)&pQueryResults->queryRecords);
+    }
+
     // Use queryRecords if Windows parsed them (preferred - structured data)
     // Otherwise fall back to status-only logging
     if (pQueryResults && pQueryResults->queryRecords) {
@@ -4433,6 +4572,11 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
                     } else {
                         wcscpy_s(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns");
                     }
+
+                    if (pQueryResults && pQueryResults->pQueryRecords) {
+                        DNS_Rebind_SanitizeDnsRecordList(pQueryRequest->QueryName, (PDNS_RECORD*)&pQueryResults->pQueryRecords);
+                    }
+
                     DNS_LogDnsRecordsFromQueryResult(prefix, pQueryRequest->QueryName,
                                                     pQueryRequest->QueryType, 0, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords);
                     return 0;
@@ -4592,6 +4736,11 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             optionsForRetry,
             TRUE,
             0);
+    }
+
+    // Apply DNS rebind protection to passthrough results (sync)
+    if (status == 0 && pQueryRequest->QueryName && pQueryResults && pQueryResults->pQueryRecords) {
+        DNS_Rebind_SanitizeDnsRecordList(pQueryRequest->QueryName, (PDNS_RECORD*)&pQueryResults->pQueryRecords);
     }
     
     if (DNS_TraceFlag && pQueryRequest->QueryName) {
@@ -4819,7 +4968,8 @@ static BOOLEAN DNSAPI_TryDoHForDnsQueryRaw(
                 response,
                 sizeof(response),
                 qtype,
-                NULL);
+                NULL,
+                domain);
                 
             // Free the temporary IP list
             DNS_FreeIPEntryList(&doh_list);
@@ -5139,7 +5289,8 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         response,
                                         sizeof(response),
                                         qtype,
-                                        type_filter);
+                                        type_filter,
+                                        domain);
                                 }
 
                                 if (response_len > 0) {
@@ -5415,6 +5566,8 @@ static PADDRINFOW WSA_BuildAddrInfoList(
     if (!pEntries || !List_Head(pEntries))
         return NULL;
 
+    BOOLEAN rebindEnabled = (pNodeName ? DNS_Rebind_IsEnabledForDomain(pNodeName) : FALSE);
+
     // Determine what address families to return based on hints
     int requestedFamily = AF_UNSPEC;
     int socktype = SOCK_STREAM;
@@ -5428,14 +5581,29 @@ static PADDRINFOW WSA_BuildAddrInfoList(
             protocol = pHints->ai_protocol;
     }
 
-    // Count matching entries
+    // Count matching entries (omit DNS-rebind-filtered IPs)
     int count = 0;
+
+    WCHAR filtered_msg[512];
+    filtered_msg[0] = L'\0';
     for (IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (requestedFamily == AF_UNSPEC || 
             (requestedFamily == AF_INET && entry->Type == AF_INET) ||
             (requestedFamily == AF_INET6 && entry->Type == AF_INET6)) {
+            if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP)) {
+                DNS_Rebind_AppendFilteredIpMsg(
+                    filtered_msg,
+                    (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                    entry->Type,
+                    &entry->IP);
+                continue;
+            }
             count++;
         }
+    }
+
+    if (filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(pNodeName, DNS_REBIND_LOG_TAG_FILTER)) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", pNodeName, filtered_msg);
     }
 
     if (count == 0)
@@ -5451,12 +5619,16 @@ static PADDRINFOW WSA_BuildAddrInfoList(
             continue;
         }
 
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP)) {
+            continue;
+        }
+
         // Calculate sizes for this entry
         SIZE_T addrSize = (entry->Type == AF_INET6) ? sizeof(SOCKADDR_IN6_LH) : sizeof(SOCKADDR_IN);
         SIZE_T nodeNameLen = pNodeName ? (wcslen(pNodeName) + 1) * sizeof(WCHAR) : 0;
         
         // Allocate ADDRINFOW + sockaddr + canonname in one block
-        // FIX: Use private heap to distinguish OUR allocations from system allocations
+        // Use private heap to distinguish OUR allocations from system allocations
         SIZE_T totalSize = sizeof(ADDRINFOW) + addrSize + nodeNameLen;
         HANDLE hHeap = DNS_GetFilterHeap();
         if (!hHeap) return NULL;
@@ -6615,7 +6787,18 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
         // EncDns disabled - use system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no filter match");
         Dll_Free(nameLwr);
-        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+        {
+            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+            if (result == 0 && ppResult && *ppResult) {
+                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
+                if (ppResult && !*ppResult) {
+                    if (__sys_WSASetLastError)
+                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+                    return WSAHOST_NOT_FOUND;
+                }
+            }
+            return result;
+        }
     }
 
     // Domain matches filter - check certificate
@@ -6656,7 +6839,18 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
         // EncDns disabled - use system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no certificate");
         Dll_Free(nameLwr);
-        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+        {
+            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+            if (result == 0 && ppResult && *ppResult) {
+                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
+                if (ppResult && !*ppResult) {
+                    if (__sys_WSASetLastError)
+                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+                    return WSAHOST_NOT_FOUND;
+                }
+            }
+            return result;
+        }
     }
 
     aux = Pattern_Aux(found);
@@ -6725,7 +6919,18 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
         // EncDns disabled - passthrough to system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"type not in filter");
         Dll_Free(nameLwr);
-        return __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+        {
+            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+            if (result == 0 && ppResult && *ppResult) {
+                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
+                if (ppResult && !*ppResult) {
+                    if (__sys_WSASetLastError)
+                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+                    return WSAHOST_NOT_FOUND;
+                }
+            }
+            return result;
+        }
     }
 
     // Build synthesized response
@@ -6770,6 +6975,25 @@ _FX INT WSAAPI WSA_getaddrinfo(
     InterlockedIncrement(&WSA_SystemGetAddrInfoDepth);
     
     INT result = __sys_getaddrinfo(pNodeName, pServiceName, pHints, ppResult);
+
+    // Post-sanitize system results for rebind protection (ANSI callers).
+    if (result == 0 && ppResult && *ppResult && pNodeName && DNS_FilterEnabled) {
+        int wlen = MultiByteToWideChar(CP_ACP, 0, pNodeName, -1, NULL, 0);
+        if (wlen > 0 && wlen < 512) {
+            WCHAR* nodeW = (WCHAR*)Dll_AllocTemp((ULONG)(wlen * sizeof(WCHAR)));
+            if (nodeW) {
+                if (MultiByteToWideChar(CP_ACP, 0, pNodeName, -1, nodeW, wlen) > 0) {
+                    DNS_Rebind_SanitizeAddrInfoA(nodeW, ppResult);
+                }
+                Dll_Free(nodeW);
+            }
+        }
+        if (ppResult && !*ppResult) {
+            result = WSAHOST_NOT_FOUND;
+            if (__sys_WSASetLastError)
+                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+        }
+    }
     
     InterlockedDecrement(&WSA_SystemGetAddrInfoDepth);
     
@@ -7216,7 +7440,7 @@ static VOID WSA_FreeAddrInfo_Common(PVOID pAddrInfo, P_freeaddrinfo_void sysFree
 // WSA_freeaddrinfo
 //
 // Hook for freeaddrinfo (ANSI) - frees ADDRINFOA structures
-// FIX: Now uses HeapAlloc/HeapFree instead of LocalAlloc to match system allocator
+// Use private heap to distinguish OUR allocations from system allocations
 //---------------------------------------------------------------------------
 
 _FX VOID WSAAPI WSA_freeaddrinfo(PADDRINFOA pAddrInfo)
@@ -7231,7 +7455,7 @@ _FX VOID WSAAPI WSA_freeaddrinfo(PADDRINFOA pAddrInfo)
 // WSA_FreeAddrInfoW
 //
 // Hook for FreeAddrInfoW - frees ADDRINFOW structures
-// FIX: Uses private heap to distinguish our allocations from system allocations
+// Use private heap to distinguish our allocations from system allocations
 //---------------------------------------------------------------------------
 
 _FX VOID WSAAPI WSA_FreeAddrInfoW(PADDRINFOW pAddrInfo)
@@ -7246,7 +7470,7 @@ _FX VOID WSAAPI WSA_FreeAddrInfoW(PADDRINFOW pAddrInfo)
 // WSA_FreeAddrInfoExW
 //
 // Hook for FreeAddrInfoExW - frees ADDRINFOEXW structures
-// FIX: Uses private heap to distinguish our allocations from system allocations
+// Use private heap to distinguish our allocations from system allocations
 //---------------------------------------------------------------------------
 
 _FX VOID WSAAPI WSA_FreeAddrInfoExW(PADDRINFOEXW pAddrInfoEx)

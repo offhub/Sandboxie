@@ -1915,6 +1915,14 @@ _FX const WCHAR* DoH_GetServerHostname(void)
 
 _FX BOOLEAN DoH_IsServerHostname(const WCHAR* hostname)
 {
+    // Tag used with DNS_ShouldSuppressLogTagged(host, tag) to de-duplicate
+    // repeated host checks across layers/threads.
+    // "EDNS" = Encrypted DNS (host check: match)
+    #define DNS_ENCDNS_LOG_TAG_HOSTCHECK 0x534E4445u /* 'EDNS' */
+    // "EDNM" = Encrypted DNS (host check: no match)
+    // Uses the queried hostname as key for per-domain suppression.
+    #define DNS_ENCDNS_LOG_TAG_HOSTCHECK_NOMATCH 0x4D4E4445u /* 'EDNM' */
+
     if (!hostname || !*hostname)
         return FALSE;
 
@@ -1931,7 +1939,7 @@ _FX BOOLEAN DoH_IsServerHostname(const WCHAR* hostname)
         DOH_CONFIG_LINE* line = &g_DohConfigLines[i];
         for (ULONG s = 0; s < line->ServerCount; s++) {
             if (_wcsicmp(hostname, line->Servers[s].Host) == 0) {
-                if (DNS_DebugFlag) {
+                if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(hostname, DNS_ENCDNS_LOG_TAG_HOSTCHECK)) {
                     WCHAR msg[256];
                     Sbie_snwprintf(msg, 256, L"[EncDns] Server hostname match: %s", hostname);
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -1942,7 +1950,8 @@ _FX BOOLEAN DoH_IsServerHostname(const WCHAR* hostname)
         }
     }
 
-    if (DNS_DebugFlag) {
+    // Use hostname as key for per-domain suppression (not a constant key)
+    if (DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(hostname, DNS_ENCDNS_LOG_TAG_HOSTCHECK_NOMATCH)) {
         WCHAR msg[512];
         Sbie_snwprintf(msg, 512, L"[EncDns] No server hostname match for: %s (checked %u lines)", hostname, g_DohConfigLineCount);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);

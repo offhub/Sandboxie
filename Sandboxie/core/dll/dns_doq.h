@@ -103,7 +103,7 @@ extern "C" {
 // Reduced from 5s to 2s to prevent user-visible delays when protocol doesn't work.
 #define DOQ_CONNECT_TIMEOUT_MS          2000    // Connection timeout (reduced for faster fallback)
 #define DOQ_QUERY_TIMEOUT_MS            2000    // Query timeout (reduced for faster fallback)
-#define DOQ_IDLE_TIMEOUT_MS             30000   // Connection idle timeout
+#define DOQ_IDLE_TIMEOUT_MS             60000   // Connection idle timeout
 
 // Message size limits
 #define DOQ_MAX_MESSAGE_SIZE            65535   // Max DNS message size

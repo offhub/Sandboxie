@@ -51,6 +51,9 @@ BOOLEAN DNS_IsTypeInFilterListEx(
     USHORT query_type,
     DNS_PASSTHROUGH_REASON* pReason);
 
+// Returns TRUE if domain is a single-label name (no dots, trailing dot ignored)
+BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain);
+
 #ifdef __cplusplus
 }
 #endif

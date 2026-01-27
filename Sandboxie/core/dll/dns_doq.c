@@ -819,13 +819,17 @@ static QUIC_STATUS QUIC_API DoQ_ConnectionCallback(
             WCHAR msg[256];
             QUIC_STATUS status = Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status;
             
-            // Provide more detailed error messages for common failures
+            // Provide detailed messages for common MsQuic status results
             if (status == 0x80410007) {  // QUIC_STATUS_ALPN_NEG_FAILURE
                 Sbie_snwprintf(msg, 256, L"[DoQ] Connection failed: ALPN negotiation failed (0x%08X). Server may not support DoQ on this port.", status);
-            } else if (status == 0x80410005) {  // QUIC_STATUS_CERT_UNTRUSTED_ROOT
+            } else if (status == CERT_E_UNTRUSTEDROOT) {  // QUIC_STATUS_CERT_UNTRUSTED_ROOT
                 Sbie_snwprintf(msg, 256, L"[DoQ] Connection failed: Certificate untrusted (0x%08X)", status);
-            } else if (status == 0x80410006) {  // QUIC_STATUS_CERT_EXPIRED
+            } else if (status == CERT_E_EXPIRED) {  // QUIC_STATUS_CERT_EXPIRED
                 Sbie_snwprintf(msg, 256, L"[DoQ] Connection failed: Certificate expired (0x%08X)", status);
+            } else if (status == 0x80410005) {  // QUIC_STATUS_CONNECTION_IDLE
+                Sbie_snwprintf(msg, 256, L"[DoQ] Connection shutdown: Connection idle timeout (0x%08X)", status);
+            } else if (status == 0x80410006) {  // QUIC_STATUS_CONNECTION_TIMEOUT
+                Sbie_snwprintf(msg, 256, L"[DoQ] Connection shutdown: Connection timeout (0x%08X)", status);
             } else {
                 Sbie_snwprintf(msg, 256, L"[DoQ] Connection shutdown by transport: 0x%08X", status);
             }

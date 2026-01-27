@@ -120,6 +120,14 @@ void WSA_DumpIP(ADDRESS_FAMILY af, IP_ADDRESS* pIP, wchar_t* pStr);
 // Load SuppressDnsLog setting (called during initialization)
 BOOLEAN DNS_LoadSuppressLogSetting(void);
 
+// Query SuppressDnsLog effective state
+BOOLEAN DNS_IsSuppressLogEnabled(void);
+
+// Suppress duplicate domain-tagged trace logs using the shared DNS suppression cache.
+// This is used by modules outside dns_logging.c (e.g., DNS rebind protection) so
+// they share the same TTL/cache as core DNS query logging.
+BOOLEAN DNS_ShouldSuppressLogTagged(const WCHAR* domain, ULONG tag);
+
 //---------------------------------------------------------------------------
 // Passthrough Reason Codes
 //
@@ -209,6 +217,12 @@ void DNS_LogRawSocketBlocked(const WCHAR* protocol, const WCHAR* domain, WORD wT
 
 void DNS_LogRawSocketNoData(const WCHAR* protocol, const WCHAR* domain, WORD wType,
                             const WCHAR* func_suffix);
+
+// Log when EncDns returns a raw wire-format response used by raw socket DNS interception.
+// This is especially relevant for non-A/AAAA query types (e.g., ANY, TXT, MX) where we
+// return the raw response bytes from the encrypted DNS backend.
+void DNS_LogRawSocketEncDnsRawResponse(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                                      ENCRYPTED_DNS_MODE protocol_used, int response_len);
 
 void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD wType,
                            int query_len, int response_len, const WCHAR* func_suffix, 

@@ -1150,6 +1150,18 @@ static int Socket_BuildDoHResponse(
             // Copy raw DNS response directly (already in wire format)
             memcpy(response, doh_result.RawResponse, doh_result.RawResponseLen);
 
+            // Apply DNS rebind protection to the raw wire response
+            // This is critical for ANY queries or other types that might carry 
+            // filtered IPs in the Answer/Additional sections.
+            ULONG filteredA = 0;
+            ULONG filteredAAAA = 0;
+            int new_len = 0;
+            
+            if (DNS_Rebind_SanitizeDnsWireResponse(response, (int)doh_result.RawResponseLen, domain, FALSE, &filteredA, &filteredAAAA, &new_len)) {
+                // Update length after filtering
+                doh_result.RawResponseLen = (DWORD)new_len;
+            }
+
             // IMPORTANT: Preserve the original transaction ID from the intercepted query.
             // EncDns builds its own query (and therefore its own TransactionID) when calling
             // the DoH/DoQ backend. Raw-socket clients (e.g. nslookup -novc) match responses
@@ -1160,18 +1172,8 @@ static int Socket_BuildDoHResponse(
                 ((DNS_WIRE_HEADER*)response)->TransactionID = ((DNS_WIRE_HEADER*)query)->TransactionID;
             }
             
-            if (DNS_TraceFlag) {
-                WCHAR msg[512];
-                if (doh_result.ProtocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
-                    Sbie_snwprintf(msg, 512, L"%s DNS EncDns(%s): Raw response for %s (Type: %s, len: %d)",
-                        protocol ? protocol : L"Raw", EncryptedDns_GetModeName(doh_result.ProtocolUsed),
-                        domain, DNS_GetTypeName(qtype), doh_result.RawResponseLen);
-                } else {
-                    Sbie_snwprintf(msg, 512, L"%s DNS EncDns: Raw response for %s (Type: %s, len: %d)",
-                        protocol ? protocol : L"Raw", domain, DNS_GetTypeName(qtype), doh_result.RawResponseLen);
-                }
-                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
-            }
+            DNS_LogRawSocketEncDnsRawResponse(protocol ? protocol : L"Raw", domain, qtype,
+                                             doh_result.ProtocolUsed, (int)doh_result.RawResponseLen);
             
             return (int)doh_result.RawResponseLen;
         }
@@ -3316,6 +3318,9 @@ _FX int Socket_BuildDnsResponse(
         }
         need_ipv4_mapping = !has_native_ipv6;
     }
+
+    WCHAR filtered_msg[512];
+    filtered_msg[0] = L'\0';
     
     while (entry) {
         BOOLEAN match = FALSE;
@@ -3325,6 +3330,11 @@ _FX int Socket_BuildDnsResponse(
 
         // Apply DNS rebind protection: omit filtered IPs entirely.
         if (domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP)) {
+            DNS_Rebind_AppendFilteredIpMsg(
+                filtered_msg,
+                (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                entry->Type,
+                &entry->IP);
             entry = (IP_ENTRY*)List_Next(entry);
             continue;
         }
@@ -3394,6 +3404,10 @@ _FX int Socket_BuildDnsResponse(
 
     // Fix up AnswerRRs to reflect the actual number of RRs emitted.
     resp_header->AnswerRRs = _htons(built_answers);
+
+    if (domain && filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_FILTER)) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, filtered_msg);
+    }
 
     return offset;
 }

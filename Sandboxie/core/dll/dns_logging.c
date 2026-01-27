@@ -64,17 +64,24 @@ extern BOOLEAN Config_GetSettingsForImageName_bool(const WCHAR* setting, BOOLEAN
 // within a short time window (5 seconds).
 //---------------------------------------------------------------------------
 
-#define DNS_SUPPRESS_CACHE_SIZE 64
+// Keep type-key suppression separate from tag-key suppression.
+// This prevents tag entries (e.g., EDNS hostname checks) from being churned
+// out of the cache by high-volume type-based suppression traffic.
+#define DNS_SUPPRESS_CACHE_SIZE_TYPE 256
+#define DNS_SUPPRESS_CACHE_SIZE_TAG  64
 #define DNS_SUPPRESS_EXPIRY_MS 5000
 
 typedef struct _DNS_SUPPRESS_ENTRY {
     WCHAR     domain[256];
-    WORD      query_type;
+    ULONG     key;
     ULONGLONG timestamp;
+    ULONGLONG last_access;
+    BOOLEAN   reported;
     BOOLEAN   valid;
 } DNS_SUPPRESS_ENTRY;
 
-static DNS_SUPPRESS_ENTRY g_DnsSuppressCache[DNS_SUPPRESS_CACHE_SIZE];
+static DNS_SUPPRESS_ENTRY g_DnsSuppressCacheType[DNS_SUPPRESS_CACHE_SIZE_TYPE];
+static DNS_SUPPRESS_ENTRY g_DnsSuppressCacheTag[DNS_SUPPRESS_CACHE_SIZE_TAG];
 static CRITICAL_SECTION g_DnsSuppressLock;
 static BOOLEAN g_DnsSuppressInitialized = FALSE;
 static BOOLEAN g_SuppressDnsLogEnabled = TRUE;  // SuppressDnsLog setting (default: enabled)
@@ -86,7 +93,8 @@ static void DNS_InitSuppressCache(void)
         return;
     
     InitializeCriticalSection(&g_DnsSuppressLock);
-    memset(g_DnsSuppressCache, 0, sizeof(g_DnsSuppressCache));
+    memset(g_DnsSuppressCacheType, 0, sizeof(g_DnsSuppressCacheType));
+    memset(g_DnsSuppressCacheTag, 0, sizeof(g_DnsSuppressCacheTag));
     g_DnsSuppressInitialized = TRUE;
 }
 
@@ -117,50 +125,146 @@ static ULONG DNS_HashString(const WCHAR* str)
 }
 
 // Check if query was recently logged (returns TRUE if should suppress)
-static BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, WORD query_type)
+static void DNS_FormatTagForLog(WCHAR* out, SIZE_T out_cch, ULONG tag)
 {
-    if (!domain || !DNS_TraceFlag || !g_SuppressDnsLogEnabled)
+    if (!out || out_cch == 0)
+        return;
+
+    out[0] = L'\0';
+
+    WCHAR c0 = (WCHAR)(tag & 0xFF);
+    WCHAR c1 = (WCHAR)((tag >> 8) & 0xFF);
+    WCHAR c2 = (WCHAR)((tag >> 16) & 0xFF);
+    WCHAR c3 = (WCHAR)((tag >> 24) & 0xFF);
+
+    BOOLEAN printable =
+        (c0 >= 0x20 && c0 <= 0x7E) &&
+        (c1 >= 0x20 && c1 <= 0x7E) &&
+        (c2 >= 0x20 && c2 <= 0x7E) &&
+        (c3 >= 0x20 && c3 <= 0x7E);
+
+    if (printable) {
+        Sbie_snwprintf(out, out_cch, L"%c%c%c%c (0x%08X)", c0, c1, c2, c3, tag);
+    } else {
+        Sbie_snwprintf(out, out_cch, L"0x%08X", tag);
+    }
+}
+
+static BOOLEAN DNS_ShouldSuppressLogEx(const WCHAR* domain, ULONG key, BOOLEAN key_is_tag)
+{
+    if (!domain || (!DNS_TraceFlag && !DNS_DebugFlag) || !g_SuppressDnsLogEnabled)
         return FALSE;
     
     if (!g_DnsSuppressInitialized)
         DNS_InitSuppressCache();
     
     ULONGLONG now = GetTickCount64();
-    ULONG hash = DNS_HashString(domain) ^ query_type;
-    ULONG index = hash % DNS_SUPPRESS_CACHE_SIZE;
-    
+    // Each cache has its own namespace, so we can keep the original key.
+    ULONG stored_key = key;
     EnterCriticalSection(&g_DnsSuppressLock);
-    
-    DNS_SUPPRESS_ENTRY* entry = &g_DnsSuppressCache[index];
-    
-    // Check if entry is valid and not expired
-    if (entry->valid && (now - entry->timestamp) < DNS_SUPPRESS_EXPIRY_MS) {
-        // Check if domain and type match
-        if (entry->query_type == query_type && 
+
+    DNS_SUPPRESS_ENTRY* cache = key_is_tag ? g_DnsSuppressCacheTag : g_DnsSuppressCacheType;
+    ULONG cache_size = key_is_tag ? DNS_SUPPRESS_CACHE_SIZE_TAG : DNS_SUPPRESS_CACHE_SIZE_TYPE;
+
+    // Two-pass suppression cache lookup:
+    // Pass 1: Scan entire cache for a matching entry (must not stop early!)
+    // Pass 2: If no match, find best slot to insert (expired > empty > LRU)
+    //
+    // BUG FIX: Previously, finding an expired entry would break the loop early,
+    // causing us to miss matching entries at later slots. This resulted in
+    // duplicate entries and failed suppression.
+
+    // Pass 1: Look for existing matching entry
+    for (ULONG i = 0; i < cache_size; ++i) {
+        DNS_SUPPRESS_ENTRY* entry = &cache[i];
+
+        if (entry->valid &&
+            entry->key == stored_key &&
+            (now - entry->timestamp) < DNS_SUPPRESS_EXPIRY_MS &&
             _wcsicmp(entry->domain, domain) == 0) {
-            LeaveCriticalSection(&g_DnsSuppressLock);
             
-            // Debug log when suppression occurs
-            if (DNS_DebugFlag) {
+            // Found matching entry - suppress this log
+            BOOLEAN should_report = FALSE;
+            ULONGLONG delta_ms = now - entry->timestamp;
+
+            // Update access time for LRU eviction decisions.
+            entry->last_access = now;
+
+            if (!entry->reported) {
+                entry->reported = TRUE;
+                should_report = TRUE;
+            }
+
+            LeaveCriticalSection(&g_DnsSuppressLock);
+
+            if (DNS_DebugFlag && should_report) {
                 WCHAR debug_msg[512];
-                Sbie_snwprintf(debug_msg, 512, L"  DNS Log Suppressed: '%s' (Type: %s) - already logged %llu ms ago",
-                    domain, DNS_GetTypeName(query_type), now - entry->timestamp);
+                if (key_is_tag) {
+                    WCHAR tag_msg[32];
+                    DNS_FormatTagForLog(tag_msg, (SIZE_T)(sizeof(tag_msg) / sizeof(tag_msg[0])), key);
+                    Sbie_snwprintf(debug_msg, 512,
+                        L"  DNS Log Suppressed: '%s' (tag=%s) - already logged %llu ms ago",
+                        domain, tag_msg, delta_ms);
+                } else {
+                    Sbie_snwprintf(debug_msg, 512,
+                        L"  DNS Log Suppressed: '%s' (Type: %s) - already logged %llu ms ago",
+                        domain, DNS_GetTypeName((WORD)key), delta_ms);
+                }
                 SbieApi_MonitorPutMsg(MONITOR_DNS, debug_msg);
             }
-            
-            return TRUE;  // Duplicate found
+
+            return TRUE;
         }
     }
-    
-    // Not a duplicate - add to cache
-    wcsncpy(entry->domain, domain, 255);
-    entry->domain[255] = L'\0';
-    entry->query_type = query_type;
-    entry->timestamp = now;
-    entry->valid = TRUE;
-    
+
+    // Pass 2: No match found - find best slot to insert new entry
+    // Priority: expired entry > empty slot > least recently accessed
+    DNS_SUPPRESS_ENTRY* replace = NULL;
+    ULONGLONG replace_tick = ~0ULL;
+    for (ULONG i = 0; i < cache_size; ++i) {
+        DNS_SUPPRESS_ENTRY* entry = &cache[i];
+
+        if (!entry->valid) {
+            // Empty slot - use it immediately
+            replace = entry;
+            break;
+        }
+
+        if ((now - entry->timestamp) >= DNS_SUPPRESS_EXPIRY_MS) {
+            // Expired entry - use it immediately
+            replace = entry;
+            break;
+        }
+
+        // Track LRU for fallback
+        if (entry->last_access < replace_tick) {
+            replace_tick = entry->last_access;
+            replace = entry;
+        }
+    }
+
+    if (replace) {
+        wcsncpy(replace->domain, domain, 255);
+        replace->domain[255] = L'\0';
+        replace->key = stored_key;
+        replace->timestamp = now;
+        replace->last_access = now;
+        replace->reported = FALSE;
+        replace->valid = TRUE;
+    }
+
     LeaveCriticalSection(&g_DnsSuppressLock);
     return FALSE;
+}
+
+static BOOLEAN DNS_ShouldSuppressLog(const WCHAR* domain, WORD query_type)
+{
+    return DNS_ShouldSuppressLogEx(domain, (ULONG)query_type, FALSE);
+}
+
+BOOLEAN DNS_ShouldSuppressLogTagged(const WCHAR* domain, ULONG tag)
+{
+    return DNS_ShouldSuppressLogEx(domain, tag, TRUE);
 }
 
 // Public initialization function to load SuppressDnsLog setting
@@ -170,8 +274,9 @@ BOOLEAN DNS_LoadSuppressLogSetting(void)
     
     if (DNS_DebugFlag) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"DNS Log Suppression: Configuration loaded - SuppressDnsLog=%s (TTL=%d ms, CacheSize=%d)",
-            g_SuppressDnsLogEnabled ? L"Enabled" : L"Disabled", DNS_SUPPRESS_EXPIRY_MS, DNS_SUPPRESS_CACHE_SIZE);
+        Sbie_snwprintf(msg, 256, L"DNS Log Suppression: Configuration loaded - SuppressDnsLog=%s (TTL=%d ms, CacheType=%d, CacheTag=%d, ReportOnce=1)",
+            g_SuppressDnsLogEnabled ? L"Enabled" : L"Disabled", DNS_SUPPRESS_EXPIRY_MS,
+            DNS_SUPPRESS_CACHE_SIZE_TYPE, DNS_SUPPRESS_CACHE_SIZE_TAG);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
@@ -1663,7 +1768,7 @@ _FX void DNS_LogDebugExclusionPerImageList(const WCHAR* image, ULONG pattern_cou
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking per-image list for '%s' (%d patterns)",
+    Sbie_snwprintf(msg, 512, L"  DNS_IsExcluded: Checking per-image list for '%s' (%d patterns)",
         image, pattern_count);
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
@@ -1674,7 +1779,7 @@ _FX void DNS_LogDebugExclusionGlobalList(ULONG pattern_count)
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking global list (%d patterns)", pattern_count);
+    Sbie_snwprintf(msg, 512, L"  DNS_IsExcluded: Checking global list (%d patterns)", pattern_count);
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
@@ -1684,7 +1789,7 @@ _FX void DNS_LogDebugExclusionTestPattern(ULONG index, const WCHAR* pattern)
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Testing pattern[%d]='%s'", index, pattern);
+    Sbie_snwprintf(msg, 512, L"    DNS_IsExcluded: Testing pattern[%d]='%s'", index, pattern);
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
@@ -1694,9 +1799,38 @@ _FX void DNS_LogDebugExclusionMatch(const WCHAR* domain, const WCHAR* pattern)
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: MATCH! Domain='%s' matched pattern='%s'",
+    Sbie_snwprintf(msg, 512, L"    DNS_IsExcluded: MATCH! Domain='%s' matched pattern='%s'",
         domain, pattern);
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogRawSocketEncDnsRawResponse(const WCHAR* protocol, const WCHAR* domain, WORD wType,
+                                          ENCRYPTED_DNS_MODE protocol_used, int response_len)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+
+    // Skip if we've already logged this query recently (suppression)
+    if (DNS_ShouldSuppressLog(domain, wType))
+        return;
+
+    WCHAR msg[512];
+    if (protocol_used != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(msg, 512, L"%s DNS EncDns(%s): Raw response for %s (Type: %s, len: %d)",
+            protocol ? protocol : L"Raw",
+            EncryptedDns_GetModeName(protocol_used),
+            domain,
+            DNS_GetTypeName(wType),
+            response_len);
+    } else {
+        Sbie_snwprintf(msg, 512, L"%s DNS EncDns: Raw response for %s (Type: %s, len: %d)",
+            protocol ? protocol : L"Raw",
+            domain,
+            DNS_GetTypeName(wType),
+            response_len);
+    }
+
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
 _FX void DNS_LogDebugExclusionFromQueryEx(const WCHAR* sourceTag, const WCHAR* domain)
