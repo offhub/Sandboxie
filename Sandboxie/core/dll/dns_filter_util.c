@@ -28,6 +28,14 @@
 #include "dns_filter_util.h"
 #include "dns_rebind.h"
 
+static __inline BOOLEAN DNS_BuildSimpleQuery_CanWrite(int bufferSize, const BYTE* buffer, const BYTE* ptr, int needed)
+{
+    int used = (int)(ptr - buffer);
+    if (used < 0 || used > bufferSize)
+        return FALSE;
+    return bufferSize - used >= needed;
+}
+
 //---------------------------------------------------------------------------
 // DNS_GetTypeName
 //---------------------------------------------------------------------------
@@ -184,8 +192,14 @@ int DNS_BuildSimpleQuery(
         return 0;
 
     BYTE* ptr = buffer;
+    #define ENSURE_SPACE(n) do { if (!DNS_BuildSimpleQuery_CanWrite(bufferSize, buffer, ptr, (n))) return 0; } while (0)
 
-    *(USHORT*)ptr = 0x1234;
+    ENSURE_SPACE(12);
+
+    USHORT txid = (USHORT)Dll_rand();
+    if (txid == 0)
+        txid = 1;
+    *(USHORT*)ptr = _htons(txid);
     ptr += 2;
 
     *(USHORT*)ptr = _htons(0x0100);
@@ -211,6 +225,11 @@ int DNS_BuildSimpleQuery(
             namePtr++;
         }
 
+        if (labelLen == 0 || labelLen > 63)
+            return 0;
+
+        ENSURE_SPACE(1 + labelLen);
+
         *ptr++ = (BYTE)labelLen;
         memcpy(ptr, labelStart, labelLen);
         ptr += labelLen;
@@ -219,7 +238,10 @@ int DNS_BuildSimpleQuery(
             namePtr++;
     }
 
+    ENSURE_SPACE(1);
     *ptr++ = 0;
+
+    ENSURE_SPACE(4);
 
     *(USHORT*)ptr = _htons(qtype);
     ptr += 2;
