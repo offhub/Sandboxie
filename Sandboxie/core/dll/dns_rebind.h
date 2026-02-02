@@ -33,6 +33,7 @@
 #define DNS_REBIND_LOG_TAG_DEFAULT 0x444E4252u /* 'RBND' */
 #define DNS_REBIND_LOG_TAG_FILTER  0x50494252u /* 'RBIP' */
 #define DNS_REBIND_LOG_TAG_WIRE    0x45524957u /* 'WIRE' */
+#define DNS_EXCL_LOG_TAG           0x4C435845u /* 'EXCL' */
 
 // Helper: append a WSA_DumpIP-formatted fragment (includes its own delimiter) to a caller buffer.
 // Used to aggregate multiple filtered IPs into a single log line.

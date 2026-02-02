@@ -308,7 +308,6 @@ void DNS_LogDebugCleanupStaleHandle(ULONGLONG age);
 void DNS_LogDebugExclusionCheck(const WCHAR* domain, const WCHAR* image, ULONG count);
 void DNS_LogDebugExclusionPerImageList(const WCHAR* image, ULONG pattern_count);
 void DNS_LogDebugExclusionGlobalList(ULONG pattern_count);
-void DNS_LogDebugExclusionTestPattern(ULONG index, const WCHAR* pattern);
 void DNS_LogDebugExclusionMatch(const WCHAR* domain, const WCHAR* pattern);
 void DNS_LogDebugExclusionFromQueryEx(const WCHAR* sourceTag, const WCHAR* domain);
 void DNS_LogDebugDnsApiRecordFree(PVOID pRecordList, INT FreeType, BOOLEAN isSbie);

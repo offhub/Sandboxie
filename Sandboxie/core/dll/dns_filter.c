@@ -1820,10 +1820,10 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
     // This checks ALL configured encrypted DNS servers, not just the first one
     if (EncryptedDns_IsEnabled()) {
         if (EncryptedDns_IsServerHostname(domain)) {
-            if (DNS_DebugFlag) {
+            if (DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_EXCL_LOG_TAG)) {
                 WCHAR msg[512];
                 Sbie_snwprintf(msg, 512, L"[EncDns] Auto-excluded encrypted DNS server hostname: %s", domain);
-                SbieApi_MonitorPutMsg(MONITOR_OTHER, msg);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             if (pModeOut)
                 *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
@@ -2012,8 +2012,6 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
         const WCHAR* pattern = excl->patterns[j];
         if (!pattern)
             continue;
-
-        DNS_LogDebugExclusionTestPattern(j, pattern);
 
         if (_wcsicmp(pattern, L"@nodot@") == 0) {
             has_nodot_token = TRUE;

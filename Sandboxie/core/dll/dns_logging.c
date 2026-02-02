@@ -25,6 +25,7 @@
 #include "dll.h"
 #include "dns_logging.h"
 #include "dns_filter.h"
+#include "dns_rebind.h"
 #include <windows.h>
 #include <wchar.h>
 #include <windns.h>
@@ -1756,6 +1757,10 @@ _FX void DNS_LogDebugExclusionCheck(const WCHAR* domain, const WCHAR* image, ULO
     if (!DNS_DebugFlag || !DNS_TraceFlag)
         return;
     
+    // Suppress duplicate DNS_IsExcluded debug logs using DNS_EXCL_LOG_TAG
+    if (DNS_ShouldSuppressLogTagged(domain, DNS_EXCL_LOG_TAG))
+        return;
+    
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"DNS_IsExcluded: Checking domain='%s', image='%s', ExclusionListCount=%d",
         domain, image ? image : L"(null)", count);
@@ -1778,24 +1783,24 @@ _FX void DNS_LogDebugExclusionGlobalList(ULONG pattern_count)
     if (!DNS_DebugFlag || !DNS_TraceFlag)
         return;
     
-    WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"  DNS_IsExcluded: Checking global list (%d patterns)", pattern_count);
-    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-}
-
-_FX void DNS_LogDebugExclusionTestPattern(ULONG index, const WCHAR* pattern)
-{
-    if (!DNS_DebugFlag || !DNS_TraceFlag)
+    // Suppress duplicate global list checking logs
+    // Use a special marker string for suppression since this isn't domain-specific
+    static WCHAR marker[] = L"__GLOBAL_LIST_CHECK__";
+    if (DNS_ShouldSuppressLogTagged(marker, DNS_EXCL_LOG_TAG))
         return;
     
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"    DNS_IsExcluded: Testing pattern[%d]='%s'", index, pattern);
+    Sbie_snwprintf(msg, 512, L"  DNS_IsExcluded: Checking global list (%d patterns)", pattern_count);
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
 _FX void DNS_LogDebugExclusionMatch(const WCHAR* domain, const WCHAR* pattern)
 {
     if (!DNS_DebugFlag || !DNS_TraceFlag)
+        return;
+    
+    // Suppress duplicate match logs for same domain
+    if (DNS_ShouldSuppressLogTagged(domain, DNS_EXCL_LOG_TAG))
         return;
     
     WCHAR msg[512];
