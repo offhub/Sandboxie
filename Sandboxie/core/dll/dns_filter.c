@@ -135,6 +135,9 @@
 // ANSI version of addrinfo is defined in dns_rebind.h (ADDRINFOA/PADDRINFOA)
 
 // Extended addrinfo for GetAddrInfoExW (not in wsa_defs.h)
+// Use ADDRINFOEX2W layout for Windows Vista+ compatibility with webio.dll.
+// Windows webio expects ai_version and ai_fqdn fields when processing DNS results.
+// Without these fields, webio reads garbage memory causing access violations.
 typedef struct addrinfoexW {
     int                 ai_flags;
     int                 ai_family;
@@ -147,7 +150,12 @@ typedef struct addrinfoexW {
     size_t              ai_bloblen;
     LPGUID              ai_provider;
     struct addrinfoexW* ai_next;
+    int                 ai_version;     // ADDRINFOEX2W: structure version (set to 2)
+    PWSTR               ai_fqdn;        // ADDRINFOEX2W: fully qualified domain name
 } ADDRINFOEXW, *PADDRINFOEXW, *LPADDRINFOEXW;
+
+// Structure version constant for ADDRINFOEX2W
+#define SBIE_ADDRINFOEX_VERSION 2
 
 // Completion routine for async GetAddrInfoExW
 typedef void (CALLBACK *LPLOOKUPSERVICE_COMPLETION_ROUTINE)(
@@ -5899,8 +5907,12 @@ static BOOLEAN WSA_IsSbieAddrInfoExW(PADDRINFOEXW pAddrInfo)
     if (!pAddrInfo)
         return FALSE;
     
-    // Additional check for ADDRINFOEXW: our allocations have these fields NULL/0
+    // Additional checks for ADDRINFOEXW: our allocations have these fields set to specific values
     if (pAddrInfo->ai_blob != NULL || pAddrInfo->ai_bloblen != 0 || pAddrInfo->ai_provider != NULL)
+        return FALSE;
+    
+    // Check ADDRINFOEX2W fields: ai_version must be SBIE_ADDRINFOEX_VERSION, ai_fqdn must be NULL
+    if (pAddrInfo->ai_version != SBIE_ADDRINFOEX_VERSION || pAddrInfo->ai_fqdn != NULL)
         return FALSE;
     
     return WSA_IsSbieAddrInfoCore(
@@ -6514,6 +6526,8 @@ static BOOLEAN WSA_ConvertAddrInfoWToEx(
         pEx->ai_bloblen = 0;
         pEx->ai_provider = NULL;
         pEx->ai_next = NULL;
+        pEx->ai_version = SBIE_ADDRINFOEX_VERSION;  // ADDRINFOEX2W compatibility
+        pEx->ai_fqdn = NULL;                         // ADDRINFOEX2W compatibility
 
         if (pW->ai_canonname && canonLen > 0) {
             pEx->ai_canonname = (PWSTR)(pBlock + sizeof(ADDRINFOEXW) + pW->ai_addrlen);
