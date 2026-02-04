@@ -169,6 +169,21 @@ BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
 	ULONG* pFilteredAAAA,
 	int* pNewLen);
 
+// Length-preserving sanitizer for DNS wire-format responses (RFC 1035).
+// When a TCP length prefix was already delivered separately, this keeps the
+// original message length while converting the response to NOERROR+NODATA:
+//   - Sets Answer/Authority/Additional counts to 0
+//   - Zeroes RR bytes after the question section
+// Supports DNS-over-TCP framing when isTcp=TRUE and the buffer contains a complete 2-byte length prefix.
+// Returns TRUE if any record was filtered.
+BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
+	BYTE* data,
+	int data_len,
+	const WCHAR* domain,
+	BOOLEAN isTcp,
+	ULONG* pFilteredA,
+	ULONG* pFilteredAAAA);
+
 #ifdef __cplusplus
 }
 #endif

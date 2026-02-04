@@ -269,6 +269,9 @@ static BOOLEAN DNS_RawSocketHooksEnabled = FALSE;   // Hooks/logging enabled (Fi
 // Use global DNS_DebugFlag from dns_logging.c for consistent debug logging across modules
 extern BOOLEAN DNS_DebugFlag;
 
+// Encrypted DNS function declarations (from dns_encrypted.c)
+extern BOOLEAN EncryptedDns_IsEnabled(void);
+
 #if !defined(_DNSDEBUG)
 // Release builds: compile out debug-only logging paths.
 #undef DNS_DebugFlag
@@ -308,6 +311,18 @@ typedef struct _PENDING_DNS_QUERY {
     DNS_PASSTHROUGH_REASON PassthroughReason;  // Reason for passthrough (for logging)
 } PENDING_DNS_QUERY;
 static PENDING_DNS_QUERY g_PendingQueries[DNS_SOCKET_TABLE_SIZE];
+
+// Socket-to-Event mapping for async DNS queries
+// When app calls WSAEventSelect/WSAEnumNetworkEvents, store the event handle
+// so we can signal it proactively when a DNS response arrives
+#define SOCKET_EVENT_MAPPING_SIZE 256
+typedef struct _SOCKET_EVENT_MAPPING {
+    SOCKET socket;
+    HANDLE hEvent;
+    DWORD timestamp;  // For cleanup of stale entries
+} SOCKET_EVENT_MAPPING;
+static SOCKET_EVENT_MAPPING g_SocketEventMappings[SOCKET_EVENT_MAPPING_SIZE];
+static CRITICAL_SECTION g_SocketEventMappingsLock;
 
 //---------------------------------------------------------------------------
 // System Function Pointers
@@ -1303,6 +1318,7 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
     InitializeCriticalSection(&g_ResponseTableLock);
     InitializeCriticalSection(&g_TcpReassemblyLock);
     InitializeCriticalSection(&g_DnsSocketTableLock);
+    InitializeCriticalSection(&g_SocketEventMappingsLock);
     
     // Initialize per-socket response queue table
     for (int i = 0; i < RESPONSE_QUEUE_TABLE_SIZE; i++) {
@@ -1327,6 +1343,13 @@ _FX BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate)
         g_PendingQueries[i].QueryType = 0;
         g_PendingQueries[i].IsTcp = FALSE;
         g_PendingQueries[i].PassthroughReason = DNS_PASSTHROUGH_NONE;
+    }
+    
+    // Initialize socket-to-event mappings table
+    for (int i = 0; i < SOCKET_EVENT_MAPPING_SIZE; i++) {
+        g_SocketEventMappings[i].socket = INVALID_SOCKET;
+        g_SocketEventMappings[i].hEvent = NULL;
+        g_SocketEventMappings[i].timestamp = 0;
     }
     
     // If neither filtering nor logging are enabled, skip hooking
@@ -1905,6 +1928,10 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     // Get auxiliary data containing IP list and type filter
     PVOID* aux = Pattern_Aux(found);
     if (!aux || !*aux) {
+        // Even though we have no IPs/filter data, we still need to track this query
+        // so that rebind protection can be applied to the server's response.
+        // This happens when a domain matches a filter pattern but has no configured IPs.
+        Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_CONFIG_ERROR);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -2499,6 +2526,10 @@ _FX int Socket_WSASendTo(
                     // Get auxiliary data containing IP list and type filter
                     PVOID* aux = Pattern_Aux(found);
                     if (!aux || !*aux) {
+                        // Even though we have no IPs/filter data, we still need to track this query
+                        // so that rebind protection can be applied to the server's response.
+                        // This happens when a domain matches a filter pattern but has no configured IPs.
+                        Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_CONFIG_ERROR);
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
@@ -3712,6 +3743,49 @@ _FX void Socket_AddFakeResponse(
     queue->last_access = now;
     
     LeaveCriticalSection(&queue->lock);
+    
+    // PROACTIVE EVENT SIGNALING FIX: Signal the event immediately so async apps notice the response
+    // This fixes the timing issue where nslookup calls WSAEnumNetworkEvents BEFORE the async
+    // EncDns response arrives. By proactively signaling, we ensure the event wakes up immediately.
+    {
+        ULONG index = ((ULONG_PTR)s) % SOCKET_EVENT_MAPPING_SIZE;
+        EnterCriticalSection(&g_SocketEventMappingsLock);
+        
+        if (g_SocketEventMappings[index].socket == s && g_SocketEventMappings[index].hEvent != NULL) {
+            // Found an event associated with this socket - signal it immediately
+            SetEvent(g_SocketEventMappings[index].hEvent);
+            
+            if (DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"DNS: Proactively signaled event=%p for socket=%p (response queued)",
+                    g_SocketEventMappings[index].hEvent, (void*)(ULONG_PTR)s);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
+        }
+        
+        LeaveCriticalSection(&g_SocketEventMappingsLock);
+    }
+}
+
+//---------------------------------------------------------------------------
+// Socket_RecordEventForSocket
+//
+// Record the event handle associated with a socket (called from WSAEnumNetworkEvents)
+// This enables proactive event signaling when responses are queued
+//---------------------------------------------------------------------------
+
+static void Socket_RecordEventForSocket(SOCKET s, HANDLE hEvent)
+{
+    if (hEvent == NULL) return;
+    
+    ULONG index = ((ULONG_PTR)s) % SOCKET_EVENT_MAPPING_SIZE;
+    EnterCriticalSection(&g_SocketEventMappingsLock);
+    
+    g_SocketEventMappings[index].socket = s;
+    g_SocketEventMappings[index].hEvent = hEvent;
+    g_SocketEventMappings[index].timestamp = GetTickCount();
+    
+    LeaveCriticalSection(&g_SocketEventMappingsLock);
 }
 
 //---------------------------------------------------------------------------
@@ -3884,10 +3958,31 @@ static void Socket_ApplyRebindProtection(SOCKET s, BYTE* buf, int* io_len)
         (void)reason;
 
         int new_len = *io_len;
-        if (DNS_Rebind_SanitizeDnsWireResponse(buf, *io_len, domain, isTcp, &filteredA, &filteredAAAA, &new_len)) {
-            if (new_len > 0 && new_len <= *io_len)
-                *io_len = new_len;
+        BOOLEAN sanitized = FALSE;
+
+        // For TCP: check if buffer contains [len][payload] or just payload
+        // - If length_prefix == *io_len - 2: buffer has both, pass isTcp=TRUE
+        // - Otherwise: payload-only, pass isTcp=FALSE (no length prefix in current buffer)
+        BOOLEAN has_length_prefix = FALSE;
+        if (isTcp && *io_len > 2) {
+            USHORT length_prefix = _ntohs(*(USHORT*)buf);
+            has_length_prefix = (length_prefix == (USHORT)(*io_len - 2));
         }
+
+        if (isTcp && !has_length_prefix) {
+            // Payload-only TCP response: keep length to avoid mismatched length prefix already delivered.
+            sanitized = DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(buf, *io_len, domain, FALSE,
+                &filteredA, &filteredAAAA);
+            new_len = *io_len;
+        } else {
+            // Full buffer (UDP or TCP with length prefix): remove RRs and update length prefix if present.
+            sanitized = DNS_Rebind_SanitizeDnsWireResponse(buf, *io_len, domain,
+                (isTcp && has_length_prefix),
+                &filteredA, &filteredAAAA, &new_len);
+        }
+
+        if (sanitized && new_len > 0 && new_len <= *io_len)
+            *io_len = new_len;
     }
 }
 
@@ -4163,6 +4258,37 @@ _FX int Socket_WSARecvFrom(
             return 0;  // Success
         }
     }
+    
+    // FIX for UDP DNS + EncDns timeout:
+    // When EncDns is enabled and processing async queries (DoQ, DoH), responses may not be queued
+    // immediately when WSARecvFrom is called. If this is a DNS socket with no immediate response,
+    // poll briefly for a response to arrive (typically within 500-1000ms for DoQ/DoH).
+    // This prevents timeouts when nslookup calls WSARecvFrom before async EncDns completes.
+    if (!hasFake && Socket_IsDnsSocket(s) && EncryptedDns_IsEnabled() && 
+        lpBuffers && dwBufferCount > 0 && !lpOverlapped) {
+        // Synchronous recv on DNS socket with EncDns enabled - poll for async response
+        DWORD pollRetries = 20;  // ~1 second total (50ms per retry)
+        while (pollRetries-- > 0) {
+            if (Socket_HasFakeResponse(s)) {
+                int fromlen_val = lpFromlen ? *lpFromlen : 0;
+                int result = Socket_GetFakeResponse(s, buffers[0].buf, buffers[0].len, lpFrom, &fromlen_val);
+                if (result > 0) {
+                    if (lpNumberOfBytesRecvd) *lpNumberOfBytesRecvd = result;
+                    if (lpFlags) *lpFlags = 0;
+                    if (lpFromlen) *lpFromlen = fromlen_val;
+                    
+                    if (DNS_DebugFlag) {
+                        WCHAR msg[256];
+                        Sbie_snwprintf(msg, 256, L"  UDP DNS Debug: WSARecvFrom got delayed EncDns response after poll, socket=%p",
+                            (void*)(ULONG_PTR)s);
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                    }
+                    return 0;  // Success
+                }
+            }
+            Sleep(50);  // Small sleep before next retry
+        }
+    }
 
     // No fake response - pass through to real WSARecvFrom
     int ret = __sys_WSARecvFrom(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpFrom, lpFromlen, lpOverlapped, lpCompletionRoutine);
@@ -4401,6 +4527,11 @@ _FX int Socket_WSAEnumNetworkEvents(
     HANDLE         hEventObject,
     void           *lpNetworkEvents)
 {
+    // Record the event handle for this socket so we can signal it proactively when responses arrive
+    if (hEventObject != NULL && DNS_FilterEnabled && DNS_RawSocketHooksEnabled) {
+        Socket_RecordEventForSocket(s, hEventObject);
+    }
+    
     // Call the original function first
     int result = __sys_WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents);
     

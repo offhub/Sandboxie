@@ -122,6 +122,22 @@ typedef VOID (WINAPI *P_FreeAddrInfoW)(PADDRINFOW pAddrInfo);
 typedef VOID (WINAPI *P_freeaddrinfo)(PADDRINFOA pAddrInfo);
 typedef VOID (WINAPI *P_DnsRecordListFree)(PVOID pRecordList, INT FreeType);
 
+// Forward declaration for DNS wire-format parsing helper
+static BOOLEAN DNS_Rebind_SkipDnsName(const BYTE* dns_data, int dns_len, int* pOffset);
+static BOOLEAN DNS_Rebind_ParseWireForSanitize(
+    BYTE* data,
+    int data_len,
+    const WCHAR* domain,
+    BOOLEAN isTcp,
+    BYTE** pDnsData,
+    int* pDnsLen,
+    DNS_WIRE_HEADER** pHeader,
+    int* pQuestionOffset,
+    USHORT* pAnswerCount,
+    USHORT* pNsCount,
+    USHORT* pAddCount,
+    BOOLEAN* pHasLengthPrefix);
+
 // Generic function pointer resolver - reduces boilerplate for lazy-loading APIs
 #define DEFINE_LAZY_PROC(type, name, dll, proc) \
     static type name(void) { \
@@ -170,6 +186,149 @@ static BOOLEAN DNS_Rebind_SockaddrToIpAddress(ADDRESS_FAMILY af, const void* soc
     else if (af == AF_INET6) {
         const SOCKADDR_IN6_LH* sa6 = (const SOCKADDR_IN6_LH*)sockaddr;
         DNS_Rebind_IPv6ToIpAddress(sa6->sin6_addr.u.Byte, pIP);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
+    BYTE* data,
+    int data_len,
+    const WCHAR* domain,
+    BOOLEAN isTcp,
+    ULONG* pFilteredA,
+    ULONG* pFilteredAAAA)
+{
+    if (pFilteredA)
+        *pFilteredA = 0;
+    if (pFilteredAAAA)
+        *pFilteredAAAA = 0;
+
+    BYTE* dns_data = NULL;
+    int dns_len = 0;
+    DNS_WIRE_HEADER* header = NULL;
+    int offset = 0;
+    USHORT answer_count = 0;
+    USHORT ns_count = 0;
+    USHORT add_count = 0;
+    BOOLEAN has_length_prefix = FALSE;
+
+    if (!DNS_Rebind_ParseWireForSanitize(
+            data, data_len, domain, isTcp,
+            &dns_data, &dns_len, &header, &offset,
+            &answer_count, &ns_count, &add_count,
+            &has_length_prefix))
+        return FALSE;
+
+    (void)has_length_prefix;
+
+    ULONG filteredA = 0;
+    ULONG filteredAAAA = 0;
+
+    typedef struct _DNS_REBIND_FILTERED_IP {
+        ADDRESS_FAMILY af;
+        IP_ADDRESS     ip;
+    } DNS_REBIND_FILTERED_IP;
+
+    DNS_REBIND_FILTERED_IP filtered_ips[16];
+    ULONG filtered_ip_count = 0;
+
+    int read_offset = offset;
+
+    struct {
+        USHORT count;
+    } sections[3] = {
+        { answer_count },
+        { ns_count },
+        { add_count },
+    };
+
+    for (int s = 0; s < 3; ++s) {
+        for (USHORT i = 0; i < sections[s].count; ++i) {
+            if (!DNS_Rebind_SkipDnsName(dns_data, dns_len, &read_offset))
+                return FALSE;
+
+            // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
+            if (read_offset + 10 > dns_len)
+                return FALSE;
+
+            USHORT rr_type = _ntohs(*(USHORT*)(dns_data + read_offset));
+            read_offset += 2;
+            read_offset += 2; // CLASS
+            read_offset += 4; // TTL
+            USHORT rdlength = _ntohs(*(USHORT*)(dns_data + read_offset));
+            read_offset += 2;
+
+            if (read_offset + rdlength > dns_len)
+                return FALSE;
+
+            if (rr_type == DNS_TYPE_A && rdlength == 4) {
+                IP_ADDRESS ip;
+                DNS_Rebind_IPv4ToIpAddress(*(DWORD*)(dns_data + read_offset), &ip);
+                if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
+                    filteredA++;
+                    if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
+                        filtered_ips[filtered_ip_count].af = AF_INET;
+                        filtered_ips[filtered_ip_count].ip = ip;
+                        filtered_ip_count++;
+                    }
+                }
+            } else if (rr_type == DNS_TYPE_AAAA && rdlength == 16) {
+                IP_ADDRESS ip;
+                DNS_Rebind_IPv6ToIpAddress(dns_data + read_offset, &ip);
+                if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
+                    filteredAAAA++;
+                    if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
+                        filtered_ips[filtered_ip_count].af = AF_INET6;
+                        filtered_ips[filtered_ip_count].ip = ip;
+                        filtered_ip_count++;
+                    }
+                }
+            }
+
+            read_offset += rdlength;
+        }
+    }
+
+    if (pFilteredA)
+        *pFilteredA = filteredA;
+    if (pFilteredAAAA)
+        *pFilteredAAAA = filteredAAAA;
+
+    if (filteredA || filteredAAAA) {
+        // Convert to NOERROR + NODATA without changing total length.
+        header->AnswerRRs = 0;
+        header->AuthorityRRs = 0;
+        header->AdditionalRRs = 0;
+
+        if (offset < dns_len) {
+            memset(dns_data + offset, 0, (size_t)(dns_len - offset));
+        }
+
+        if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_WIRE)) {
+            WCHAR msg[1024];
+            msg[0] = L'\0';
+            for (ULONG i = 0; i < filtered_ip_count; ++i) {
+                WCHAR ip_msg[128] = L"";
+                WSA_DumpIP(filtered_ips[i].af, &filtered_ips[i].ip, ip_msg);
+
+                size_t len = wcslen(msg);
+                size_t avail = (sizeof(msg) / sizeof(msg[0])) - len;
+                if (avail <= 2)
+                    break;
+
+                Sbie_snwprintf(msg + len, avail, L"%s", ip_msg);
+            }
+            DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, msg);
+            DNS_TRACE_LOG(L"[DNS Rebind] Filtered raw DNS response (kept length) for domain: %s (A=%lu, AAAA=%lu)",
+                          domain, filteredA, filteredAAAA);
+        }
+
         return TRUE;
     }
 
@@ -1444,22 +1603,20 @@ static BOOLEAN DNS_Rebind_SkipDnsName(const BYTE* dns_data, int dns_len, int* pO
     return FALSE;
 }
 
-_FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
+static BOOLEAN DNS_Rebind_ParseWireForSanitize(
     BYTE* data,
     int data_len,
     const WCHAR* domain,
     BOOLEAN isTcp,
-    ULONG* pFilteredA,
-    ULONG* pFilteredAAAA,
-    int* pNewLen)
+    BYTE** pDnsData,
+    int* pDnsLen,
+    DNS_WIRE_HEADER** pHeader,
+    int* pQuestionOffset,
+    USHORT* pAnswerCount,
+    USHORT* pNsCount,
+    USHORT* pAddCount,
+    BOOLEAN* pHasLengthPrefix)
 {
-    if (pFilteredA)
-        *pFilteredA = 0;
-    if (pFilteredAAAA)
-        *pFilteredAAAA = 0;
-    if (pNewLen)
-        *pNewLen = data_len;
-
     if (!data || data_len < (int)sizeof(DNS_WIRE_HEADER) || !domain || !domain[0])
         return FALSE;
 
@@ -1512,6 +1669,49 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
         if (offset > dns_len)
             return FALSE;
     }
+
+    if (pDnsData) *pDnsData = dns_data;
+    if (pDnsLen) *pDnsLen = dns_len;
+    if (pHeader) *pHeader = header;
+    if (pQuestionOffset) *pQuestionOffset = offset;
+    if (pAnswerCount) *pAnswerCount = answer_count;
+    if (pNsCount) *pNsCount = ns_count;
+    if (pAddCount) *pAddCount = add_count;
+    if (pHasLengthPrefix) *pHasLengthPrefix = has_length_prefix;
+    return TRUE;
+}
+
+_FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponse(
+    BYTE* data,
+    int data_len,
+    const WCHAR* domain,
+    BOOLEAN isTcp,
+    ULONG* pFilteredA,
+    ULONG* pFilteredAAAA,
+    int* pNewLen)
+{
+    if (pFilteredA)
+        *pFilteredA = 0;
+    if (pFilteredAAAA)
+        *pFilteredAAAA = 0;
+    if (pNewLen)
+        *pNewLen = data_len;
+
+    BYTE* dns_data = NULL;
+    int dns_len = 0;
+    DNS_WIRE_HEADER* header = NULL;
+    int offset = 0;
+    USHORT answer_count = 0;
+    USHORT ns_count = 0;
+    USHORT add_count = 0;
+    BOOLEAN has_length_prefix = FALSE;
+
+    if (!DNS_Rebind_ParseWireForSanitize(
+            data, data_len, domain, isTcp,
+            &dns_data, &dns_len, &header, &offset,
+            &answer_count, &ns_count, &add_count,
+            &has_length_prefix))
+        return FALSE;
 
     ULONG filteredA = 0;
     ULONG filteredAAAA = 0;
