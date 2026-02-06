@@ -28,8 +28,8 @@
 //   - Custom ports: monitors only specified ports
 //   - Examples:
 //     FilterRawDns=y                         (port 53)
-//     FilterRawDns=nslookup.exe,y:1053;5353  (nslookup, ports 1053+5353)
-//     FilterRawDns=y:53;1053;5353            (all apps, ports 53+1053+5353)
+//     FilterRawDns=nslookup.exe,y:5353;9953  (nslookup, ports 5353+9953)
+//     FilterRawDns=y:53;5353;9953            (all apps, ports 53+5353+9953)
 //
 // DNS Wire Format Parser:
 //   - Parses DNS query packets (RFC 1035)
