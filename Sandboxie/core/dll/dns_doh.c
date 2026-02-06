@@ -1,5 +1,5 @@
 /*
- * Copyright 2024-2025 David Xanatos, xanasoft.com
+ * Copyright 2024-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -86,6 +86,7 @@
 #include "dns_doq.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_rebind.h"    // For DNS_ENCDNS_LOG_TAG
 #include "winhttp_defs.h"  // WinHTTP function pointers and constants
 
 #include <windows.h>
@@ -796,9 +797,9 @@ static DOH_PENDING_QUERY* EncDns_CreatePendingQuery(const WCHAR* domain, USHORT 
             g_DohPendingQueries[i].Completed = 0;
             g_DohPendingQueries[i].Valid = TRUE;
 
-            if (DNS_DebugFlag) {
+            if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
                 WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"[EncDns] Created pending query for %s (type %d)", domain, qtype);
+                Sbie_snwprintf(msg, 512, L"[EncDns] Created pending query for %s (type %s)", domain, DNS_GetTypeName(qtype));
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
 
@@ -2201,10 +2202,10 @@ static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT*
                 if (DNS_DebugFlag) {
                     WCHAR msg[512];
                     if (!g_DohCache[i].is_failure && pResult->ProtocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
-                        Sbie_snwprintf(msg, 512, L"[EncDns] Cache HIT: %s (Type: %d, used=%s)",
-                            domain, qtype, EncryptedDns_GetModeName(pResult->ProtocolUsed));
+                        Sbie_snwprintf(msg, 512, L"[EncDns] Cache HIT: %s (Type: %s, used=%s)",
+                            domain, DNS_GetTypeName(qtype), EncryptedDns_GetModeName(pResult->ProtocolUsed));
                     } else {
-                        Sbie_snwprintf(msg, 512, L"[EncDns] Cache HIT: %s (Type: %d)", domain, qtype);
+                        Sbie_snwprintf(msg, 512, L"[EncDns] Cache HIT: %s (Type: %s)", domain, DNS_GetTypeName(qtype));
                     }
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
@@ -2217,9 +2218,9 @@ static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT*
 
     LeaveCriticalSection(&g_DohCacheLock);
 
-    if (DNS_DebugFlag) {
+    if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
         WCHAR msg[512];
-        Sbie_snwprintf(msg, 512, L"[EncDns] Cache MISS: %s (Type: %d)", domain, qtype);
+        Sbie_snwprintf(msg, 512, L"[EncDns] Cache MISS: %s (Type: %s)", domain, DNS_GetTypeName(qtype));
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
@@ -2388,8 +2389,8 @@ static BOOLEAN DoH_BuildDnsQuery(
 
     if (DNS_DebugFlag) {
         WCHAR msg[512];
-        Sbie_snwprintf(msg, 512, L"[EncDns] Built DNS query: %s (Type: %d, Length: %d bytes)",
-            domain, qtype, *queryLen);
+        Sbie_snwprintf(msg, 512, L"[EncDns] Built DNS query: %s (Type: %s, Length: %d bytes)",
+            domain, DNS_GetTypeName(qtype), *queryLen);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
@@ -2556,7 +2557,7 @@ static void EncDns_CacheStore(const WCHAR* domain, USHORT qtype, const DOH_RESUL
 
     if (DNS_DebugFlag) {
         WCHAR msg[512];
-        Sbie_snwprintf(msg, 512, L"[EncDns] Cached: %s (Type: %d, TTL: %d)", domain, qtype, pResult->TTL);
+        Sbie_snwprintf(msg, 512, L"[EncDns] Cached: %s (Type: %s, TTL: %d)", domain, DNS_GetTypeName(qtype), pResult->TTL);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 }
@@ -3643,8 +3644,8 @@ static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, U
                 
                 if (DNS_DebugFlag) {
                     WCHAR msg[256];
-                    Sbie_snwprintf(msg, 256, L"[EncDns] Success with %s for %s:%d", 
-                        EncryptedDns_GetModeName(tryMode), domain, qtype);
+                    Sbie_snwprintf(msg, 256, L"[EncDns] Success with %s for %s:%s", 
+                        EncryptedDns_GetModeName(tryMode), domain, DNS_GetTypeName(qtype));
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
                 return TRUE;
@@ -4206,9 +4207,9 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult)
     pending = EncDns_FindPendingQuery(domain, qtype);
     if (pending) {
         // Another thread is already querying this domain - wait for it
-        if (DNS_DebugFlag) {
+        if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
             WCHAR msg[512];
-            Sbie_snwprintf(msg, 512, L"[EncDns] Waiting for pending query: %s (type %d)", domain, qtype);
+            Sbie_snwprintf(msg, 512, L"[EncDns] Waiting for pending query: %s (type %s)", domain, DNS_GetTypeName(qtype));
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
 
@@ -4270,7 +4271,7 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult)
 
     // Check global counter for cross-thread re-entrancy (WinHTTP uses internal threads)
     if (InterlockedCompareExchange(&g_DohActiveQueries, 0, 0) > 0) {
-        if (DNS_DebugFlag) {
+        if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
             WCHAR msg[512];
             Sbie_snwprintf(msg, 512, L"[EncDns] Re-entrancy detected (global), waiting for active query: %s", domain);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);

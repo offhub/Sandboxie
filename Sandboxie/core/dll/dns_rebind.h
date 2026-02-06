@@ -1,5 +1,5 @@
 /*
- * Copyright 2024-2025 David Xanatos, xanasoft.com
+ * Copyright 2024-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@
 #define DNS_REBIND_LOG_TAG_FILTER  0x50494252u /* 'RBIP' */
 #define DNS_REBIND_LOG_TAG_WIRE    0x45524957u /* 'WIRE' */
 #define DNS_EXCL_LOG_TAG           0x4C435845u /* 'EXCL' */
+#define DNS_ENCDNS_LOG_TAG         0x534E4345u /* 'ECNS' - EncDns cache/pending/re-entrancy */
 
 // Helper: append a WSA_DumpIP-formatted fragment (includes its own delimiter) to a caller buffer.
 // Used to aggregate multiple filtered IPs into a single log line.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2024-2025 David Xanatos, xanasoft.com
+ * Copyright 2024-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -1109,7 +1109,7 @@ static void DNS_Rebind_LoadFilteredIpRulesFromSection(const WCHAR* section_name)
                 continue;
 
             // Debug: log each rule value read from config
-            DNS_TRACE_LOG(L"[DNS Rebind] %s read from [%s][%d]: %s",
+            DNS_DEBUG_LOG(L"[DNS Rebind] %s read from [%s][%d]: %s",
                           setting_name,
                           log_section, index, value);
 
@@ -1133,7 +1133,7 @@ static void DNS_Rebind_LoadFilteredIpRulesFromSection(const WCHAR* section_name)
                                   dom_pat ? dom_pat : L"(all)",
                                   ip_pat ? ip_pat : L"(null)");
                 } else {
-                    DNS_TRACE_LOG(L"[DNS Rebind] %s added from [%s]: proc=%s, dom=%s, ip=%s, enabled=%d",
+                    DNS_DEBUG_LOG(L"[DNS Rebind] %s added from [%s]: proc=%s, dom=%s, ip=%s, enabled=%d",
                                   setting_name,
                                   log_section,
                                   proc_pat ? proc_pat : L"(all)",

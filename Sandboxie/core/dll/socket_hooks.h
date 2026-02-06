@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 David Xanatos, xanasoft.com
+ * Copyright 2022-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -21,8 +21,18 @@
 //---------------------------------------------------------------------------
 // Socket Hooks - Raw DNS Query Interception
 //
-// This module intercepts raw UDP socket sends to port 53 (DNS) to filter
+// This module intercepts raw UDP socket sends to DNS ports to filter
 // DNS queries made by tools that bypass high-level APIs like nslookup.exe
+//
+// Configuration:
+//   FilterRawDns=[process,]y|n[:port1[;port2;...]]
+//     - y: Enable raw DNS filtering (default port 53 if no ports specified)
+//     - n: Disable raw DNS filtering
+//     - :port1;port2: Custom ports to monitor (semicolon-separated)
+//     - Examples:
+//       FilterRawDns=y                      (all processes, port 53)
+//       FilterRawDns=nslookup.exe,y:1053;5353  (nslookup only, ports 1053+5353)
+//       FilterRawDns=y:53;1053;5353         (all processes, ports 53+1053+5353)
 //---------------------------------------------------------------------------
 
 #include <windows.h>
@@ -52,7 +62,7 @@ BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
 // Mark a socket as DNS connection (for external use by ConnectEx hook)
 void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);
 
-// Track DNS connection (port 53) - called internally and may be useful for external hooks
+// Track DNS connection (configured DNS ports) - called internally and may be useful for external hooks
 // Returns TRUE if this is a DNS connection
 BOOLEAN Socket_TrackDnsConnectionEx(SOCKET s, const void* name, int namelen);
 

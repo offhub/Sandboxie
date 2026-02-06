@@ -1,5 +1,5 @@
 /*
- * Copyright 2022 David Xanatos, xanasoft.com
+ * Copyright 2022-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -19,8 +19,17 @@
 // Socket Hooks - Raw DNS Query Interception
 //
 // This module intercepts raw UDP socket operations to filter DNS queries
-// sent directly to port 53, catching tools like nslookup.exe that bypass
-// high-level DNS APIs.
+// sent directly to DNS ports (default: 53), catching tools like nslookup.exe
+// that bypass high-level DNS APIs.
+//
+// Custom Port Support:
+//   FilterRawDns=[process,]y|n[:port1[;port2;...]]
+//   - Default (no ports): monitors port 53 only
+//   - Custom ports: monitors only specified ports
+//   - Examples:
+//     FilterRawDns=y                         (port 53)
+//     FilterRawDns=nslookup.exe,y:1053;5353  (nslookup, ports 1053+5353)
+//     FilterRawDns=y:53;1053;5353            (all apps, ports 53+1053+5353)
 //
 // DNS Wire Format Parser:
 //   - Parses DNS query packets (RFC 1035)
@@ -255,6 +264,13 @@ static CRITICAL_SECTION g_TcpReassemblyLock;
 
 static BOOLEAN DNS_RawSocketFilterEnabled = FALSE;  // Raw socket filtering enabled (default: FALSE)
 static BOOLEAN DNS_RawSocketHooksEnabled = FALSE;   // Hooks/logging enabled (FilterRawDns or DnsTrace)
+
+// Custom DNS port list for FilterRawDns
+// Supports up to 16 custom ports (e.g., FilterRawDns=y:53;5353;9953)
+// When no ports configured, defaults to port 53 only.
+#define DNS_MAX_CUSTOM_PORTS 16
+static USHORT DNS_CustomPorts[DNS_MAX_CUSTOM_PORTS];
+static int DNS_CustomPortCount = 0;  // 0 = use default (port 53 only)
 
 // Use global DNS_DebugFlag from dns_logging.c for consistent debug logging across modules
 extern BOOLEAN DNS_DebugFlag;
@@ -1297,8 +1313,8 @@ static int Socket_BuildDoHResponse(
                 
                 if (DNS_TraceFlag) {
                     WCHAR msg[512];
-                    Sbie_snwprintf(msg, 512, L"UDP DNS EncDns: DNSSEC pass-through for %s (DnssecEnabled=y, RRSIG present, raw len=%d, app_DO=%d)",
-                        domain, (int)doh_result.RawResponseLen, do_flag ? 1 : 0);
+                    Sbie_snwprintf(msg, 512, L"%s DNS EncDns: DNSSEC pass-through for %s (DnssecEnabled=y, RRSIG present, raw len=%d, app_DO=%d)",
+                        protocol ? protocol : L"Raw", domain, (int)doh_result.RawResponseLen, do_flag ? 1 : 0);
                     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
                 }
                 
@@ -1335,8 +1351,8 @@ static int Socket_BuildDoHResponse(
             
             if (DNS_TraceFlag) {
                 WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"UDP DNS EncDns: DNSSEC filter-mode for %s (raw len=%d, filtered A=%lu AAAA=%lu)",
-                    domain, (int)doh_result.RawResponseLen, filteredA, filteredAAAA);
+                Sbie_snwprintf(msg, 512, L"%s DNS EncDns: DNSSEC filter-mode for %s (raw len=%d, filtered A=%lu AAAA=%lu)",
+                    protocol ? protocol : L"Raw", domain, (int)doh_result.RawResponseLen, filteredA, filteredAAAA);
                 SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
             }
             
@@ -1376,19 +1392,115 @@ static int Socket_BuildDoHResponse(
 }
 
 //---------------------------------------------------------------------------
+// Socket_IsDnsPort
+//
+// Check if a destination port matches the configured DNS port list.
+// If custom ports are configured via FilterRawDns=y:port1;port2;...,
+// only those ports are matched. Otherwise defaults to port 53.
+//---------------------------------------------------------------------------
+
+static BOOLEAN Socket_IsDnsPort(USHORT port)
+{
+    if (DNS_CustomPortCount > 0) {
+        for (int i = 0; i < DNS_CustomPortCount; i++) {
+            if (DNS_CustomPorts[i] == port)
+                return TRUE;
+        }
+        return FALSE;
+    }
+    // Default: standard DNS port only
+    return (port == 53);
+}
+
+//---------------------------------------------------------------------------
+// Socket_ParseFilterRawDnsPorts
+//
+// Parse custom port list from FilterRawDns value after the colon.
+// Format: "y:port1;port2;..." or "y" (no ports = default to 53)
+// Stores parsed ports in DNS_CustomPorts array.
+//---------------------------------------------------------------------------
+
+static void Socket_ParseFilterRawDnsPorts(const WCHAR* port_str)
+{
+    if (!port_str || !port_str[0])
+        return;
+
+    DNS_CustomPortCount = 0;
+
+    const WCHAR* p = port_str;
+    while (*p && DNS_CustomPortCount < DNS_MAX_CUSTOM_PORTS) {
+        // Skip separators
+        while (*p == L';' || *p == L' ')
+            p++;
+        if (!*p)
+            break;
+
+        // Parse port number
+        USHORT port = 0;
+        while (*p >= L'0' && *p <= L'9') {
+            port = port * 10 + (USHORT)(*p - L'0');
+            p++;
+        }
+
+        if (port > 0 && port <= 65535) {
+            // Check for duplicates
+            BOOLEAN dup = FALSE;
+            for (int i = 0; i < DNS_CustomPortCount; i++) {
+                if (DNS_CustomPorts[i] == port) { dup = TRUE; break; }
+            }
+            if (!dup) {
+                DNS_CustomPorts[DNS_CustomPortCount++] = port;
+            }
+        }
+
+        // Skip to next separator
+        while (*p && *p != L';')
+            p++;
+    }
+}
+
+//---------------------------------------------------------------------------
 // Socket_GetRawDnsFilterEnabled
 //
-// Query the FilterRawDns setting to control raw socket DNS filtering
+// Query the FilterRawDns setting to control raw socket DNS filtering.
+// Syntax: FilterRawDns=[process,]y|n[:port1[;port2;...]]
+//   - y: Enable filtering (default port 53 if no ports specified)
+//   - n: Disable filtering (ports ignored)
+//   - :port1;port2: Custom ports to monitor (only when enabled)
+//
 // Default: Disabled (user must explicitly enable with FilterRawDns=y)
 // Note: Logging is still allowed without certificate when DnsTrace=y
 //---------------------------------------------------------------------------
 
+extern const WCHAR* Dll_ImageName;
+
 _FX BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate)
 {
-    // Query FilterRawDns with per-process matching support
-    // Default: FALSE (disabled) - user must explicitly enable
-    // Logging still works via DnsTrace=y even without certificate
-    return Config_GetSettingsForImageName_bool(L"FilterRawDns", FALSE);
+    WCHAR value[256];
+    SbieDll_GetSettingsForName(NULL, Dll_ImageName, L"FilterRawDns", value, sizeof(value), NULL);
+
+    if (!value[0])
+        return FALSE;
+
+    // Check for y/n prefix
+    WCHAR ch = value[0];
+    BOOLEAN enabled = (ch == L'y' || ch == L'Y');
+
+    // Parse optional port list after colon (only when first call sets it up)
+    if (enabled && DNS_CustomPortCount == 0) {
+        const WCHAR* colon = wcschr(value, L':');
+        if (colon) {
+            Socket_ParseFilterRawDnsPorts(colon + 1);
+            if (DNS_CustomPortCount > 0) {
+                DNS_TRACE_LOG(L"[FilterRawDns] Custom ports configured: %d port(s)", DNS_CustomPortCount);
+                for (int i = 0; i < DNS_CustomPortCount; i++) {
+                    DNS_DEBUG_LOG(L"[FilterRawDns] Port[%d]: %d", i, DNS_CustomPorts[i]);
+                }
+            }
+        }
+    }
+
+    return enabled;
 }
 
 //---------------------------------------------------------------------------
@@ -1855,7 +1967,7 @@ _FX int Socket_SendReassembledData(
 // Common helper to track DNS connections (port 53) for connect/WSAConnect
 // Stores the DNS server address for getpeername() spoofing
 //
-// Returns: TRUE if this is a DNS connection (port 53), FALSE otherwise
+// Returns: TRUE if this is a DNS connection, FALSE otherwise
 //---------------------------------------------------------------------------
 
 static BOOLEAN Socket_TrackDnsConnection(SOCKET s, const void* name, int namelen, const WCHAR* func_name)
@@ -1873,8 +1985,8 @@ static BOOLEAN Socket_TrackDnsConnection(SOCKET s, const void* name, int namelen
         destPort = _ntohs(((struct sockaddr_in6*)name)->sin6_port);
     }
 
-    // Mark socket as DNS if connecting to port 53
-    if (destPort == 53) {
+    // Mark socket as DNS if connecting to a DNS port
+    if (Socket_IsDnsPort(destPort)) {
         Socket_MarkDnsSocket(s, TRUE);
         
         // Store DNS server address for getpeername() support (thread-safe)
@@ -1890,8 +2002,8 @@ static BOOLEAN Socket_TrackDnsConnection(SOCKET s, const void* name, int namelen
         if (DNS_DebugFlag) {
             WCHAR msg[256];
             BOOLEAN isTcp = Socket_IsTcpSocket(s);
-            Sbie_snwprintf(msg, 256, L"  %s DNS Debug: %s detected port 53, socket=%p marked as DNS",
-                isTcp ? L"TCP" : L"UDP", func_name, (void*)(ULONG_PTR)s);
+            Sbie_snwprintf(msg, 256, L"  %s DNS Debug: %s detected port %d, socket=%p marked as DNS",
+                isTcp ? L"TCP" : L"UDP", func_name, destPort, (void*)(ULONG_PTR)s);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
         return TRUE;
@@ -2154,6 +2266,77 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     return DNS_PROCESS_INTERCEPTED;
 }
 
+static BOOLEAN Socket_GetDestPortFromSockaddr(const void* addr, int addrlen, USHORT* out_port)
+{
+    if (!addr || !out_port)
+        return FALSE;
+
+    USHORT addrFamily = ((struct sockaddr*)addr)->sa_family;
+
+    if (addrFamily == AF_INET && addrlen >= sizeof(struct sockaddr_in)) {
+        *out_port = _ntohs(((struct sockaddr_in*)addr)->sin_port);
+        return TRUE;
+    }
+
+    if (addrFamily == AF_INET6 && addrlen >= sizeof(struct sockaddr_in6)) {
+        *out_port = _ntohs(((struct sockaddr_in6*)addr)->sin6_port);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN Socket_HandleUdpDnsSend(
+    SOCKET s,
+    const BYTE* buf,
+    int len,
+    const void* to,
+    int tolen,
+    const WCHAR* func_name,
+    BOOLEAN log_mark,
+    BOOLEAN track_pending,
+    DNS_PROCESS_RESULT* out_result)
+{
+    if (!buf || len < (int)sizeof(DNS_WIRE_HEADER) || !to || !func_name)
+        return FALSE;
+
+    USHORT destPort = 0;
+    if (!Socket_GetDestPortFromSockaddr(to, tolen, &destPort))
+        return FALSE;
+
+    if (!Socket_IsDnsPort(destPort))
+        return FALSE;
+
+    if (!Socket_IsDnsSocket(s)) {
+        Socket_MarkDnsSocket(s, TRUE);
+        if (log_mark && DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"UDP DNS: Marking socket=%p as DNS socket (via %s to port %d)",
+                (void*)(ULONG_PTR)s, func_name, destPort);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+    }
+
+    if (track_pending) {
+        WCHAR domainName[256];
+        USHORT qtype = 0;
+        if (Socket_ParseDnsQuery(buf, len, domainName, 256, &qtype)) {
+            Socket_SetPendingQuery(s, domainName, qtype, FALSE, DNS_PASSTHROUGH_NONE);
+        }
+    }
+
+    if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled) {
+        DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, buf, len, to, L"UDP", func_name);
+        if (out_result) {
+            *out_result = result;
+        }
+    } else if (out_result) {
+        *out_result = DNS_PROCESS_PASSTHROUGH;
+    }
+
+    return TRUE;
+}
+
 //---------------------------------------------------------------------------
 // Socket_connect
 //
@@ -2263,8 +2446,9 @@ _FX int Socket_send(
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
-    // Only inspect if this is a DNS socket and filtering is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
+    // Inspect DNS sockets when filtering or EncDns passthrough is enabled.
+    if (DNS_RawSocketHooksEnabled && (DNS_FilterEnabled || EncryptedDns_IsEnabled()) &&
+        Socket_IsDnsSocket(s) && buf && len >= sizeof(DNS_WIRE_HEADER)) {
         
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
 
@@ -2333,8 +2517,9 @@ _FX int Socket_WSASend(
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
-    // Only inspect if this is a DNS socket and filtering is enabled
-    if (DNS_FilterEnabled && DNS_RawSocketHooksEnabled && Socket_IsDnsSocket(s) && buffers && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
+    // Inspect DNS sockets when filtering or EncDns passthrough is enabled.
+    if (DNS_RawSocketHooksEnabled && (DNS_FilterEnabled || EncryptedDns_IsEnabled()) &&
+        Socket_IsDnsSocket(s) && buffers && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
         
         BOOLEAN isTcp = Socket_IsTcpSocket(s);
         int len = buffers[0].len;
@@ -2386,51 +2571,12 @@ _FX int Socket_sendto(
     // Track DNS queries (for response sanitization/logging) whenever raw socket hooks are installed.
     // Interception/blocking still requires DNS filtering to be enabled.
     if (DNS_RawSocketHooksEnabled && to && buf && len >= sizeof(DNS_WIRE_HEADER)) {
-        
-        // Check if destination is DNS port 53
-        USHORT destPort = 0;
-        USHORT addrFamily = ((struct sockaddr*)to)->sa_family;
-
-        if (addrFamily == AF_INET && tolen >= sizeof(struct sockaddr_in)) {
-            destPort = _ntohs(((struct sockaddr_in*)to)->sin_port);
-        } 
-        else if (addrFamily == AF_INET6 && tolen >= sizeof(struct sockaddr_in6)) {
-            destPort = _ntohs(((struct sockaddr_in6*)to)->sin6_port);
-        }
-
-        // Port 53 = DNS
-        if (destPort == 53) {
-            
-            // Mark socket as DNS socket so WSAEnumNetworkEvents/select can detect fake responses
-            // (UDP sockets don't go through connect(), so we mark them here)
-            if (!Socket_IsDnsSocket(s)) {
-                Socket_MarkDnsSocket(s, TRUE);
-                if (DNS_DebugFlag) {
-                    WCHAR msg[256];
-                    Sbie_snwprintf(msg, 256, L"UDP DNS: Marking socket=%p as DNS socket (via sendto to port 53)",
-                        (void*)(ULONG_PTR)s);
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                }
+        DNS_PROCESS_RESULT result = DNS_PROCESS_PASSTHROUGH;
+        if (Socket_HandleUdpDnsSend(s, (const BYTE*)buf, len, to, tolen, L"sendto", TRUE, TRUE, &result)) {
+            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled &&
+                (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR)) {
+                return len;  // Return success (intercepted or error - don't send)
             }
-
-            // Always track pending DNS query for passthrough response rebind sanitization.
-            {
-                WCHAR domainName[256];
-                USHORT qtype = 0;
-                if (Socket_ParseDnsQuery((const BYTE*)buf, len, domainName, 256, &qtype)) {
-                    Socket_SetPendingQuery(s, domainName, qtype, FALSE, DNS_PASSTHROUGH_NONE);
-                }
-            }
-            
-            // Process DNS query (interception) only when DNS filtering is enabled.
-            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled) {
-                DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(s, (const BYTE*)buf, len, to, L"UDP", L"sendto");
-                
-                if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
-                    return len;  // Return success (intercepted or error - don't send)
-                }
-            }
-            // DNS_PROCESS_PASSTHROUGH: fall through to real sendto
         }
     }
 
@@ -2681,6 +2827,28 @@ _FX int Socket_WSASendTo(
                         // Even though we have no IPs/filter data, we still need to track this query
                         // so that rebind protection can be applied to the server's response.
                         // This happens when a domain matches a filter pattern but has no configured IPs.
+                        BYTE response[DNS_RESPONSE_SIZE];
+                        int response_len = Socket_BuildDoHResponse(
+                            dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE, L"TCP");
+                        if (response_len > 0) {
+                            if (Socket_ValidateDnsResponse(response, response_len)) {
+                                if (DNS_DebugFlag) {
+                                    WCHAR msg[256];
+                                    Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: WSASendTo(conn) queueing EncDns response, len=%d bytes",
+                                        response_len);
+                                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                                }
+                                Socket_AddFakeResponse(s, response, response_len, NULL);
+                                if (used_reassembly) {
+                                    Socket_ClearReassemblyBuffer(s);
+                                }
+                                if (lpNumberOfBytesSent) {
+                                    *lpNumberOfBytesSent = totalLen;
+                                }
+                                Dll_Free(domain_lwr);
+                                return 0;
+                            }
+                        }
                         Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_CONFIG_ERROR);
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
@@ -2693,6 +2861,28 @@ _FX int Socket_WSASendTo(
                     // Certificate required for actual filtering (interception/blocking)
                     extern BOOLEAN DNS_HasValidCertificate;
                     if (!DNS_HasValidCertificate) {
+                        BYTE response[DNS_RESPONSE_SIZE];
+                        int response_len = Socket_BuildDoHResponse(
+                            dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE, L"TCP");
+                        if (response_len > 0) {
+                            if (Socket_ValidateDnsResponse(response, response_len)) {
+                                if (DNS_DebugFlag) {
+                                    WCHAR msg[256];
+                                    Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: WSASendTo(conn) queueing EncDns response, len=%d bytes",
+                                        response_len);
+                                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                                }
+                                Socket_AddFakeResponse(s, response, response_len, NULL);
+                                if (used_reassembly) {
+                                    Socket_ClearReassemblyBuffer(s);
+                                }
+                                if (lpNumberOfBytesSent) {
+                                    *lpNumberOfBytesSent = totalLen;
+                                }
+                                Dll_Free(domain_lwr);
+                                return 0;
+                            }
+                        }
                         Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_NO_CERT);
                         Dll_Free(domain_lwr);
                         // If we used reassembly, send the complete reassembled data
@@ -2714,6 +2904,28 @@ _FX int Socket_WSASendTo(
                     }
                     
                     if (response_len == 0) {
+                        BYTE response[DNS_RESPONSE_SIZE];
+                        int encdns_len = Socket_BuildDoHResponse(
+                            dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE, L"TCP");
+                        if (encdns_len > 0) {
+                            if (Socket_ValidateDnsResponse(response, encdns_len)) {
+                                if (DNS_DebugFlag) {
+                                    WCHAR msg[256];
+                                    Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: WSASendTo(conn) queueing EncDns response, len=%d bytes",
+                                        encdns_len);
+                                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                                }
+                                Socket_AddFakeResponse(s, response, encdns_len, NULL);
+                                if (used_reassembly) {
+                                    Socket_ClearReassemblyBuffer(s);
+                                }
+                                if (lpNumberOfBytesSent) {
+                                    *lpNumberOfBytesSent = totalLen;
+                                }
+                                Dll_Free(domain_lwr);
+                                return 0;
+                            }
+                        }
                         Socket_LogFilterPassthrough(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_TYPE_NOT_FILTERED);
                         // Need to passthrough - if we used reassembly, send the complete reassembled data
                         if (used_reassembly) {
@@ -2760,6 +2972,28 @@ _FX int Socket_WSASendTo(
                     // If response_len == 0, we already freed domain_lwr above
                 }
                 else {
+                    BYTE response[DNS_RESPONSE_SIZE];
+                    int response_len = Socket_BuildDoHResponse(
+                        dns_payload, dns_payload_len, domain_lwr, qtype, response, DNS_RESPONSE_SIZE, L"TCP");
+                    if (response_len > 0) {
+                        if (Socket_ValidateDnsResponse(response, response_len)) {
+                            if (DNS_DebugFlag) {
+                                WCHAR msg[256];
+                                Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: WSASendTo(conn) queueing EncDns response, len=%d bytes",
+                                    response_len);
+                                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                            }
+                            Socket_AddFakeResponse(s, response, response_len, NULL);
+                            if (used_reassembly) {
+                                Socket_ClearReassemblyBuffer(s);
+                            }
+                            if (lpNumberOfBytesSent) {
+                                *lpNumberOfBytesSent = totalLen;
+                            }
+                            Dll_Free(domain_lwr);
+                            return 0;
+                        }
+                    }
                     Socket_LogForwarded(L"TCP", domainName, qtype, L"WSASendTo(conn)", s, DNS_PASSTHROUGH_NO_MATCH);
                     Dll_Free(domain_lwr);
                     // Need to passthrough - if we used reassembly, send the complete reassembled data
@@ -2775,53 +3009,14 @@ _FX int Socket_WSASendTo(
     // CASE 2: UDP with destination address (lpTo != NULL)
     // =========================================================================
     if (DNS_RawSocketHooksEnabled && lpTo && buffers) {
-        
-        // Check if destination is DNS port 53
-        USHORT destPort = 0;
-        USHORT addrFamily = ((struct sockaddr*)lpTo)->sa_family;
-
-        if (addrFamily == AF_INET && iTolen >= sizeof(struct sockaddr_in)) {
-            destPort = _ntohs(((struct sockaddr_in*)lpTo)->sin_port);
-        } 
-        else if (addrFamily == AF_INET6 && iTolen >= sizeof(struct sockaddr_in6)) {
-            destPort = _ntohs(((struct sockaddr_in6*)lpTo)->sin6_port);
-        }
-
-        // Port 53 = DNS
-        if (destPort == 53 && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
-            
-            // Mark socket as DNS socket so WSAEnumNetworkEvents can inject FD_READ
-            // (UDP sockets don't go through connect(), so we mark them here)
-            if (!Socket_IsDnsSocket(s)) {
-                Socket_MarkDnsSocket(s, TRUE);
-                if (DNS_DebugFlag) {
-                    WCHAR msg[256];
-                    Sbie_snwprintf(msg, 256, L"UDP DNS: Marking socket=%p as DNS socket (via WSASendTo to port 53)",
-                        (void*)(ULONG_PTR)s);
-                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-                }
+        DNS_PROCESS_RESULT result = DNS_PROCESS_PASSTHROUGH;
+        if (Socket_HandleUdpDnsSend(s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, iTolen,
+            L"WSASendTo", TRUE, TRUE, &result)) {
+            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled &&
+                (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR)) {
+                if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
+                return 0;  // Return success (intercepted or error - don't send)
             }
-
-            // Always track pending DNS query for passthrough response rebind sanitization.
-            {
-                WCHAR domainName[256];
-                USHORT qtype = 0;
-                if (Socket_ParseDnsQuery((const BYTE*)buffers[0].buf, buffers[0].len, domainName, 256, &qtype)) {
-                    Socket_SetPendingQuery(s, domainName, qtype, FALSE, DNS_PASSTHROUGH_NONE);
-                }
-            }
-            
-            // Process DNS query (interception) only when DNS filtering is enabled.
-            if (DNS_FilterEnabled && DNS_RawSocketFilterEnabled) {
-                DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(
-                    s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, L"UDP", L"WSASendTo");
-                
-                if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
-                    if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
-                    return 0;  // Return success (intercepted or error - don't send)
-                }
-            }
-            // DNS_PROCESS_PASSTHROUGH: fall through to real WSASendTo
         }
     }
 
@@ -2858,27 +3053,9 @@ _FX int Socket_ProcessWSASendTo(
     
     // CASE 2: UDP with destination address (lpTo != NULL)
     if (lpTo && buffers[0].len >= sizeof(DNS_WIRE_HEADER)) {
-        // Check if destination is DNS port 53
-        USHORT destPort = 0;
-        USHORT addrFamily = ((struct sockaddr*)lpTo)->sa_family;
-
-        if (addrFamily == AF_INET && iTolen >= sizeof(struct sockaddr_in)) {
-            destPort = _ntohs(((struct sockaddr_in*)lpTo)->sin_port);
-        } 
-        else if (addrFamily == AF_INET6 && iTolen >= sizeof(struct sockaddr_in6)) {
-            destPort = _ntohs(((struct sockaddr_in6*)lpTo)->sin6_port);
-        }
-
-        if (destPort == 53) {
-            // Mark socket as DNS
-            if (!Socket_IsDnsSocket(s)) {
-                Socket_MarkDnsSocket(s, TRUE);
-            }
-            
-            // Process DNS query
-            DNS_PROCESS_RESULT result = Socket_ProcessDnsQuery(
-                s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, L"UDP", L"WSASendTo");
-            
+        DNS_PROCESS_RESULT result = DNS_PROCESS_PASSTHROUGH;
+        if (Socket_HandleUdpDnsSend(s, (const BYTE*)buffers[0].buf, buffers[0].len, lpTo, iTolen,
+            L"WSASendTo", FALSE, FALSE, &result)) {
             if (result == DNS_PROCESS_INTERCEPTED || result == DNS_PROCESS_ERROR) {
                 if (lpNumberOfBytesSent) *lpNumberOfBytesSent = buffers[0].len;
                 return 1;  // Intercepted
@@ -4385,9 +4562,10 @@ _FX int Socket_recv(
         int result = Socket_GetFakeResponse(s, buf, len, NULL, NULL);
         if (result > 0) {
             if (DNS_DebugFlag) {
+                const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: Returned %d bytes from fake response, socket=%p",
-                    result, (void*)(ULONG_PTR)s);
+                Sbie_snwprintf(msg, 256, L"  %s DNS Debug: Returned %d bytes from fake response, socket=%p",
+                    protocol, result, (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             return result;
@@ -4528,9 +4706,10 @@ _FX int Socket_WSARecv(
             }
             
             if (DNS_DebugFlag) {
+                const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"  TCP DNS Debug: WSARecv returned %d bytes from fake response, socket=%p",
-                    result, (void*)(ULONG_PTR)s);
+                Sbie_snwprintf(msg, 256, L"  %s DNS Debug: WSARecv returned %d bytes from fake response, socket=%p",
+                    protocol, result, (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             
@@ -4619,9 +4798,10 @@ _FX int Socket_WSARecvFrom(
             }
             
             if (DNS_DebugFlag) {
+                const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"  UDP DNS Debug: WSARecvFrom returned %d bytes from fake response, socket=%p",
-                    result, (void*)(ULONG_PTR)s);
+                Sbie_snwprintf(msg, 256, L"  %s DNS Debug: WSARecvFrom returned %d bytes from fake response, socket=%p",
+                    protocol, result, (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             
@@ -4648,9 +4828,10 @@ _FX int Socket_WSARecvFrom(
                     if (lpFromlen) *lpFromlen = fromlen_val;
                     
                     if (DNS_DebugFlag) {
+                        const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                         WCHAR msg[256];
-                        Sbie_snwprintf(msg, 256, L"  UDP DNS Debug: WSARecvFrom got delayed EncDns response after poll, socket=%p",
-                            (void*)(ULONG_PTR)s);
+                        Sbie_snwprintf(msg, 256, L"  %s DNS Debug: WSARecvFrom got delayed EncDns response after poll, socket=%p",
+                            protocol, (void*)(ULONG_PTR)s);
                         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                     }
                     return 0;  // Success
@@ -4729,9 +4910,10 @@ _FX int Socket_select(
         if (Socket_HasFakeResponse(s)) {
             has_fake = TRUE;
             if (DNS_DebugFlag) {
+                const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"TCP DNS: select() found socket=%p with fake response, making it readable",
-                    (void*)(ULONG_PTR)s);
+                Sbie_snwprintf(msg, 256, L"%s DNS: select() found socket=%p with fake response, making it readable",
+                    protocol, (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             break;
@@ -4751,9 +4933,10 @@ _FX int Socket_select(
                 // Socket is already in the set, just ensure it's marked
                 // fd_set operations are done via FD_SET macro, but we already have it in the array
                 if (DNS_DebugFlag) {
+                    const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                     WCHAR msg[256];
-                    Sbie_snwprintf(msg, 256, L"TCP DNS: select() marking socket=%p as readable (has fake response)",
-                        (void*)(ULONG_PTR)s);
+                    Sbie_snwprintf(msg, 256, L"%s DNS: select() marking socket=%p as readable (has fake response)",
+                        protocol, (void*)(ULONG_PTR)s);
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                 }
             }
@@ -4982,9 +5165,10 @@ _FX INT PASCAL FAR Socket_WSARecvMsg(
             lpMsg->dwFlags = 0;
             
             if (DNS_DebugFlag) {
+                const WCHAR* protocol = Socket_IsTcpSocket(s) ? L"TCP" : L"UDP";
                 WCHAR msg[256];
-                Sbie_snwprintf(msg, 256, L"  UDP DNS Debug: WSARecvMsg returned %d bytes from fake response, socket=%p",
-                    result, (void*)(ULONG_PTR)s);
+                Sbie_snwprintf(msg, 256, L"  %s DNS Debug: WSARecvMsg returned %d bytes from fake response, socket=%p",
+                    protocol, result, (void*)(ULONG_PTR)s);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             

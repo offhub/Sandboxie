@@ -1,5 +1,5 @@
 /*
- * Copyright 2024-2025 David Xanatos, xanasoft.com
+ * Copyright 2024-2026 David Xanatos, xanasoft.com
  *
  * This program is free software: you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -44,6 +44,7 @@
 
 extern BOOLEAN DNS_TraceFlag;
 extern BOOLEAN DNS_DebugFlag;
+extern BOOLEAN DNS_HasValidCertificate;
 
 #if !defined(_DNSDEBUG)
 #undef DNS_DebugFlag
@@ -274,6 +275,12 @@ _FX void DNS_Dnssec_InitPatterns(void)
     ULONG count = 0;
 
     List_Init(&DNS_DnssecPatterns);
+
+    // Check if certificate is valid (requirement for DNS security features)
+    if (!DNS_HasValidCertificate) {
+        DNS_DEBUG_LOG(L"[DNSSEC] Certificate required - disabled");
+        return;
+    }
 
     // Load all DnssecEnabled settings
     while (1) {
