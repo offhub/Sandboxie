@@ -71,6 +71,8 @@ _FX void DNS_Rebind_AppendFilteredIpMsg(
     Sbie_snwprintf(msg + len, avail + 1, L"%s", ip_msg);
 }
 
+// DNSSEC Configuration moved to dns_dnssec.c/dns_dnssec.h
+
 //---------------------------------------------------------------------------
 // Configuration
 //---------------------------------------------------------------------------
@@ -248,6 +250,52 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
         { add_count },
     };
 
+    // Pre-scan: find the first non-filtered A and AAAA IP to use as replacement.
+    // When we filter a record in-place, duplicating a valid IP from the same response
+    // is better than zeroing to 0.0.0.0/:: because clients won't see a bogus address.
+    BYTE replacement_a[4];
+    BOOLEAN has_replacement_a = FALSE;
+    BYTE replacement_aaaa[16];
+    BOOLEAN has_replacement_aaaa = FALSE;
+    {
+        int scan_off = offset;
+        for (int sc = 0; sc < 3; ++sc) {
+            for (USHORT si = 0; si < sections[sc].count; ++si) {
+                if (!DNS_Rebind_SkipDnsName(dns_data, dns_len, &scan_off))
+                    goto done_prescan;
+                if (scan_off + 10 > dns_len)
+                    goto done_prescan;
+                USHORT st = _ntohs(*(USHORT*)(dns_data + scan_off));
+                scan_off += 2; // TYPE
+                scan_off += 2; // CLASS
+                scan_off += 4; // TTL
+                USHORT srdl = _ntohs(*(USHORT*)(dns_data + scan_off));
+                scan_off += 2; // RDLENGTH
+                if (scan_off + srdl > dns_len)
+                    goto done_prescan;
+                if (st == DNS_TYPE_A && srdl == 4 && !has_replacement_a) {
+                    IP_ADDRESS sip;
+                    DNS_Rebind_IPv4ToIpAddress(*(DWORD*)(dns_data + scan_off), &sip);
+                    if (!DNS_Rebind_ShouldFilterIpForDomain(domain, &sip)) {
+                        memcpy(replacement_a, dns_data + scan_off, 4);
+                        has_replacement_a = TRUE;
+                    }
+                } else if (st == DNS_TYPE_AAAA && srdl == 16 && !has_replacement_aaaa) {
+                    IP_ADDRESS sip;
+                    DNS_Rebind_IPv6ToIpAddress(dns_data + scan_off, &sip);
+                    if (!DNS_Rebind_ShouldFilterIpForDomain(domain, &sip)) {
+                        memcpy(replacement_aaaa, dns_data + scan_off, 16);
+                        has_replacement_aaaa = TRUE;
+                    }
+                }
+                scan_off += srdl;
+            }
+        }
+    done_prescan:;
+    }
+
+    // Main pass: replace filtered RDATA in-place.
+    // Uses a valid IP from the pre-scan (duplicate) when available, falls back to 0.0.0.0/::.
     for (int s = 0; s < 3; ++s) {
         for (USHORT i = 0; i < sections[s].count; ++i) {
             if (!DNS_Rebind_SkipDnsName(dns_data, dns_len, &read_offset))
@@ -272,6 +320,14 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
                 DNS_Rebind_IPv4ToIpAddress(*(DWORD*)(dns_data + read_offset), &ip);
                 if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
                     filteredA++;
+                    // Replace filtered IP RDATA in-place.
+                    // Prefer duplicating a valid IP so clients don't see 0.0.0.0.
+                    // Critical for TCP payload-only buffers where the length prefix
+                    // was already delivered and we cannot change the total size.
+                    if (has_replacement_a)
+                        memcpy(dns_data + read_offset, replacement_a, 4);
+                    else
+                        memset(dns_data + read_offset, 0, 4);
                     if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
                         filtered_ips[filtered_ip_count].af = AF_INET;
                         filtered_ips[filtered_ip_count].ip = ip;
@@ -283,6 +339,11 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
                 DNS_Rebind_IPv6ToIpAddress(dns_data + read_offset, &ip);
                 if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip)) {
                     filteredAAAA++;
+                    // Replace filtered IP RDATA in-place (prefer valid IP duplicate).
+                    if (has_replacement_aaaa)
+                        memcpy(dns_data + read_offset, replacement_aaaa, 16);
+                    else
+                        memset(dns_data + read_offset, 0, 16);
                     if (filtered_ip_count < (ULONG)(sizeof(filtered_ips) / sizeof(filtered_ips[0]))) {
                         filtered_ips[filtered_ip_count].af = AF_INET6;
                         filtered_ips[filtered_ip_count].ip = ip;
@@ -301,14 +362,10 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
         *pFilteredAAAA = filteredAAAA;
 
     if (filteredA || filteredAAAA) {
-        // Convert to NOERROR + NODATA without changing total length.
-        header->AnswerRRs = 0;
-        header->AuthorityRRs = 0;
-        header->AdditionalRRs = 0;
-
-        if (offset < dns_len) {
-            memset(dns_data + offset, 0, (size_t)(dns_len - offset));
-        }
+        // Filtered IPs have been replaced in-place with 0.0.0.0/:: above.
+        // The DNS wire format structure is preserved (record counts, offsets, RRSIG, OPT)
+        // so the response remains parseable. TCP payload-only buffers require this
+        // approach because the length prefix was already delivered to the client.
 
         if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_WIRE)) {
             WCHAR msg[1024];
@@ -1623,7 +1680,6 @@ static BOOLEAN DNS_Rebind_ParseWireForSanitize(
     if (!DNS_Rebind_IsEnabledForDomain(domain))
         return FALSE;
 
-    // For TCP, require a complete 2-byte length prefix that matches the buffer.
     BYTE* dns_data = data;
     int dns_len = data_len;
     BOOLEAN has_length_prefix = FALSE;

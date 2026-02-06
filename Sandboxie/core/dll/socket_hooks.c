@@ -65,8 +65,10 @@
 #include "socket_hooks.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_wire.h"
 #include "dns_doh.h"  // Includes dns_encrypted.h for EncryptedDns_* and ENCRYPTED_DNS_* types
 #include "dns_rebind.h"
+#include "dns_dnssec.h"
 
 //---------------------------------------------------------------------------
 // Forward Declarations of Socket Types (used locally, not from winsock2.h)
@@ -94,20 +96,8 @@ typedef struct _WSABUF_REAL {
 //---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
-// DNS Packet Structure (RFC 1035)
-// Using custom structure names to avoid conflicts with Windows SDK definitions
+// DNS wire format structures (shared with dns_wire.h)
 //---------------------------------------------------------------------------
-
-#pragma pack(push, 1)
-typedef struct _DNS_WIRE_HEADER {
-    USHORT TransactionID;
-    USHORT Flags;
-    USHORT Questions;
-    USHORT AnswerRRs;
-    USHORT AuthorityRRs;
-    USHORT AdditionalRRs;
-} DNS_WIRE_HEADER;
-#pragma pack(pop)
 
 // DNS Header Flags (network byte order - big endian)
 #define DNS_FLAG_QR_QUERY    0x0000   // Query (0 = query, 1 = response)
@@ -287,6 +277,8 @@ static BOOLEAN Socket_IsDnsSocket(SOCKET s);
 void Socket_MarkDnsSocket(SOCKET s, BOOLEAN isDns);  // Non-static: called from net.c
 static BOOLEAN Socket_IsTcpSocket(SOCKET s);  // Helper to detect TCP vs UDP sockets
 
+// DNSSEC support helpers (implemented in dns_dnssec.c)
+
 // Simple hash table for tracking DNS sockets
 #define DNS_SOCKET_TABLE_SIZE 256
 static SOCKET g_DnsSockets[DNS_SOCKET_TABLE_SIZE];
@@ -437,6 +429,24 @@ static BOOLEAN Socket_TryHandleIpLiteralDnsQuery(
         }
     }
 
+    BYTE edns_buffer[256];
+    int edns_len = Socket_ExtractEdnsRecord(dns_payload, dns_payload_len, edns_buffer, sizeof(edns_buffer));
+    
+    // Extract DO flag from EDNS for DNSSEC support
+    // OPT record layout in edns_buffer: [0]=root, [1-2]=TYPE, [3-4]=UDP size,
+    // [5]=ExtRCODE, [6]=Version, [7-8]=Flags(DO+Z), [9-10]=RDLEN
+    USHORT edns_flags = 0;
+    if (edns_len >= 11) {
+        edns_flags = (edns_buffer[7] << 8) | edns_buffer[8];  // DO+Z flags at offset 7-8
+    }
+    BOOLEAN do_flag = (edns_flags & DNS_EDNS_FLAG_DO) != 0;
+    
+    // Determine DNSSEC mode
+    DNSSEC_MODE dnssec_mode = DNSSEC_MODE_DISABLED;  // Default
+    if (do_flag) {
+        dnssec_mode = DNS_DnssecGetMode(domainName);
+    }
+    
     BYTE response[DNS_RESPONSE_SIZE];
     int response_len = Socket_BuildDnsResponse(
         dns_payload,
@@ -447,7 +457,10 @@ static BOOLEAN Socket_TryHandleIpLiteralDnsQuery(
         DNS_RESPONSE_SIZE,
         qtype,
         NULL,
-        domainName);
+        domainName,
+        edns_len > 0 ? edns_buffer : NULL,
+        edns_len,
+        dnssec_mode);
 
     // Free temporary IP list
     IP_ENTRY* pFree = (IP_ENTRY*)List_Head(&ip_list);
@@ -612,7 +625,10 @@ int Socket_BuildDnsResponse(
     int            response_size,
     USHORT         qtype,
     struct _DNS_TYPE_FILTER* type_filter,
-    const WCHAR*   domain);
+    const WCHAR*   domain,
+    const BYTE*    edns_record,
+    int            edns_record_len,
+    DNSSEC_MODE    dnssec_mode);
 
 static BOOLEAN Socket_HasFakeResponse(SOCKET s);
 
@@ -1036,10 +1052,31 @@ static int Socket_HandleDnsQuery(
     DNS_TYPE_FILTER* type_filter = NULL;
     DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
     
+    BYTE edns_buffer[256];
+    int edns_len = Socket_ExtractEdnsRecord(dns_payload, dns_payload_len, edns_buffer, sizeof(edns_buffer));
+    
+    // Extract DO flag from EDNS for DNSSEC support
+    // OPT record layout in edns_buffer: [0]=root, [1-2]=TYPE, [3-4]=UDP size,
+    // [5]=ExtRCODE, [6]=Version, [7-8]=Flags(DO+Z), [9-10]=RDLEN
+    USHORT edns_flags = 0;
+    if (edns_len >= 11) {
+        edns_flags = (edns_buffer[7] << 8) | edns_buffer[8];  // DO+Z flags at offset 7-8
+    }
+    BOOLEAN do_flag = (edns_flags & DNS_EDNS_FLAG_DO) != 0;
+    
+    // Determine DNSSEC mode
+    DNSSEC_MODE dnssec_mode = DNSSEC_MODE_DISABLED;  // Default
+    if (do_flag && domain) {
+        dnssec_mode = DNS_DnssecGetMode(domain);
+        // Note: DNSSEC_MODE_ENABLED (y mode) has no effect here since
+        // we already synthesized responses (not using raw encrypted DNS)
+    }
+    
     // Build DNS response
     int response_len = Socket_BuildDnsResponse(
         dns_payload, dns_payload_len, pEntries, pEntries == NULL, 
-        response, response_size, qtype, type_filter, domain);
+        response, response_size, qtype, type_filter, domain,
+        edns_len > 0 ? edns_buffer : NULL, edns_len, dnssec_mode);
     
     // Handle errors
     if (response_len < 0 && DNS_TraceFlag) {
@@ -1219,9 +1256,98 @@ static int Socket_BuildDoHResponse(
         }
     }
     
+    BYTE edns_buffer[256];
+    int edns_len = Socket_ExtractEdnsRecord(query, query_len, edns_buffer, sizeof(edns_buffer));
+    
+    // Extract DO flag from EDNS for DNSSEC support
+    // OPT record layout in edns_buffer: [0]=root, [1-2]=TYPE, [3-4]=UDP size,
+    // [5]=ExtRCODE, [6]=Version, [7-8]=Flags(DO+Z), [9-10]=RDLEN
+    USHORT edns_flags = 0;
+    if (edns_len >= 11) {
+        edns_flags = (edns_buffer[7] << 8) | edns_buffer[8];  // DO+Z flags at offset 7-8
+    }
+    BOOLEAN do_flag = (edns_flags & DNS_EDNS_FLAG_DO) != 0;
+    
+    // Determine DNSSEC mode for this domain (independent of app's EDNS/DO flag)
+    DNSSEC_MODE dnssec_mode = DNSSEC_MODE_DISABLED;  // Default
+    if (domain) {
+        dnssec_mode = DNS_DnssecGetMode(domain);
+    }
+    
+    // Mode ENABLED (y) = always use raw response when RRSIG present, skip rebind
+    // Our EncDns/DoH query always includes EDNS+DO, so DNSSEC-signed domains return RRSIG
+    // regardless of whether the app requested EDNS+DO
+    if (dnssec_mode == DNSSEC_MODE_ENABLED && doh_result.RawResponseLen > 0) {
+        if (DNS_Dnssec_ResponseHasRrsig(doh_result.RawResponse, (int)doh_result.RawResponseLen)) {
+            if ((int)doh_result.RawResponseLen <= response_size) {
+                memcpy(response, doh_result.RawResponse, doh_result.RawResponseLen);
+                
+                // Preserve original transaction ID from query
+                if (query_len >= (int)sizeof(DNS_WIRE_HEADER)) {
+                    ((DNS_WIRE_HEADER*)response)->TransactionID = ((DNS_WIRE_HEADER*)query)->TransactionID;
+                }
+                
+                // Free the IP list
+                IP_ENTRY* entry_free = (IP_ENTRY*)List_Head(&ip_list);
+                while (entry_free) {
+                    IP_ENTRY* next_free = (IP_ENTRY*)List_Next(entry_free);
+                    Dll_Free(entry_free);
+                    entry_free = next_free;
+                }
+                
+                if (DNS_TraceFlag) {
+                    WCHAR msg[512];
+                    Sbie_snwprintf(msg, 512, L"UDP DNS EncDns: DNSSEC pass-through for %s (DnssecEnabled=y, RRSIG present, raw len=%d, app_DO=%d)",
+                        domain, (int)doh_result.RawResponseLen, do_flag ? 1 : 0);
+                    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+                }
+                
+                return (int)doh_result.RawResponseLen;
+            }
+        }
+        // No RRSIG in raw response: domain doesn't support DNSSEC, fall through to synthetic response
+    }
+    
+    // Mode FILTER (f) = use raw response only when app sent EDNS+DO (respect app's DNSSEC choice)
+    // Always apply IP filtering (rebind protection) even with RRSIG present
+    if (dnssec_mode == DNSSEC_MODE_FILTER && do_flag && doh_result.RawResponseLen > 0) {
+        if ((int)doh_result.RawResponseLen <= response_size) {
+            memcpy(response, doh_result.RawResponse, doh_result.RawResponseLen);
+            
+            // Preserve original transaction ID from query
+            if (query_len >= (int)sizeof(DNS_WIRE_HEADER)) {
+                ((DNS_WIRE_HEADER*)response)->TransactionID = ((DNS_WIRE_HEADER*)query)->TransactionID;
+            }
+            
+            // Apply IP filtering in-place (replaces filtered IPs with valid duplicate, preserves RRSIG)
+            ULONG filteredA = 0, filteredAAAA = 0;
+            DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
+                response, (int)doh_result.RawResponseLen, domain, FALSE,
+                &filteredA, &filteredAAAA);
+            
+            // Free the IP list
+            IP_ENTRY* entry_free = (IP_ENTRY*)List_Head(&ip_list);
+            while (entry_free) {
+                IP_ENTRY* next_free = (IP_ENTRY*)List_Next(entry_free);
+                Dll_Free(entry_free);
+                entry_free = next_free;
+            }
+            
+            if (DNS_TraceFlag) {
+                WCHAR msg[512];
+                Sbie_snwprintf(msg, 512, L"UDP DNS EncDns: DNSSEC filter-mode for %s (raw len=%d, filtered A=%lu AAAA=%lu)",
+                    domain, (int)doh_result.RawResponseLen, filteredA, filteredAAAA);
+                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
+            }
+            
+            return (int)doh_result.RawResponseLen;
+        }
+    }
+    
     // Build DNS response using existing function
     int response_len = Socket_BuildDnsResponse(
-        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, domain);
+        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, domain,
+        edns_len > 0 ? edns_buffer : NULL, edns_len, dnssec_mode);
     
     // Free the IP list
     IP_ENTRY* entry = (IP_ENTRY*)List_Head(&ip_list);
@@ -2511,6 +2637,32 @@ _FX int Socket_WSASendTo(
                     return 0;  // Answered locally
                 }
                 
+                // Modify EDNS DO flag based on DnssecEnabled mode for TCP passthrough
+                // This ensures the real DNS server returns (or omits) RRSIG as appropriate:
+                //   y mode (ENABLED):  set DO flag -> server returns RRSIG records
+                //   n mode (DISABLED): clear DO flag -> server omits RRSIG records
+                //   f mode (FILTER):   leave unchanged -> respect app's EDNS choice
+                {
+                    DNSSEC_MODE tcp_dnssec_mode = DNS_DnssecGetMode(domainName);
+                    if (tcp_dnssec_mode == DNSSEC_MODE_ENABLED) {
+                        BOOLEAN modified = DNS_Dnssec_ModifyEdnsDOFlag((BYTE*)dns_payload, dns_payload_len, TRUE);
+                        if (DNS_DebugFlag) {
+                            WCHAR msg[256];
+                            Sbie_snwprintf(msg, 256, L"TCP DNS: DnssecEnabled=y, %s DO flag for %s",
+                                modified ? L"set" : L"no EDNS to set", domainName);
+                            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                        }
+                    } else if (tcp_dnssec_mode == DNSSEC_MODE_DISABLED) {
+                        BOOLEAN modified = DNS_Dnssec_ModifyEdnsDOFlag((BYTE*)dns_payload, dns_payload_len, FALSE);
+                        if (DNS_DebugFlag) {
+                            WCHAR msg[256];
+                            Sbie_snwprintf(msg, 256, L"TCP DNS: DnssecEnabled=n, %s DO flag for %s",
+                                modified ? L"cleared" : L"no EDNS to clear", domainName);
+                            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                        }
+                    }
+                }
+                
                 // Check if domain matches filter rules
                 ULONG domain_len = wcslen(domainName);
                 WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
@@ -3173,6 +3325,168 @@ _FX int Socket_MatchDomainHierarchical(
 }
 
 //---------------------------------------------------------------------------
+// Socket_ExtractEdnsRecord
+//
+// Extracts the EDNS OPT record from a DNS query packet, if present.
+// The OPT record appears in the Additional section of DNS messages.
+// It uses TYPE=41 and has special semantics per RFC 6891.
+//
+// Parameters:
+//   query        - DNS query packet
+//   query_len    - Length of DNS query packet
+//   edns_buffer  - Output buffer to store the extracted OPT record
+//   edns_size    - Size of edns_buffer
+//
+// Returns: Length of extracted EDNS record, or 0 if not found/invalid
+//---------------------------------------------------------------------------
+
+_FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_buffer, int edns_size)
+{
+    if (!query || query_len < sizeof(DNS_WIRE_HEADER) || !edns_buffer || edns_size < DNS_OPT_RECORD_HEADER_SIZE)
+        return 0;
+
+    DNS_WIRE_HEADER* hdr = (DNS_WIRE_HEADER*)query;
+    
+    // Get the number of Additional RRs (OPT record should be in Additional section)
+    USHORT additional_count = _ntohs(hdr->AdditionalRRs);
+    if (additional_count == 0)
+        return 0;  // No additional records, no EDNS
+
+    // Skip to the Additional section
+    // We need to skip: Questions + Answers + Authority sections
+    int offset = sizeof(DNS_WIRE_HEADER);
+    
+    USHORT questions = _ntohs(hdr->Questions);
+    USHORT answers = _ntohs(hdr->AnswerRRs);
+    USHORT authority = _ntohs(hdr->AuthorityRRs);
+    
+    // Skip questions section
+    for (USHORT i = 0; i < questions && offset < query_len; i++) {
+        // Skip domain name
+        while (offset < query_len) {
+            BYTE label_len = query[offset];
+            if (label_len == 0) {
+                offset++;
+                break;
+            }
+            if ((label_len & 0xC0) == 0xC0) {
+                offset += 2;
+                break;
+            }
+            offset += 1 + label_len;
+        }
+        // Skip QTYPE and QCLASS (4 bytes)
+        offset += 4;
+    }
+    
+    // Skip answer and authority sections
+    for (USHORT i = 0; i < (answers + authority) && offset < query_len; i++) {
+        // Skip domain name
+        while (offset < query_len) {
+            BYTE label_len = query[offset];
+            if (label_len == 0) {
+                offset++;
+                break;
+            }
+            if ((label_len & 0xC0) == 0xC0) {
+                offset += 2;
+                break;
+            }
+            offset += 1 + label_len;
+        }
+        // Skip TYPE, CLASS, TTL, RDLENGTH (10 bytes)
+        if (offset + 10 > query_len)
+            return 0;
+        offset += 10;
+        
+        // Skip RDATA
+        USHORT rdlength = _ntohs(*(USHORT*)(query + offset - 2));
+        offset += rdlength;
+    }
+    
+    // Now we're in the Additional section - look for OPT record (TYPE=41, root label=0)
+    for (USHORT i = 0; i < additional_count && offset < query_len; i++) {
+        int record_start = offset;
+        
+        // Check for root label (single 0 byte) followed by TYPE=41
+        if (offset + 3 <= query_len && query[offset] == 0) {  // root label
+            offset++;
+            USHORT type = _ntohs(*(USHORT*)(query + offset));
+            offset += 2;
+            
+            if (type == DNS_TYPE_OPT) {
+                // Found OPT record! Now copy it to the output buffer
+                // We need: root_label (1) + type (2) + udp_payload (2) + extended_flags (4) + rdlength (2) + rdata (variable)
+                
+                // Read the rest of the OPT record
+                if (offset + 8 > query_len)
+                    return 0;
+                    
+                USHORT udp_payload = *(USHORT*)(query + offset);
+                offset += 2;
+                DWORD extended_flags = *(DWORD*)(query + offset);
+                offset += 4;
+                USHORT rdlength = _ntohs(*(USHORT*)(query + offset));
+                offset += 2;
+                
+                // Check if we have space for the complete record (including rdata)
+                int total_size = 1 + 2 + 2 + 4 + 2 + rdlength;
+                if (total_size > edns_size || offset + rdlength > query_len)
+                    return 0;
+                
+                // Copy the record to output buffer
+                int out_offset = 0;
+                edns_buffer[out_offset++] = 0;  // root label
+                *(USHORT*)(edns_buffer + out_offset) = _htons(DNS_TYPE_OPT);
+                out_offset += 2;
+                *(USHORT*)(edns_buffer + out_offset) = udp_payload;  // Already in network byte order
+                out_offset += 2;
+                *(DWORD*)(edns_buffer + out_offset) = extended_flags;  // Already in network byte order
+                out_offset += 4;
+                *(USHORT*)(edns_buffer + out_offset) = *(USHORT*)(query + offset - 2);  // Already in network byte order
+                out_offset += 2;
+                
+                // Copy rdata
+                if (rdlength > 0) {
+                    memcpy(edns_buffer + out_offset, query + offset, rdlength);
+                    out_offset += rdlength;
+                }
+                
+                return out_offset;
+            }
+        } else {
+            // Skip this record (it's not OPT, so skip the domain name and record data)
+            offset = record_start;
+            
+            // Skip domain name
+            while (offset < query_len) {
+                BYTE label_len = query[offset];
+                if (label_len == 0) {
+                    offset++;
+                    break;
+                }
+                if ((label_len & 0xC0) == 0xC0) {
+                    offset += 2;
+                    break;
+                }
+                offset += 1 + label_len;
+            }
+            
+            // Skip TYPE, CLASS, TTL, RDLENGTH (10 bytes)
+            if (offset + 10 > query_len)
+                return 0;
+            offset += 10;
+            
+            // Skip RDATA
+            USHORT rdlength = _ntohs(*(USHORT*)(query + offset - 2));
+            offset += rdlength;
+        }
+    }
+    
+    return 0;  // No OPT record found
+}
+
+//---------------------------------------------------------------------------
 // Socket_BuildDnsResponse
 //
 // Builds a fake DNS response packet with configured IP addresses or NXDOMAIN
@@ -3189,7 +3503,10 @@ _FX int Socket_BuildDnsResponse(
     int            response_size,
     USHORT         qtype,
     struct _DNS_TYPE_FILTER* type_filter,
-    const WCHAR*   domain)
+    const WCHAR*   domain,
+    const BYTE*    edns_record,
+    int            edns_record_len,
+    DNSSEC_MODE    dnssec_mode)
 {
     if (!query || !response || query_len < sizeof(DNS_WIRE_HEADER) || response_size < 512)
         return -1;
@@ -3322,7 +3639,14 @@ _FX int Socket_BuildDnsResponse(
 
     // If blocking (or no IPs), return just the header (NXDOMAIN or NOERROR + NODATA)
     if (block || !pEntries) {
-        return copy_len;
+        // Even in block mode, preserve EDNS record if present (for DNSSEC support)
+        int offset = copy_len;
+        if (edns_record && edns_record_len > 0 && offset + edns_record_len <= response_size) {
+            memcpy(response + offset, edns_record, edns_record_len);
+            offset += edns_record_len;
+            resp_header->AdditionalRRs = _htons(1);
+        }
+        return offset;
     }
 
     // Add answer records
@@ -3360,7 +3684,20 @@ _FX int Socket_BuildDnsResponse(
         BYTE ipv6_mapped[16];  // For IPv4-mapped IPv6 addresses
 
         // Apply DNS rebind protection: omit filtered IPs entirely.
-        if (domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP)) {
+        // BUT: Skip rebind filtering if BOTH:
+        //   1. DnssecEnabled=y (DNSSEC_MODE_ENABLED) 
+        //   2. AND DO flag present in query (client wants DNSSEC signatures)
+        // In that case, preserve all IPs for signature validation.
+        BOOLEAN skip_rebind = FALSE;
+        if (dnssec_mode == DNSSEC_MODE_ENABLED && edns_record && edns_record_len >= 11) {
+            // Check for DO flag in EDNS record (offset 6-7, bit 0x8000)
+            USHORT edns_flags = (edns_record[6] << 8) | edns_record[7];
+            if ((edns_flags & 0x8000) != 0) {
+                skip_rebind = TRUE;  // DO flag present - preserve IPs for DNSSEC
+            }
+        }
+        
+        if (!skip_rebind && domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP)) {
             DNS_Rebind_AppendFilteredIpMsg(
                 filtered_msg,
                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -3438,6 +3775,21 @@ _FX int Socket_BuildDnsResponse(
 
     if (domain && filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_FILTER)) {
         DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, filtered_msg);
+    }
+
+    // Append EDNS OPT record based on DNSSEC mode
+    // - DNSSEC_MODE_ENABLED (y): Reached when raw response has no RRSIG (non-DNSSEC domain)
+    // - DNSSEC_MODE_FILTER (f): Append EDNS with DO flag (tampering evidence)
+    // - DNSSEC_MODE_DISABLED (n): Don't append EDNS (DNSSEC disabled signal)
+    if (edns_record && edns_record_len > 0 && dnssec_mode != DNSSEC_MODE_DISABLED) {
+        // Check if we have space for the EDNS record
+        if (offset + edns_record_len <= response_size) {
+            memcpy(response + offset, edns_record, edns_record_len);
+            offset += edns_record_len;
+            
+            // Update AdditionalRRs count to include the OPT record
+            resp_header->AdditionalRRs = _htons(1);
+        }
     }
 
     return offset;
@@ -3963,10 +4315,28 @@ static void Socket_ApplyRebindProtection(SOCKET s, BYTE* buf, int* io_len)
         // For TCP: check if buffer contains [len][payload] or just payload
         // - If length_prefix == *io_len - 2: buffer has both, pass isTcp=TRUE
         // - Otherwise: payload-only, pass isTcp=FALSE (no length prefix in current buffer)
+        // IMPORTANT: Must detect length prefix BEFORE RRSIG check so we pass correct
+        // data pointer to DNS_Dnssec_ResponseHasRrsig (TCP buffers start with 2-byte length)
         BOOLEAN has_length_prefix = FALSE;
         if (isTcp && *io_len > 2) {
             USHORT length_prefix = _ntohs(*(USHORT*)buf);
             has_length_prefix = (length_prefix == (USHORT)(*io_len - 2));
+        }
+
+        // Check DNSSEC mode and response content:
+        // Only skip rebind filtering if BOTH:
+        //   1. DnssecEnabled=y (DNSSEC_MODE_ENABLED)
+        //   2. AND response contains RRSIG records (actual DNSSEC data to preserve)
+        // For TCP with length prefix, skip the 2-byte prefix to get actual DNS payload
+        DNSSEC_MODE dnssec_mode = DNS_DnssecGetMode(domain);
+        if (dnssec_mode == DNSSEC_MODE_ENABLED) {
+            const BYTE* dns_payload = has_length_prefix ? buf + 2 : buf;
+            int dns_payload_len = has_length_prefix ? *io_len - 2 : *io_len;
+            if (DNS_Dnssec_ResponseHasRrsig(dns_payload, dns_payload_len)) {
+                // y mode + RRSIG present: Pass through raw response untouched
+                // Preserving RRSIG signatures requires unmodified response
+                return;
+            }
         }
 
         if (isTcp && !has_length_prefix) {

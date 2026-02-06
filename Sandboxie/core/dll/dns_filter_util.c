@@ -174,14 +174,23 @@ BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain)
 }
 
 //---------------------------------------------------------------------------
-// DNS_BuildSimpleQuery
+// DNS_BuildSimpleQuery - Build DNS wire format query with optional EDNS
 //---------------------------------------------------------------------------
+//
+// RFC 1035: Standard DNS query (header + question section)
+// RFC 6891: EDNS (OPT record in additional section with DO flag for DNSSEC)
+//
+// Parameters:
+//   has_do_flag: If TRUE, appends EDNS OPT record with DO flag (DNSSEC OK)
+//                This signals to upstream server to include RRSIG records
+//
 
 int DNS_BuildSimpleQuery(
     const WCHAR* domain,
     USHORT qtype,
     BYTE* buffer,
-    int bufferSize)
+    int bufferSize,
+    BOOLEAN has_do_flag)
 {
     if (!domain || !buffer || bufferSize < 512)
         return 0;
@@ -205,14 +214,14 @@ int DNS_BuildSimpleQuery(
     *(USHORT*)ptr = _htons(0x0100);
     ptr += 2;
 
-    *(USHORT*)ptr = _htons(1);
+    *(USHORT*)ptr = _htons(1);  // Questions
     ptr += 2;
 
-    *(USHORT*)ptr = 0;
+    *(USHORT*)ptr = 0;  // Answer RRs
     ptr += 2;
-    *(USHORT*)ptr = 0;
+    *(USHORT*)ptr = 0;  // Authority RRs
     ptr += 2;
-    *(USHORT*)ptr = 0;
+    *(USHORT*)ptr = _htons(has_do_flag ? 1 : 0);  // Additional RRs (OPT record if EDNS needed)
     ptr += 2;
 
     char* namePtr = domainA;
@@ -246,8 +255,22 @@ int DNS_BuildSimpleQuery(
     *(USHORT*)ptr = _htons(qtype);
     ptr += 2;
 
-    *(USHORT*)ptr = _htons(1);
+    *(USHORT*)ptr = _htons(1);  // QClass (IN)
     ptr += 2;
+
+    // Append EDNS OPT record if DO flag requested
+    if (has_do_flag) {
+        ENSURE_SPACE(11);
+        *ptr++ = 0;                          // ROOT name for OPT
+        *(USHORT*)ptr = _htons(41);          // TYPE = OPT
+        ptr += 2;
+        *(USHORT*)ptr = _htons(4096);        // UDP payload size
+        ptr += 2;
+        *(UINT32*)ptr = _htonl(0x80000000); // EDNS version 0, DO flag (bit 15) set
+        ptr += 4;
+        *(USHORT*)ptr = _htons(0);           // RDLEN = 0 (no RDATA options)
+        ptr += 2;
+    }
 
     return (int)(ptr - buffer);
 }

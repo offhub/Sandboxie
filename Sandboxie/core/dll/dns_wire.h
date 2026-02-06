@@ -30,31 +30,13 @@
 #define _DNS_WIRE_H
 
 #include <windows.h>
+#include "common/my_wsa.h"
 
 //---------------------------------------------------------------------------
-// Byte Order Conversion Macros
+// Byte Order Conversion
 //
-// These are typically defined in winsock2.h, but we define them here
-// in case the header isn't included or uses different names.
-//---------------------------------------------------------------------------
-
-#ifndef _ntohs
-#define _ntohs(x) ((((x) >> 8) & 0xFF) | (((x) & 0xFF) << 8))
-#endif
-
-#ifndef _htons
-#define _htons(x) _ntohs(x)
-#endif
-
-#ifndef _ntohl
-#define _ntohl(x) ((((x) >> 24) & 0xFF) | (((x) >> 8) & 0xFF00) | \
-                   (((x) & 0xFF00) << 8) | (((x) & 0xFF) << 24))
-#endif
-
-#ifndef _htonl
-#define _htonl(x) _ntohl(x)
-#endif
-
+// Use _ntohl(), _ntohs(), _htonl(), _htons() inline functions from
+// common/my_wsa.h.
 //---------------------------------------------------------------------------
 // DNS Message Header (RFC 1035 Section 4.1.1)
 //
@@ -187,6 +169,40 @@ typedef struct _DNS_WIRE_RR {
 #define DNS_WIRE_RR_HEADER_SIZE  10
 
 //---------------------------------------------------------------------------
+// EDNS OPT Pseudo-Record (RFC 6891 Section 6)
+//
+// The OPT pseudo-RR uses TYPE=41 and has special field meanings:
+//   NAME      (variable): Root label (single 0 byte) - always present
+//   TYPE      (16 bits):  41 (OPT)
+//   UDP_SIZE  (16 bits):  Advertised UDP payload size (in CLASS field position)
+//   EXTENDED_RCODE (8 bits): High bits of RCODE (in TTL field high byte)
+//   VERSION   (8 bits):   EDNS version (in TTL field, should be 0)
+//   FLAGS     (16 bits):  EDNS flags (in TTL field low 2 bytes)
+//   RDLENGTH  (16 bits):  Length of RDATA (options)
+//   RDATA     (variable): EDNS options
+//
+// Flags (in network byte order in TTL field):
+//   Bit 15 (0x8000): DO bit - DNSSEC OK
+//   Bits 14-0: Reserved (must be zero)
+//---------------------------------------------------------------------------
+
+#pragma pack(push, 1)
+typedef struct _DNS_OPT_RECORD {
+    BYTE   root_label;      // Root domain label (always 0x00)
+    USHORT type;            // Type = 41 (OPT)
+    USHORT udp_payload;     // UDP payload size (in network byte order)
+    DWORD  extended_flags;  // Extended RCODE (8 bits) + Version (8 bits) + Flags (16 bits)
+    USHORT rdlength;        // Length of options data that follows
+} DNS_OPT_RECORD, *PDNS_OPT_RECORD;
+#pragma pack(pop)
+
+// Size of OPT record header (without options data)
+#define DNS_OPT_RECORD_HEADER_SIZE  11
+
+// EDNS flags (stored in network byte order in the low 16 bits of extended_flags)
+#define DNS_EDNS_FLAG_DO            0x8000  // DNSSEC OK flag
+
+//---------------------------------------------------------------------------
 // DNS Query/Record Types (RFC 1035, RFC 3596, RFC 9460)
 //
 // Note: These are also defined in windns.h as DNS_TYPE_*.
@@ -240,6 +256,10 @@ typedef struct _DNS_WIRE_RR {
 
 #ifndef DNS_TYPE_ANY
 #define DNS_TYPE_ANY        255     // Request all record types
+#endif
+
+#ifndef DNS_TYPE_OPT
+#define DNS_TYPE_OPT        41      // EDNS pseudo-RR (RFC 6891)
 #endif
 
 //---------------------------------------------------------------------------

@@ -2352,11 +2352,11 @@ static BOOLEAN DoH_BuildDnsQuery(
     header->Questions = _htons(1);   // 1 question
     header->AnswerRRs = 0;
     header->AuthorityRRs = 0;
-    header->AdditionalRRs = 0;
+    header->AdditionalRRs = _htons(1);  // 1 additional record (EDNS OPT with DO flag)
 
     // Encode domain name after header
     p = buffer + sizeof(DOH_DNS_HEADER);
-    nameLen = DoH_EncodeDnsName(domain, p, bufferSize - sizeof(DOH_DNS_HEADER) - 4);
+    nameLen = DoH_EncodeDnsName(domain, p, bufferSize - sizeof(DOH_DNS_HEADER) - 4 - 11);
     
     if (nameLen <= 0)
         return FALSE;
@@ -2369,6 +2369,19 @@ static BOOLEAN DoH_BuildDnsQuery(
 
     // Add QCLASS (2 bytes) - always IN (Internet)
     *(USHORT*)p = _htons(1);  // QCLASS_IN = 1
+    p += 2;
+
+    // Append EDNS OPT record with DO flag (RFC 6891)
+    // This signals the server to include RRSIG records for DNSSEC-signed domains.
+    // Safe for all queries: servers that don't support DNSSEC simply ignore the DO flag.
+    *p++ = 0;                          // ROOT name for OPT record
+    *(USHORT*)p = _htons(41);          // TYPE = OPT (41)
+    p += 2;
+    *(USHORT*)p = _htons(4096);        // UDP payload size (requestor's max)
+    p += 2;
+    *(UINT32*)p = _htonl(0x00008000);  // Extended RCODE=0, version=0, DO flag set (bit 15 of flags)
+    p += 4;
+    *(USHORT*)p = _htons(0);           // RDLEN = 0 (no options)
     p += 2;
 
     *queryLen = (int)(p - buffer);

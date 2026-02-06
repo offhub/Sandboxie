@@ -43,6 +43,12 @@ void DNS_Rebind_AppendFilteredIpMsg(
 	ADDRESS_FAMILY af,
 	const IP_ADDRESS* pIP);
 
+//---------------------------------------------------------------------------
+// DNSSEC Support (moved to dns_dnssec.h)
+//---------------------------------------------------------------------------
+
+#include "dns_dnssec.h"
+
 // ANSI version of addrinfo (not in wsa_defs.h). Keep local to core/dll code.
 // Note: This intentionally avoids pulling in winsock2.h.
 typedef struct addrinfo {

@@ -31,11 +31,13 @@ extern "C" {
 #endif
 
 // Internal helper for DnsQueryRaw passthrough (moved out of dns_filter.c)
+// If has_do_flag=TRUE, appends EDNS OPT record with DO flag (for DNSSEC)
 int DNS_BuildSimpleQuery(
     const WCHAR* domain,
     USHORT qtype,
     BYTE* buffer,
-    int bufferSize);
+    int bufferSize,
+    BOOLEAN has_do_flag);
 
 // Builds a DNS_RECORD linked list from IP_ENTRY list.
 PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(

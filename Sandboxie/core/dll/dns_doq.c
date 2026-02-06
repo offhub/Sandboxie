@@ -1266,18 +1266,31 @@ static void DoQ_ReleaseConnection(DOQ_CONNECTION* conn)
 }
 
 //---------------------------------------------------------------------------
-// DoQ_BuildDnsQuery - Build DNS wire format query with length prefix
+// DoQ_BuildDnsQuery - Build DNS wire format query with length prefix and optional EDNS
 //---------------------------------------------------------------------------
+//
+// RFC 1035: Standard DNS query (header + question section)
+// RFC 6891: EDNS (OPT record in additional section with DO flag for DNSSEC)
+//
+// Parameters:
+//   has_do_flag: If TRUE, appends EDNS OPT record with DO flag (DNSSEC OK)
+//                This signals to upstream server to include RRSIG records
+//
 
-static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer, UINT32 bufferSize)
+static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer, UINT32 bufferSize, BOOLEAN has_do_flag)
 {
     DNS_WIRE_HEADER* header;
     BYTE* p;
     const WCHAR* label_start;
     UINT32 queryLen;
     static USHORT s_TransactionId = 0;
+    UINT32 required_size = DOQ_LENGTH_PREFIX_SIZE + 12 + 4 + 256;
 
-    if (bufferSize < DOQ_LENGTH_PREFIX_SIZE + 12 + 4 + 256)
+    // Reserve space for EDNS OPT record if needed (1 + 2 + 2 + 4 + 2 = 11 bytes)
+    if (has_do_flag)
+        required_size += 11;
+
+    if (bufferSize < required_size)
         return 0;
 
     // Leave space for length prefix
@@ -1289,6 +1302,7 @@ static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer,
     header->TransactionID = _htons((USHORT)InterlockedIncrement((LONG*)&s_TransactionId));
     header->Flags = _htons(DNS_FLAG_RD);  // Recursion desired
     header->Questions = _htons(1);
+    header->AdditionalRRs = _htons(has_do_flag ? 1 : 0);  // 1 additional record (OPT) if EDNS needed
 
     p += sizeof(DNS_WIRE_HEADER);
 
@@ -1325,6 +1339,19 @@ static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer,
     p += 2;
     *(USHORT*)p = _htons(1);  // IN class
     p += 2;
+
+    // Append EDNS OPT record if DO flag requested
+    if (has_do_flag) {
+        *p++ = 0;                          // ROOT name for OPT
+        *(USHORT*)p = _htons(41);          // TYPE = OPT
+        p += 2;
+        *(USHORT*)p = _htons(4096);        // UDP payload size
+        p += 2;
+        *(UINT32*)p = _htonl(0x00008000); // EDNS version 0, DO flag (bit 15 of flags field) set
+        p += 4;
+        *(USHORT*)p = _htons(0);           // RDLEN = 0 (no RDATA options)
+        p += 2;
+    }
 
     // Calculate total query length (excluding length prefix)
     queryLen = (UINT32)(p - (buffer + DOQ_LENGTH_PREFIX_SIZE));
@@ -1532,8 +1559,8 @@ _FX BOOLEAN DoQ_Query(
     }
     ctx.pResult = pResult;
 
-    // Build DNS query with length prefix
-    ctx.QueryLength = DoQ_BuildDnsQuery(domain, qtype, ctx.QueryBuffer, sizeof(ctx.QueryBuffer));
+    // Build DNS query with length prefix and EDNS DO flag (requests RRSIG for DNSSEC-signed domains)
+    ctx.QueryLength = DoQ_BuildDnsQuery(domain, qtype, ctx.QueryBuffer, sizeof(ctx.QueryBuffer), TRUE);
     if (ctx.QueryLength == 0) {
         CloseHandle(ctx.CompletionEvent);
         DoQ_ReleaseConnection(conn);
