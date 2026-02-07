@@ -80,6 +80,10 @@ BOOLEAN DNS_IsExcluded(const WCHAR* domain);
 BOOLEAN DNS_IsExcludedWithMode(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* pModeOut);
 BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries);
 
+// Accessors for unhooked DNSAPI functions (used by rebind/DNSSEC probes)
+void* DNSAPI_GetSystemDnsQueryW(void);
+void* DNSAPI_GetSystemDnsRecordListFree(void);
+
 // Exact-match-only filter lookup.
 // For IP literals this prevents wildcard rules (e.g. "*") from matching.
 // Returns TRUE only if an exact NetworkDnsFilter entry exists for pszName.

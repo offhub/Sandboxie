@@ -356,6 +356,16 @@ static P_DnsQueryRawResultFree    __sys_DnsQueryRawResultFree    = NULL;
 static P_DnsCancelQuery           __sys_DnsCancelQuery           = NULL;
 static P_DnsExtractRecordsFromMessage_W __sys_DnsExtractRecordsFromMessage_W = NULL;
 
+_FX void* DNSAPI_GetSystemDnsQueryW(void)
+{
+    return (void*)__sys_DnsQuery_W;
+}
+
+_FX void* DNSAPI_GetSystemDnsRecordListFree(void)
+{
+    return (void*)__sys_DnsRecordListFree;
+}
+
 // Common function pointer type for narrow (ANSI/UTF-8) DnsQuery_* system calls.
 typedef DNS_STATUS (WINAPI *DNSAPI_P_DnsQuery_NarrowSys)(
     PCSTR               pszName,
@@ -457,6 +467,7 @@ typedef struct _DNSAPI_ASYNC_CONTEXT {
     PVOID                            OriginalContext;
     WCHAR                            Domain[256];
     WORD                             QueryType;
+    BOOLEAN                          SkipDnssec;
 } DNSAPI_ASYNC_CONTEXT;
 
 // Context structure for DnsQueryRaw passthrough callback wrapper
@@ -466,6 +477,7 @@ typedef struct _DNSAPI_RAW_PASSTHROUGH_CONTEXT {
     WCHAR                             Domain[256];
     WORD                              QueryType;
     DNS_PASSTHROUGH_REASON            PassthroughReason;  // Reason for passthrough (for logging)
+    BOOLEAN                           SkipDnssec;
 } DNSAPI_RAW_PASSTHROUGH_CONTEXT;
 
 // Callback wrapper signature with SAL annotations
@@ -894,7 +906,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
     for (entry = (IP_ENTRY*)List_Head(pLookup->pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (!DNS_EntryMatchesQueryFamily(entry, isIPv6Query))
             continue;
-        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP)) {
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP, entry->Type)) {
             DNS_Rebind_AppendFilteredIpMsg(
                 filtered_msg,
                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -1022,7 +1034,7 @@ _FX BOOLEAN WSA_FillResponseStructure(
     for (entry = (IP_ENTRY*)List_Head(pLookup->pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
         if (!DNS_EntryMatchesQueryFamily(entry, isIPv6Query))
             continue;
-        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP)) {
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pLookup->DomainName, &entry->IP, entry->Type)) {
             continue;
         }
 
@@ -3147,7 +3159,7 @@ _FX int WSA_WSALookupServiceNextW(
                 if (af == AF_INET6)
                 {
                     SOCKADDR_IN6_LH* sa6 = (SOCKADDR_IN6_LH*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr;
-                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP, af)) {
                         DNS_Rebind_AppendFilteredIpMsg(
                             filtered_msg,
                             (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -3160,7 +3172,7 @@ _FX int WSA_WSALookupServiceNextW(
                 else if (af == AF_INET)
                 {
                     SOCKADDR_IN* sa4 = (SOCKADDR_IN*)lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr;
-                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                    if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP, af)) {
                         DNS_Rebind_AppendFilteredIpMsg(
                             filtered_msg,
                             (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -3201,7 +3213,7 @@ _FX int WSA_WSALookupServiceNextW(
                     uintptr_t ipOffset = GET_REL_FROM_PTR(*Addr);
                     PCHAR ptr = (PCHAR)ABS_PTR(hp, ipOffset);
                     if (hp->h_addrtype == AF_INET6) {
-                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP, hp->h_addrtype)) {
                             DNS_Rebind_AppendFilteredIpMsg(
                                 filtered_msg,
                                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -3212,7 +3224,7 @@ _FX int WSA_WSALookupServiceNextW(
                             memcpy(ptr, entry->IP.Data, 16);
                     }
                     else if (hp->h_addrtype == AF_INET) {
-                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP)) {
+                        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(rebindDomain, &entry->IP, hp->h_addrtype)) {
                             DNS_Rebind_AppendFilteredIpMsg(
                                 filtered_msg,
                                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -3648,6 +3660,7 @@ static DNS_STATUS DNSAPI_DnsQuery_NarrowCommon(
     BOOLEAN                    includeDebugLogs)
 {
     DNS_PASSTHROUGH_REASON passthroughReason = DNS_PASSTHROUGH_NONE;
+    BOOLEAN exclude_enc_passthrough = FALSE;
 
     // Filtering stage
     if (DNS_FilterEnabled && pszName && sysQuery) {
@@ -3678,6 +3691,7 @@ static DNS_STATUS DNSAPI_DnsQuery_NarrowCommon(
                         }
                         Dll_Free(wName);
                         // Excluded from filtering but forced to EncDns for passthrough.
+                        exclude_enc_passthrough = TRUE;
                         goto passthrough_narrow;
                     }
                 }
@@ -3739,21 +3753,25 @@ passthrough_narrow:
                     if (DNS_TryDoHQuery(wName, wType, &doh_list, &encdns_result)) {
                         // DNSSEC: try raw extraction to preserve RRSIG
                         DNSSEC_MODE narrow_aa_dnssec = DNS_DnssecGetMode(wName);
-                        PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
-                            wName, Options, narrow_aa_dnssec,
-                            encdns_result.RawResponse, encdns_result.RawResponseLen);
-                        if (pDnssecRecords) {
-                            WCHAR sourceTag[64];
-                            Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s EncDns(%s) DNSSEC=%c",
-                                           apiName ? apiName : L"DnsQuery",
-                                           EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
-                                           narrow_aa_dnssec == DNSSEC_MODE_ENABLED ? L'y' : L'f');
-                            DNS_LogDnsQueryResultWithReason(sourceTag, wName, wType,
-                                                           DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
-                            DNS_FreeIPEntryList(&doh_list);
-                            *ppQueryResults = (PDNSAPI_DNS_RECORD)pDnssecRecords;
-                            Dll_Free(wName);
-                            return DNS_RCODE_NOERROR;
+                        if (exclude_enc_passthrough)
+                            narrow_aa_dnssec = DNSSEC_MODE_FILTER;
+                        if (!exclude_enc_passthrough) {
+                            PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
+                                wName, Options, narrow_aa_dnssec,
+                                encdns_result.RawResponse, encdns_result.RawResponseLen);
+                            if (pDnssecRecords) {
+                                WCHAR sourceTag[64];
+                                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s EncDns(%s) DNSSEC=%c",
+                                               apiName ? apiName : L"DnsQuery",
+                                               EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
+                                               narrow_aa_dnssec == DNSSEC_MODE_ENABLED ? L'y' : L'f');
+                                DNS_LogDnsQueryResultWithReason(sourceTag, wName, wType,
+                                                               DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
+                                DNS_FreeIPEntryList(&doh_list);
+                                *ppQueryResults = (PDNSAPI_DNS_RECORD)pDnssecRecords;
+                                Dll_Free(wName);
+                                return DNS_RCODE_NOERROR;
+                            }
                         }
                         
                         PDNSAPI_DNS_RECORD pResult = DNSAPI_BuildDnsRecordList(wName, wType, &doh_list, recordCharSet, &encdns_result);
@@ -3820,7 +3838,9 @@ passthrough_narrow:
                         if (extractStatus == 0 && pRecords) {
                             // DNSSEC-aware post-processing (rebind + strip)
                             DNSSEC_MODE narrow_encdns_dnssec = DNS_DnssecGetMode(wName);
-                            DNS_Dnssec_PostProcessRecordList(wName, &pRecords, narrow_encdns_dnssec);
+                            if (!exclude_enc_passthrough) {
+                                DNS_Dnssec_PostProcessRecordList(wName, &pRecords, narrow_encdns_dnssec);
+                            }
 
                             WCHAR sourceTag[64];
                             if (apiName && wcscmp(apiName, L"DnsQuery_A") == 0) {
@@ -3963,7 +3983,15 @@ passthrough_narrow:
     }
 
     if (DNS_TraceFlag && wName) {
-        DNS_LogDnsQueryResultWithReason(tagPassthrough, wName, wType,
+        // Show DNSSEC=y only when RRSIG actually present in response
+        WCHAR sysTag[64];
+        if (narrow_dnssec_mode == DNSSEC_MODE_ENABLED
+            && status == 0 && ppQueryResults && *ppQueryResults
+            && DNS_Dnssec_RecordListHasRrsig(*ppQueryResults))
+            Sbie_snwprintf(sysTag, ARRAYSIZE(sysTag), L"%s DNSSEC=y", tagPassthrough);
+        else
+            wcsncpy_s(sysTag, ARRAYSIZE(sysTag), tagPassthrough, _TRUNCATE);
+        DNS_LogDnsQueryResultWithReason(sysTag, wName, wType,
                                        status, ppQueryResults, passthroughReason);
     }
 
@@ -3987,6 +4015,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
 {
     // Filter or block based on configuration
     DNS_PASSTHROUGH_REASON passthroughReason = DNS_PASSTHROUGH_NONE;
+    BOOLEAN exclude_enc_passthrough = FALSE;
     
     if (DNS_FilterEnabled && pszName) {
         ULONG path_len = wcslen(pszName);
@@ -4001,18 +4030,13 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
                 DNS_LogExclusion(path_lwr);
                 Dll_Free(path_lwr);
                 if (excludeMode == DNS_EXCLUDE_RESOLVE_SYS) {
-                            // DNSSEC-aware excluded domain path
-                            DNSSEC_MODE excl_dnssec_mode = DNS_DnssecGetMode(pszName);
-                            DWORD exclOptions = DNS_Dnssec_AdjustQueryOptions(excl_dnssec_mode, Options);
-                            DNS_STATUS ex_status = __sys_DnsQuery_W(pszName, wType, exclOptions, pExtra, ppQueryResults, pReserved);
-                            if (ex_status == 0 && ppQueryResults && *ppQueryResults) {
-                                DNS_Dnssec_PostProcessRecordList(pszName, (PDNS_RECORD*)ppQueryResults, excl_dnssec_mode);
-                            }
-                            DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType,
-                                                           ex_status, ppQueryResults, DNS_PASSTHROUGH_EXCLUDED);
-                            return ex_status;
+                    DNS_STATUS ex_status = __sys_DnsQuery_W(pszName, wType, Options, pExtra, ppQueryResults, pReserved);
+                    DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType,
+                                                   ex_status, ppQueryResults, DNS_PASSTHROUGH_EXCLUDED);
+                    return ex_status;
                 }
                 // Excluded from filtering but forced to EncDns for passthrough.
+                exclude_enc_passthrough = TRUE;
                 goto passthrough_dnsquery_w;
             }
         }
@@ -4067,6 +4091,9 @@ passthrough_dnsquery_w:
     if (EncryptedDns_IsEnabled() && pszName) {
         // Determine DNSSEC mode for this domain
         DNSSEC_MODE dnsquery_dnssec_mode = DNS_DnssecGetMode(pszName);
+        if (exclude_enc_passthrough) {
+            dnsquery_dnssec_mode = DNSSEC_MODE_FILTER;
+        }
         
         // For A/AAAA queries, perform actual EncDns lookup
         if (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA) {
@@ -4074,25 +4101,27 @@ passthrough_dnsquery_w:
             DOH_RESULT encdns_result;
             if (DNS_TryDoHQuery(pszName, wType, &doh_list, &encdns_result)) {
                 // DNSSEC: try raw extraction to preserve RRSIG
-                PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
-                    pszName, Options, dnsquery_dnssec_mode,
-                    encdns_result.RawResponse, encdns_result.RawResponseLen);
-                if (pDnssecRecords) {
-                    WCHAR sourceTag[64];
-                    Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns(%s) DNSSEC=%c",
-                                   EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
-                                   dnsquery_dnssec_mode == DNSSEC_MODE_ENABLED ? L'y' : L'f');
-                    DNS_LogDnsQueryResultWithReason(sourceTag, pszName, wType,
-                                                   DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
-                    DNS_FreeIPEntryList(&doh_list);
-                    *ppQueryResults = (PDNSAPI_DNS_RECORD)pDnssecRecords;
-                    return DNS_RCODE_NOERROR;
+                if (!exclude_enc_passthrough) {
+                    PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
+                        pszName, Options, dnsquery_dnssec_mode,
+                        encdns_result.RawResponse, encdns_result.RawResponseLen);
+                    if (pDnssecRecords) {
+                        WCHAR sourceTag[64];
+                        Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns(%s) DNSSEC=%c",
+                                       EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
+                                       dnsquery_dnssec_mode == DNSSEC_MODE_ENABLED ? L'y' : L'f');
+                        DNS_LogDnsQueryResultWithReason(sourceTag, pszName, wType,
+                                                       DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
+                        DNS_FreeIPEntryList(&doh_list);
+                        *ppQueryResults = (PDNSAPI_DNS_RECORD)pDnssecRecords;
+                        return DNS_RCODE_NOERROR;
+                    }
                 }
                 
                 PDNSAPI_DNS_RECORD pResult = DNSAPI_BuildDnsRecordList(pszName, wType, &doh_list, DnsCharSetUnicode, &encdns_result);
                 if (pResult) {
                     // DISABLED mode: strip any DNSSEC records that may have leaked through
-                    if (dnsquery_dnssec_mode == DNSSEC_MODE_DISABLED) {
+                    if (!exclude_enc_passthrough && dnsquery_dnssec_mode == DNSSEC_MODE_DISABLED) {
                         DNS_Dnssec_StripDnssecRecords(&pResult);
                     }
                     
@@ -4148,7 +4177,9 @@ passthrough_dnsquery_w:
                 }
 
                 if (extractStatus == 0 && pRecords) {
-                    DNS_Dnssec_PostProcessRecordList(pszName, &pRecords, dnsquery_dnssec_mode);
+                    if (!exclude_enc_passthrough) {
+                        DNS_Dnssec_PostProcessRecordList(pszName, &pRecords, dnsquery_dnssec_mode);
+                    }
                     
                     // Success - return extracted records
                     WCHAR sourceTag[64];
@@ -4241,8 +4272,14 @@ passthrough_dnsquery_w:
             DNS_Dnssec_PostProcessRecordList(pszName, (PDNS_RECORD*)ppQueryResults, sys_dnssec_mode);
         }
 
-        DNS_LogDnsQueryResultWithReason(L"DnsQuery_W Passthrough", pszName, wType, 
-                                       status, ppQueryResults, passthroughReason);
+        // Build DNSSEC-aware log prefix: show DNSSEC=y only when RRSIG actually present
+        const WCHAR* sys_log_prefix = L"DnsQuery_W Passthrough";
+        if (sys_dnssec_mode == DNSSEC_MODE_ENABLED && status == 0 && ppQueryResults && *ppQueryResults
+            && DNS_Dnssec_RecordListHasRrsig(*ppQueryResults))
+            sys_log_prefix = L"DnsQuery_W Passthrough DNSSEC=y";
+
+        DNS_LogDnsQueryResultWithReason(sys_log_prefix, pszName, wType,
+            status, ppQueryResults, passthroughReason);
 
         return status;
     }
@@ -4328,7 +4365,7 @@ _FX VOID WINAPI DNSAPI_AsyncCallbackWrapper(
         return;
 
     // Apply DNSSEC-aware DNS rebind protection to passthrough results (async)
-    if (pQueryResults && pQueryResults->QueryStatus == 0 && pQueryResults->pQueryRecords) {
+    if (!ctx->SkipDnssec && pQueryResults && pQueryResults->QueryStatus == 0 && pQueryResults->pQueryRecords) {
         DNSSEC_MODE async_dnssec_mode = DNS_DnssecGetMode(ctx->Domain);
         DNS_Dnssec_PostProcessRecordList(ctx->Domain, (PDNS_RECORD*)&pQueryResults->pQueryRecords, async_dnssec_mode);
     }
@@ -4366,7 +4403,7 @@ _FX VOID WINAPI DNSAPI_RawPassthroughCallbackWrapper(
     DNS_STATUS status = pQueryResults ? pQueryResults->queryStatus : -1;
     
     // Apply DNSSEC-aware DNS rebind protection to passthrough results (async)
-    if (pQueryResults && pQueryResults->queryStatus == 0 && pQueryResults->queryRecords) {
+    if (!ctx->SkipDnssec && pQueryResults && pQueryResults->queryStatus == 0 && pQueryResults->queryRecords) {
         DNSSEC_MODE raw_async_dnssec_mode = DNS_DnssecGetMode(ctx->Domain);
         DNS_Dnssec_PostProcessRecordList(ctx->Domain, (PDNS_RECORD*)&pQueryResults->queryRecords, raw_async_dnssec_mode);
     }
@@ -4406,7 +4443,8 @@ static BOOLEAN DNSAPI_TryDoHForQueryEx(
     ULONG64 queryOptions,
     PDNS_QUERY_RESULT pQueryResults,
     DNS_CHARSET CharSet,
-    ENCRYPTED_DNS_MODE* protocolUsedOut)
+    ENCRYPTED_DNS_MODE* protocolUsedOut,
+    BOOLEAN skipDnssec)
 {
     if (!pszName || !pQueryResults) {
         return FALSE;
@@ -4422,6 +4460,9 @@ static BOOLEAN DNSAPI_TryDoHForQueryEx(
 
     // Determine DNSSEC mode for this domain
     DNSSEC_MODE queryex_dnssec_mode = DNS_DnssecGetMode(pszName);
+    if (skipDnssec) {
+        queryex_dnssec_mode = DNSSEC_MODE_FILTER;
+    }
     
     // For A/AAAA types, use the existing IP-focused path
     if (wType == DNS_TYPE_A || wType == DNS_TYPE_AAAA) {
@@ -4435,18 +4476,20 @@ static BOOLEAN DNSAPI_TryDoHForQueryEx(
             *protocolUsedOut = encdns_result.ProtocolUsed;
 
         // DNSSEC: try raw extraction to preserve RRSIG
-        PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
-            pszName, (DWORD)queryOptions, queryex_dnssec_mode,
-            encdns_result.RawResponse, encdns_result.RawResponseLen);
-        if (pDnssecRecords) {
-            DNS_FreeIPEntryList(&doh_list);
-            if (pQueryResults->Version == 0)
-                pQueryResults->Version = DNS_QUERY_RESULTS_VERSION1;
-            pQueryResults->QueryOptions = queryOptions;
-            pQueryResults->pQueryRecords = pDnssecRecords;
-            pQueryResults->Reserved = NULL;
-            pQueryResults->QueryStatus = 0;
-            return TRUE;
+        if (!skipDnssec) {
+            PDNS_RECORD pDnssecRecords = DNSAPI_Dnssec_TryExtractRaw(
+                pszName, (DWORD)queryOptions, queryex_dnssec_mode,
+                encdns_result.RawResponse, encdns_result.RawResponseLen);
+            if (pDnssecRecords) {
+                DNS_FreeIPEntryList(&doh_list);
+                if (pQueryResults->Version == 0)
+                    pQueryResults->Version = DNS_QUERY_RESULTS_VERSION1;
+                pQueryResults->QueryOptions = queryOptions;
+                pQueryResults->pQueryRecords = pDnssecRecords;
+                pQueryResults->Reserved = NULL;
+                pQueryResults->QueryStatus = 0;
+                return TRUE;
+            }
         }
 
         PDNSAPI_DNS_RECORD pRecords = DNSAPI_BuildDnsRecordList(pszName, wType, &doh_list, CharSet, &encdns_result);
@@ -4464,7 +4507,7 @@ static BOOLEAN DNSAPI_TryDoHForQueryEx(
         }
 
         // DISABLED mode: strip DNSSEC records
-        if (queryex_dnssec_mode == DNSSEC_MODE_DISABLED) {
+        if (!skipDnssec && queryex_dnssec_mode == DNSSEC_MODE_DISABLED) {
             DNS_Dnssec_StripDnssecRecords(&pRecords);
         }
 
@@ -4512,7 +4555,9 @@ static BOOLEAN DNSAPI_TryDoHForQueryEx(
             &pRecords);
 
         if (status == 0 && pRecords) {
-            DNS_Dnssec_PostProcessRecordList(pszName, &pRecords, queryex_dnssec_mode);
+            if (!skipDnssec) {
+                DNS_Dnssec_PostProcessRecordList(pszName, &pRecords, queryex_dnssec_mode);
+            }
             
             // Success - return extracted records
             if (pQueryResults->Version == 0)
@@ -4750,6 +4795,8 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     
     // Not filtered - try EncDns for passthrough queries (but NOT for excluded domains)
     // Excluded domains should use system DNS directly
+    BOOLEAN exclude_sys_passthrough = FALSE;
+    BOOLEAN exclude_enc_passthrough = FALSE;
     if (pQueryRequest->QueryName) {
         size_t domain_len = wcslen(pQueryRequest->QueryName);
         WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
@@ -4761,22 +4808,38 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             DNS_EXCLUDE_RESOLVE_MODE excludeMode = DNS_EXCLUDE_RESOLVE_SYS;
             BOOLEAN is_excluded = DNS_IsExcludedEx(domain_lwr, &excludeMode);
             Dll_Free(domain_lwr);
+            if (is_excluded) {
+                if (excludeMode == DNS_EXCLUDE_RESOLVE_SYS)
+                    exclude_sys_passthrough = TRUE;
+                else
+                    exclude_enc_passthrough = TRUE;
+            }
             
             if (!is_excluded || excludeMode == DNS_EXCLUDE_RESOLVE_ENC) {
                 // Not excluded (or excluded but forced to EncDns) - try EncDns
                 ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
                 if (DNSAPI_TryDoHForQueryEx(pQueryRequest->QueryName, pQueryRequest->QueryType,
-                                             pQueryRequest->QueryOptions, pQueryResults, DnsCharSetUnicode, &protocolUsed)) {
-                    WCHAR prefix[64];
+                                             pQueryRequest->QueryOptions, pQueryResults, DnsCharSetUnicode, &protocolUsed,
+                                             exclude_enc_passthrough)) {
+                    // Compute DNSSEC mode for logging and post-processing
+                    DNSSEC_MODE ex_dnssec_mode = DNS_DnssecGetMode(pQueryRequest->QueryName);
+
+                    // Show DNSSEC=y only when RRSIG actually present in EncDns cache
+                    BOOLEAN exHasRrsig = (ex_dnssec_mode == DNSSEC_MODE_ENABLED
+                        && EncryptedDns_CacheHasRrsig(pQueryRequest->QueryName, pQueryRequest->QueryType));
+
+                    WCHAR prefix[80];
                     if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
-                        Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s)", EncryptedDns_GetModeName(protocolUsed));
+                        if (exHasRrsig)
+                            Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s) DNSSEC=y", EncryptedDns_GetModeName(protocolUsed));
+                        else
+                            Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s)", EncryptedDns_GetModeName(protocolUsed));
                     } else {
                         wcscpy_s(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns");
                     }
 
                     // DNSSEC-aware rebind protection (EncDns path)
-                    if (pQueryResults && pQueryResults->pQueryRecords) {
-                        DNSSEC_MODE ex_dnssec_mode = DNS_DnssecGetMode(pQueryRequest->QueryName);
+                    if (!exclude_enc_passthrough && pQueryResults && pQueryResults->pQueryRecords) {
                         DNS_Dnssec_PostProcessRecordList(pQueryRequest->QueryName, (PDNS_RECORD*)&pQueryResults->pQueryRecords, ex_dnssec_mode);
                     }
 
@@ -4808,7 +4871,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     PVOID originalContext = NULL;
     DNSAPI_ASYNC_CONTEXT* asyncCtx = NULL;
 
-    if (pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1 && 
+    if (!exclude_sys_passthrough && pQueryRequest->Version >= DNS_QUERY_REQUEST_VERSION1 && 
         pQueryRequest->pQueryCompletionCallback) {
         
         originalCallback = pQueryRequest->pQueryCompletionCallback;
@@ -4820,6 +4883,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
             asyncCtx->OriginalCallback = originalCallback;
             asyncCtx->OriginalContext = originalContext;
             asyncCtx->QueryType = pQueryRequest->QueryType;
+            asyncCtx->SkipDnssec = exclude_sys_passthrough;
             
             // Copy domain name for logging
             size_t domain_len = wcslen(pQueryRequest->QueryName);
@@ -4886,7 +4950,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
 
     // Apply DNSSEC mode adjustments to query options
     DNSSEC_MODE queryex_sys_dnssec_mode = DNSSEC_MODE_FILTER;
-    if (pQueryRequest->QueryName) {
+    if (!exclude_sys_passthrough && pQueryRequest->QueryName) {
         queryex_sys_dnssec_mode = DNS_DnssecGetMode(pQueryRequest->QueryName);
         pQueryRequest->QueryOptions = DNS_Dnssec_AdjustQueryOptions64(queryex_sys_dnssec_mode, pQueryRequest->QueryOptions);
     }
@@ -4949,31 +5013,39 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     }
 
     // Apply DNSSEC-aware DNS rebind protection to passthrough results (sync)
-    if (status == 0 && pQueryRequest->QueryName && pQueryResults && pQueryResults->pQueryRecords) {
+    if (!exclude_sys_passthrough && status == 0 && pQueryRequest->QueryName && pQueryResults && pQueryResults->pQueryRecords) {
         DNS_Dnssec_PostProcessRecordList(pQueryRequest->QueryName, (PDNS_RECORD*)&pQueryResults->pQueryRecords, queryex_sys_dnssec_mode);
     }
     
     if (DNS_TraceFlag && pQueryRequest->QueryName) {
+        // Show DNSSEC=y only when RRSIG actually present in response records
+        BOOLEAN hasRrsig = (queryex_sys_dnssec_mode == DNSSEC_MODE_ENABLED
+            && status == 0 && pQueryResults && pQueryResults->pQueryRecords
+            && DNS_Dnssec_RecordListHasRrsig(pQueryResults->pQueryRecords));
+        WCHAR passPrefix[64];
+        wcscpy_s(passPrefix, ARRAYSIZE(passPrefix),
+            hasRrsig ? L"DnsQueryEx Passthrough DNSSEC=y" : L"DnsQueryEx Passthrough");
+
         // Debug: Log status and pQueryRecords pointer
         DNS_LogQueryExDebugStatus(status, asyncCtx, pQueryResults,
             pQueryResults ? pQueryResults->pQueryRecords : NULL, pQueryRequest->Version);
         
         if (status == DNS_REQUEST_PENDING && asyncCtx) {
-            DNS_LogDnsQueryExStatus(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
+            DNS_LogDnsQueryExStatus(passPrefix, pQueryRequest->QueryName, 
                                    pQueryRequest->QueryType, status);
         } else if (status == 0 && pQueryResults && pQueryResults->pQueryRecords) {
             // Sync call completed successfully - log with type filtering and reason
-            DNS_LogDnsRecordsWithReason(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
+            DNS_LogDnsRecordsWithReason(passPrefix, pQueryRequest->QueryName, 
                             pQueryRequest->QueryType, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords, 
                             outcome.PassthroughReason);
         } else {
             // Error or no results - log based on status
             if (status != 0) {
-                DNS_LogDnsQueryExStatus(L"DnsQueryEx Passthrough", pQueryRequest->QueryName,
+                DNS_LogDnsQueryExStatus(passPrefix, pQueryRequest->QueryName,
                                        pQueryRequest->QueryType, status);
             } else {
                 // Status 0 but no records - empty result (legitimate case)
-                DNS_LogSimple(L"DnsQueryEx Passthrough", pQueryRequest->QueryName, 
+                DNS_LogSimple(passPrefix, pQueryRequest->QueryName, 
                              pQueryRequest->QueryType, L" - No records");
             }
         }
@@ -5075,7 +5147,8 @@ static DNS_STATUS DNSAPI_CompleteDnsQueryRaw(
 static BOOLEAN DNSAPI_TryDoHForDnsQueryRaw(
     PDNS_QUERY_RAW_REQUEST pQueryRequest,
     const WCHAR* domain,
-    USHORT qtype)
+    USHORT qtype,
+    BOOLEAN skipDnssec)
 {
     if (!pQueryRequest || !domain || !*domain)
         return FALSE;
@@ -5173,6 +5246,9 @@ static BOOLEAN DNSAPI_TryDoHForDnsQueryRaw(
             BYTE edns_buffer[256];
             int edns_len = Socket_ExtractEdnsRecord(queryPtr, queryLen, edns_buffer, sizeof(edns_buffer));
             DNSSEC_MODE dnssec_mode = DNS_DnssecGetMode(domain);
+            if (skipDnssec)
+                dnssec_mode = DNSSEC_MODE_FILTER;
+            const WCHAR* rebind_domain = skipDnssec ? NULL : domain;
             
             response_len = Socket_BuildDnsResponse(
                 queryPtr,
@@ -5183,7 +5259,7 @@ static BOOLEAN DNSAPI_TryDoHForDnsQueryRaw(
                 sizeof(response),
                 qtype,
                 NULL,
-                domain,
+                rebind_domain,
                 edns_len > 0 ? edns_buffer : NULL,
                 edns_len,
                 dnssec_mode);
@@ -5322,7 +5398,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                             DNS_LogExclusion(domain_lwr);
                             if (excludeMode == DNS_EXCLUDE_RESOLVE_ENC) {
                                 Dll_Free(domain_lwr);
-                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype))
+                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype, TRUE))
                                     return DNS_REQUEST_PENDING;
                                 // Fallback to system DNS: wrap callback to log completion status with IPs
                                 if (pQueryRequest->queryCompletionCallback) {
@@ -5335,6 +5411,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_EXCLUDED;
+                                        ctx->SkipDnssec = TRUE;
 
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
                                         pQueryRequest->queryContext = ctx;
@@ -5355,6 +5432,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                     ctx->Domain[255] = L'\0';
                                     ctx->QueryType = qtype;
                                     ctx->PassthroughReason = DNS_PASSTHROUGH_EXCLUDED;
+                                    ctx->SkipDnssec = TRUE;
 
                                     pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
                                     pQueryRequest->queryContext = ctx;
@@ -5376,7 +5454,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                 // Domain matches filter but no cert - passthrough (logged via callback with IPs)
                                 Dll_Free(domain_lwr);
 
-                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype))
+                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype, FALSE))
                                     return DNS_REQUEST_PENDING;
                                 
                                 // Wrap callback to log completion status
@@ -5390,6 +5468,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_NO_CERT;
+                                        ctx->SkipDnssec = FALSE;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -5419,7 +5498,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                 // Negated types always passthrough - callback wrapper will log with IPs
                                 Dll_Free(domain_lwr);
 
-                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype))
+                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype, FALSE))
                                     return DNS_REQUEST_PENDING;
                                 
                                 // Wrap callback to log completion status
@@ -5433,6 +5512,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NEGATED;
+                                        ctx->SkipDnssec = FALSE;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -5451,7 +5531,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                 // Callback wrapper will log final result with IPs
                                 Dll_Free(domain_lwr);
 
-                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype))
+                                if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype, FALSE))
                                     return DNS_REQUEST_PENDING;
                                 
                                 // Wrap callback to log completion status
@@ -5465,6 +5545,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         ctx->Domain[255] = L'\0';
                                         ctx->QueryType = qtype;
                                         ctx->PassthroughReason = DNS_PASSTHROUGH_TYPE_NOT_FILTERED;
+                                        ctx->SkipDnssec = FALSE;
                                         
                                         // Replace with our wrapper
                                         pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -5654,7 +5735,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
     }
 
     // No filter match - passthrough
-    if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype))
+    if (DNSAPI_TryDoHForDnsQueryRaw(pQueryRequest, domain, qtype, FALSE))
         return DNS_REQUEST_PENDING;
 
     DNS_LogSimple(L"DnsQueryRaw Passthrough", domain, qtype, NULL);
@@ -5670,6 +5751,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
             ctx->Domain[255] = L'\0';
             ctx->QueryType = qtype;
             ctx->PassthroughReason = DNS_PASSTHROUGH_NO_MATCH;
+            ctx->SkipDnssec = FALSE;
             
             // Replace with our wrapper
             pQueryRequest->queryCompletionCallback = DNSAPI_RawPassthroughCallbackWrapper;
@@ -5814,7 +5896,7 @@ static PADDRINFOW WSA_BuildAddrInfoList(
         if (requestedFamily == AF_UNSPEC || 
             (requestedFamily == AF_INET && entry->Type == AF_INET) ||
             (requestedFamily == AF_INET6 && entry->Type == AF_INET6)) {
-            if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP)) {
+            if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP, entry->Type)) {
                 DNS_Rebind_AppendFilteredIpMsg(
                     filtered_msg,
                     (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
@@ -5843,7 +5925,7 @@ static PADDRINFOW WSA_BuildAddrInfoList(
             continue;
         }
 
-        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP)) {
+        if (rebindEnabled && DNS_Rebind_ShouldFilterIpForDomain(pNodeName, &entry->IP, entry->Type)) {
             continue;
         }
 

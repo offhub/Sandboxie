@@ -316,6 +316,10 @@ BOOLEAN EncryptedDns_Query(
 // Check if encrypted DNS is enabled (EncryptedDnsServer configured)
 BOOLEAN EncryptedDns_IsEnabled(void);
 
+// Check cached encrypted DNS response for RRSIG presence (DNSSEC)
+// Returns TRUE if cache entry exists with RRSIG, FALSE otherwise
+BOOLEAN EncryptedDns_CacheHasRrsig(const WCHAR* domain, USHORT qtype);
+
 // Get server hostname (for exclusion from filtering)
 // Returns hostname without protocol/path (e.g., "cloudflare-dns.com")
 // Returns NULL if not enabled

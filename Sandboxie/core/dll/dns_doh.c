@@ -86,6 +86,7 @@
 #include "dns_doq.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
+#include "dns_dnssec.h"
 #include "dns_rebind.h"    // For DNS_ENCDNS_LOG_TAG
 #include "winhttp_defs.h"  // WinHTTP function pointers and constants
 
@@ -2225,6 +2226,21 @@ static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT*
     }
 
     return FALSE;
+}
+
+_FX BOOLEAN EncryptedDns_CacheHasRrsig(const WCHAR* domain, USHORT qtype)
+{
+    if (!domain || !*domain)
+        return FALSE;
+
+    DOH_RESULT result;
+    if (!EncDns_CacheLookup(domain, qtype, &result))
+        return FALSE;
+
+    if (result.RawResponseLen == 0)
+        return FALSE;
+
+    return DNS_Dnssec_ResponseHasRrsig(result.RawResponse, (int)result.RawResponseLen);
 }
 
 //---------------------------------------------------------------------------

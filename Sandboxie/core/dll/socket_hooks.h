@@ -31,8 +31,8 @@
 //     - :port1;port2: Custom ports to monitor (semicolon-separated)
 //     - Examples:
 //       FilterRawDns=y                      (all processes, port 53)
-//       FilterRawDns=nslookup.exe,y:5353;9953  (nslookup only, ports 5353+9953)
-//       FilterRawDns=y:53;5353;9953         (all processes, ports 53+5353+9953)
+//       FilterRawDns=nslookup.exe,y:1053;5353  (nslookup only, ports 1053+5353)
+//       FilterRawDns=y:53;1053;5353         (all processes, ports 53+1053+5353)
 //---------------------------------------------------------------------------
 
 #include <windows.h>

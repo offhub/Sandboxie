@@ -28,8 +28,8 @@
 //   - Custom ports: monitors only specified ports
 //   - Examples:
 //     FilterRawDns=y                         (port 53)
-//     FilterRawDns=nslookup.exe,y:5353;9953  (nslookup, ports 5353+9953)
-//     FilterRawDns=y:53;5353;9953            (all apps, ports 53+5353+9953)
+//     FilterRawDns=nslookup.exe,y:1053;5353  (nslookup, ports 1053+5353)
+//     FilterRawDns=y:53;1053;5353            (all apps, ports 53+1053+5353)
 //
 // DNS Wire Format Parser:
 //   - Parses DNS query packets (RFC 1035)
@@ -266,7 +266,7 @@ static BOOLEAN DNS_RawSocketFilterEnabled = FALSE;  // Raw socket filtering enab
 static BOOLEAN DNS_RawSocketHooksEnabled = FALSE;   // Hooks/logging enabled (FilterRawDns or DnsTrace)
 
 // Custom DNS port list for FilterRawDns
-// Supports up to 16 custom ports (e.g., FilterRawDns=y:53;5353;9953)
+// Supports up to 16 custom ports (e.g., FilterRawDns=y:53;1053;5353)
 // When no ports configured, defaults to port 53 only.
 #define DNS_MAX_CUSTOM_PORTS 16
 static USHORT DNS_CustomPorts[DNS_MAX_CUSTOM_PORTS];
@@ -793,6 +793,14 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         return FALSE;
     }
     
+    // Check DNSSEC: only show DNSSEC=y when mode is ENABLED and RRSIG actually present in response
+    const WCHAR* dnssec_tag = L"";
+    if (domain) {
+        DNSSEC_MODE raw_dnssec_mode = DNS_DnssecGetMode(domain);
+        if (raw_dnssec_mode == DNSSEC_MODE_ENABLED && DNS_Dnssec_ResponseHasRrsig(dns_data, dns_len))
+            dnssec_tag = L" DNSSEC=y";
+    }
+    
     // Get reason string
     const WCHAR* reason_str = DNS_GetPassthroughReasonString(reason);
     
@@ -813,11 +821,11 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         }
         
         if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
-            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) [%s] - %s",
-                protocol, domain, DNS_GetTypeName(qtype), reason_str, rcode_str);
+            Sbie_snwprintf(msg, 512, L"%s Passthrough%s: %s (Type: %s) [%s] - %s",
+                protocol, dnssec_tag, domain, DNS_GetTypeName(qtype), reason_str, rcode_str);
         } else {
-            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - %s",
-                protocol, domain, DNS_GetTypeName(qtype), rcode_str);
+            Sbie_snwprintf(msg, 512, L"%s Passthrough%s: %s (Type: %s) - %s",
+                protocol, dnssec_tag, domain, DNS_GetTypeName(qtype), rcode_str);
         }
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
@@ -831,11 +839,11 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
         WCHAR msg[512];
         if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
-            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) [%s] - No records",
-                protocol, domain, DNS_GetTypeName(qtype), reason_str);
+            Sbie_snwprintf(msg, 512, L"%s Passthrough%s: %s (Type: %s) [%s] - No records",
+                protocol, dnssec_tag, domain, DNS_GetTypeName(qtype), reason_str);
         } else {
-            Sbie_snwprintf(msg, 512, L"%s Passthrough: %s (Type: %s) - No records",
-                protocol, domain, DNS_GetTypeName(qtype));
+            Sbie_snwprintf(msg, 512, L"%s Passthrough%s: %s (Type: %s) - No records",
+                protocol, dnssec_tag, domain, DNS_GetTypeName(qtype));
         }
         SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         return TRUE;
@@ -845,11 +853,11 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     const WCHAR* protocol = isTcp ? L"TCP DNS" : L"UDP DNS";
     WCHAR msg[1024];
     if (reason != DNS_PASSTHROUGH_NONE && reason_str[0] != L'\0') {
-        Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s) [%s]",
-            protocol, domain, DNS_GetTypeName(qtype), reason_str);
+        Sbie_snwprintf(msg, 1024, L"%s Passthrough%s: %s (Type: %s) [%s]",
+            protocol, dnssec_tag, domain, DNS_GetTypeName(qtype), reason_str);
     } else {
-        Sbie_snwprintf(msg, 1024, L"%s Passthrough: %s (Type: %s)",
-            protocol, domain, DNS_GetTypeName(qtype));
+        Sbie_snwprintf(msg, 1024, L"%s Passthrough%s: %s (Type: %s)",
+            protocol, dnssec_tag, domain, DNS_GetTypeName(qtype));
     }
     
     // Skip to answer section (past header and question)
@@ -1135,7 +1143,9 @@ static int Socket_BuildDoHResponse(
     // - SYS: excluded domains should use system DNS directly (no EncDns for raw sockets)
     // - ENC: excluded domains still use EncDns for passthrough
     DNS_EXCLUDE_RESOLVE_MODE excludeMode = DNS_EXCLUDE_RESOLVE_SYS;
-    if (DNS_IsExcludedWithMode(domain, &excludeMode) && excludeMode == DNS_EXCLUDE_RESOLVE_SYS) {
+    BOOLEAN excludeEnc = FALSE;
+    if (DNS_IsExcludedWithMode(domain, &excludeMode)) {
+        if (excludeMode == DNS_EXCLUDE_RESOLVE_SYS) {
         if (DNS_TraceFlag) {
             WCHAR msg[512];
             Sbie_snwprintf(msg, 512, L"%s DNS: Domain excluded (sys), passthrough: %s (Type: %s)",
@@ -1143,6 +1153,8 @@ static int Socket_BuildDoHResponse(
             SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         }
         return 0;
+        }
+        excludeEnc = TRUE;
     }
 
     // Check if encrypted DNS is enabled
@@ -1287,7 +1299,7 @@ static int Socket_BuildDoHResponse(
     // Determine DNSSEC mode for this domain (independent of app's EDNS/DO flag)
     DNSSEC_MODE dnssec_mode = DNSSEC_MODE_DISABLED;  // Default
     if (domain) {
-        dnssec_mode = DNS_DnssecGetMode(domain);
+        dnssec_mode = excludeEnc ? DNSSEC_MODE_FILTER : DNS_DnssecGetMode(domain);
     }
     
     // Mode ENABLED (y) = always use raw response when RRSIG present, skip rebind
@@ -1337,9 +1349,11 @@ static int Socket_BuildDoHResponse(
             
             // Apply IP filtering in-place (replaces filtered IPs with valid duplicate, preserves RRSIG)
             ULONG filteredA = 0, filteredAAAA = 0;
-            DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
-                response, (int)doh_result.RawResponseLen, domain, FALSE,
-                &filteredA, &filteredAAAA);
+            if (!excludeEnc) {
+                DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
+                    response, (int)doh_result.RawResponseLen, domain, FALSE,
+                    &filteredA, &filteredAAAA);
+            }
             
             // Free the IP list
             IP_ENTRY* entry_free = (IP_ENTRY*)List_Head(&ip_list);
@@ -1361,8 +1375,9 @@ static int Socket_BuildDoHResponse(
     }
     
     // Build DNS response using existing function
+    const WCHAR* rebind_domain = excludeEnc ? NULL : domain;
     int response_len = Socket_BuildDnsResponse(
-        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, domain,
+        query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, rebind_domain,
         edns_len > 0 ? edns_buffer : NULL, edns_len, dnssec_mode);
     
     // Free the IP list
@@ -1389,6 +1404,30 @@ static int Socket_BuildDoHResponse(
     }
     
     return response_len;
+}
+
+//---------------------------------------------------------------------------
+// Socket_AdjustDnssecForPassthrough
+//
+// Apply DNSSEC policy (DnssecEnabled) to raw socket passthrough queries
+// by toggling the EDNS DO flag when an OPT record is present.
+//---------------------------------------------------------------------------
+
+static void Socket_AdjustDnssecForPassthrough(const WCHAR* domain, BYTE* dns_payload, int dns_payload_len)
+{
+    if (!domain || !dns_payload || dns_payload_len < (int)sizeof(DNS_WIRE_HEADER))
+        return;
+
+    DNS_EXCLUDE_RESOLVE_MODE excludeMode = DNS_EXCLUDE_RESOLVE_SYS;
+    if (DNS_IsExcludedWithMode(domain, &excludeMode))
+        return;
+
+    DNSSEC_MODE dnssec_mode = DNS_DnssecGetMode(domain);
+    if (dnssec_mode == DNSSEC_MODE_ENABLED) {
+        DNS_Dnssec_ModifyEdnsDOFlag(dns_payload, dns_payload_len, TRUE);
+    } else if (dnssec_mode == DNSSEC_MODE_DISABLED) {
+        DNS_Dnssec_ModifyEdnsDOFlag(dns_payload, dns_payload_len, FALSE);
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -2159,6 +2198,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
         }
         // Encrypted DNS not configured or failed - passthrough
         Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_MATCH);
+        Socket_AdjustDnssecForPassthrough(domainName, (BYTE*)dns_payload, dns_payload_len);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -2170,6 +2210,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
         // so that rebind protection can be applied to the server's response.
         // This happens when a domain matches a filter pattern but has no configured IPs.
         Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_CONFIG_ERROR);
+        Socket_AdjustDnssecForPassthrough(domainName, (BYTE*)dns_payload, dns_payload_len);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -2189,6 +2230,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
             }
         }
         Socket_LogForwarded(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_NO_CERT);
+        Socket_AdjustDnssecForPassthrough(domainName, (BYTE*)dns_payload, dns_payload_len);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -2213,6 +2255,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
             }
         }
         Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_TYPE_NEGATED);
+        Socket_AdjustDnssecForPassthrough(domainName, (BYTE*)dns_payload, dns_payload_len);
         Dll_Free(domain_lwr);
         return DNS_PROCESS_PASSTHROUGH;
     }
@@ -2233,6 +2276,7 @@ static DNS_PROCESS_RESULT Socket_ProcessDnsQuery(
     if (response_len == 0) {
         // Type not in filter list (when filter is set) - passthrough without negation log
         Socket_LogFilterPassthrough(protocol, domainName, qtype, func_name, s, DNS_PASSTHROUGH_TYPE_NOT_FILTERED);
+        Socket_AdjustDnssecForPassthrough(domainName, (BYTE*)dns_payload, dns_payload_len);
         return DNS_PROCESS_PASSTHROUGH;
     }
     
@@ -3874,7 +3918,7 @@ _FX int Socket_BuildDnsResponse(
             }
         }
         
-        if (!skip_rebind && domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP)) {
+        if (!skip_rebind && domain && DNS_Rebind_ShouldFilterIpForDomain(domain, &entry->IP, entry->Type)) {
             DNS_Rebind_AppendFilteredIpMsg(
                 filtered_msg,
                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),

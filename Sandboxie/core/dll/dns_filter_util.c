@@ -405,7 +405,7 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
         // Apply DNS rebind protection: omit filtered IPs entirely.
         // Only apply if FilterDnsApi is enabled (respects user's hook enablement choice).
         // Do NOT synthesize 0.0.0.0/:: placeholders, as that leaks into callers (e.g., ping 0.0.0.0).
-        if (DNS_DnsApiHookEnabled && DNS_Rebind_ShouldFilterIpForDomain(domainName, &entry->IP)) {
+        if (DNS_DnsApiHookEnabled && DNS_Rebind_ShouldFilterIpForDomain(domainName, &entry->IP, entry->Type)) {
             DNS_Rebind_AppendFilteredIpMsg(
                 filtered_msg,
                 (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),

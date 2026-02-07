@@ -135,7 +135,8 @@ BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain);
 
 // Convenience helper: TRUE if rebind protection is enabled for domain AND the IP is filtered.
 // Useful for call sites that already have an IP_ADDRESS and want a single decision.
-BOOLEAN DNS_Rebind_ShouldFilterIpForDomain(const WCHAR* domain, const IP_ADDRESS* pIP);
+// af_hint: Use AF_INET/AF_INET6 when known, AF_UNSPEC to fall back to address heuristics.
+BOOLEAN DNS_Rebind_ShouldFilterIpForDomain(const WCHAR* domain, const IP_ADDRESS* pIP, ADDRESS_FAMILY af_hint);
 
 //---------------------------------------------------------------------------
 // Passthrough sanitizers (system-DNS results)
