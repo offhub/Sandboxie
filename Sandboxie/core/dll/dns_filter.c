@@ -563,11 +563,28 @@ static PDNS_RECORD DNSAPI_Dnssec_TryExtractRaw(
 static BOOLEAN DNSAPI_Dnssec_GaiCheckSkipRebind(const WCHAR* name, int family)
 {
     DNSSEC_MODE mode = DNS_DnssecGetMode(name);
-    if (mode != DNSSEC_MODE_ENABLED || !__sys_DnsQuery_W)
+    if (mode != DNSSEC_MODE_ENABLED)
+        return FALSE;
+
+    WORD checkType = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
+    if (EncryptedDns_IsEnabled()) {
+        if (EncryptedDns_IsQueryActive())
+        {
+            DNS_DEBUG_LOG(L"[GetAddrInfoW] DNSSEC EncDns probe skipped for %s (query active)", name);
+            return FALSE;
+        }
+        ENCRYPTED_DNS_RESULT encResult;
+        if (!EncryptedDns_Query(name, checkType, &encResult))
+            return FALSE;
+        if (encResult.RawResponseLen == 0)
+            return FALSE;
+        return DNS_Dnssec_ResponseHasRrsig(encResult.RawResponse, (int)encResult.RawResponseLen);
+    }
+
+    if (!__sys_DnsQuery_W)
         return FALSE;
 
     PDNS_RECORD pCheck = NULL;
-    WORD checkType = (family == AF_INET6) ? DNS_TYPE_AAAA : DNS_TYPE_A;
     DNS_STATUS st = __sys_DnsQuery_W(
         name, checkType, DNS_QUERY_DNSSEC_OK,
         NULL, &pCheck, NULL);

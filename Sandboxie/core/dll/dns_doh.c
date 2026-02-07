@@ -32,7 +32,7 @@
 //
 // Concurrency Control (Browser Fix):
 //   - Pending query coalescing: Multiple threads requesting same domain wait on single HTTP request
-//   - Semaphore limits concurrent DoH queries to 8 (prevents DoH server hammering)
+//   - Semaphore limits concurrent DoH queries to 16 (prevents DoH server hammering)
 //   - 5-second HTTP timeouts prevent indefinite blocking
 //   - Prevents browser freeze when multiple DNS Resolver threads query simultaneously
 //
@@ -319,7 +319,7 @@ static BOOLEAN g_LoggedStrictBindIPStrictOverride = FALSE;
 //           being queried, it WAITS on an event instead of making a duplicate HTTP request.
 //           When the first query completes, it signals the event and all waiters read from cache.
 //
-// Concurrency: Use a semaphore to limit concurrent DoH requests (max 8) to avoid overwhelming
+// Concurrency: Use a semaphore to limit concurrent DoH requests (max 16) to avoid overwhelming
 //              the DoH server. This is in ADDITION to coalescing - different domains still wait.
 // Note: DOH_MAX_PENDING_QUERIES, DOH_MAX_CONCURRENT_QUERIES defined in dns_doh.h
 //---------------------------------------------------------------------------
@@ -1378,7 +1378,7 @@ static BOOLEAN EncDns_LoadBackends(void)
     if (InterlockedCompareExchange(&g_DohPendingLockValid, 1, 0) == 0) {
         InitializeCriticalSection(&g_DohPendingLock);
         memset(g_DohPendingQueries, 0, sizeof(g_DohPendingQueries));
-        // Create semaphore to limit concurrent DoH queries (max 8)
+        // Create semaphore to limit concurrent DoH queries (max 16)
         if (!g_DohQuerySemaphore) {
             g_DohQuerySemaphore = CreateSemaphoreW(NULL, DOH_MAX_CONCURRENT_QUERIES, DOH_MAX_CONCURRENT_QUERIES, NULL);
         }

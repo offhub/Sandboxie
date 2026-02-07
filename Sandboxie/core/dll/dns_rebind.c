@@ -156,6 +156,23 @@ static BOOLEAN DNS_Rebind_DnssecHasRrsigForType(const WCHAR* domain, WORD qtype)
     if (!domain || !*domain)
         return FALSE;
 
+    if (EncryptedDns_IsEnabled()) {
+        if (EncryptedDns_IsQueryActive())
+        {
+            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
+                DNS_DEBUG_LOG(L"[DNS Rebind] DNSSEC EncDns probe skipped for %s (query active)", domain);
+            return FALSE;
+        }
+        if (EncryptedDns_CacheHasRrsig(domain, qtype))
+            return TRUE;
+        ENCRYPTED_DNS_RESULT encResult;
+        if (!EncryptedDns_Query(domain, qtype, &encResult))
+            return FALSE;
+        if (encResult.RawResponseLen == 0)
+            return FALSE;
+        return DNS_Dnssec_ResponseHasRrsig(encResult.RawResponse, (int)encResult.RawResponseLen);
+    }
+
     P_DnsQuery_W dnsQueryW = (P_DnsQuery_W)DNSAPI_GetSystemDnsQueryW();
     if (!dnsQueryW)
         dnsQueryW = DNS_Rebind_GetDnsQueryW();
