@@ -28,8 +28,8 @@
 //   - Custom ports: monitors only specified ports
 //   - Examples:
 //     FilterRawDns=y                         (port 53)
-//     FilterRawDns=nslookup.exe,y:1053;5353  (nslookup, ports 1053+5353)
-//     FilterRawDns=y:53;1053;5353            (all apps, ports 53+1053+5353)
+//     FilterRawDns=nslookup.exe,y:5353;9953  (nslookup, ports 5353+9953)
+//     FilterRawDns=y:53;5353;9953            (all apps, ports 53+5353+9953)
 //
 // DNS Wire Format Parser:
 //   - Parses DNS query packets (RFC 1035)
@@ -266,7 +266,7 @@ static BOOLEAN DNS_RawSocketFilterEnabled = FALSE;  // Raw socket filtering enab
 static BOOLEAN DNS_RawSocketHooksEnabled = FALSE;   // Hooks/logging enabled (FilterRawDns or DnsTrace)
 
 // Custom DNS port list for FilterRawDns
-// Supports up to 16 custom ports (e.g., FilterRawDns=y:53;1053;5353)
+// Supports up to 16 custom ports (e.g., FilterRawDns=y:53;5353;9953)
 // When no ports configured, defaults to port 53 only.
 #define DNS_MAX_CUSTOM_PORTS 16
 static USHORT DNS_CustomPorts[DNS_MAX_CUSTOM_PORTS];
