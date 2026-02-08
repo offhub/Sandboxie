@@ -1519,11 +1519,13 @@ _FX BOOLEAN DNS_Rebind_ShouldFilterIpForDomain(const WCHAR* domain, const IP_ADD
     // filtering. The RRSIG proves the response was DNSSEC-signed and validated.
     if (DNS_DnssecGetMode(domain) == DNSSEC_MODE_ENABLED) {
         if (EncryptedDns_IsEnabled() && EncryptedDns_CacheHasRrsig(domain, qtype)) {
-            DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - EncDns cache RRSIG", domain, DNS_GetTypeName(qtype));
+            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
+                DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - EncDns cache RRSIG", domain, DNS_GetTypeName(qtype));
             return FALSE;
         }
         if (DNS_Rebind_DnssecHasRrsigForType(domain, qtype)) {
-            DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - system DNS RRSIG", domain, DNS_GetTypeName(qtype));
+            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
+                DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - system DNS RRSIG", domain, DNS_GetTypeName(qtype));
             return FALSE;
         }
     }
@@ -1661,7 +1663,8 @@ _FX void DNS_Rebind_SanitizeWSAQuerySetW(const WCHAR* domain, LPWSAQUERYSETW lpq
     // This is an early-return optimization; the per-IP check in
     // DNS_Rebind_ShouldFilterIpForDomain also checks RRSIG.
     if (DNS_Rebind_DnssecShouldSkipWsaQuerySetW(domain, lpqsResults)) {
-        DNS_TRACE_LOG(L"[DNS Rebind] Skipping WSAQUERYSETW sanitization for %s (DNSSEC RRSIG present)", domain);
+        if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
+            DNS_TRACE_LOG(L"[DNS Rebind] Skipping WSAQUERYSETW sanitization for %s (DNSSEC RRSIG present)", domain);
         return;
     }
 
@@ -2168,10 +2171,15 @@ static BOOLEAN DNS_Rebind_AddPattern(const WCHAR* process_pattern, const WCHAR* 
     List_Insert_After(&DNS_RebindPatterns, NULL, pattern);
 
     if (enabled) {
-        DNS_TRACE_LOG(L"[DNS Rebind] Pattern %s: process=%s, domain=%s",
-                      L"added",
-                      pattern->process_pattern ? pattern->process_pattern : L"(all)",
-                      pattern->domain_pattern ? pattern->domain_pattern : L"(all)");
+        WCHAR tag_buf[256];
+        Sbie_snwprintf(tag_buf, ARRAYSIZE(tag_buf), L"proc=%s;dom=%s",
+                       pattern->process_pattern ? pattern->process_pattern : L"(all)",
+                       pattern->domain_pattern ? pattern->domain_pattern : L"(all)");
+        if (!DNS_ShouldSuppressLogTagged(tag_buf, DNS_REBIND_LOG_TAG_DEFAULT))
+            DNS_TRACE_LOG(L"[DNS Rebind] Pattern %s: process=%s, domain=%s",
+                          L"added",
+                          pattern->process_pattern ? pattern->process_pattern : L"(all)",
+                          pattern->domain_pattern ? pattern->domain_pattern : L"(all)");
     }
 
     return TRUE;

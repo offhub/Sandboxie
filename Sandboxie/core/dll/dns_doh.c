@@ -426,7 +426,7 @@ static BOOLEAN DoH_SelectProtocolMode(DOH_SERVER* server, ULONGLONG now, DOH_PRO
 static void DoH_ConfigureSecurityOptions(HINTERNET hRequest, DOH_SERVER* server);
 static void DoH_ValidateProtocolUsed(HINTERNET hRequest, DOH_SERVER* server, 
     DOH_PROTOCOL_SELECTION* proto, BOOLEAN* result, DWORD* bytes_read, ULONGLONG now, DWORD* proto_used_out);
-static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, DOH_RESULT* pResult);
+static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, const WCHAR* domain, DOH_RESULT* pResult);
 static BOOLEAN DoH_ParseJsonResponse(const WCHAR* json, DOH_RESULT* pResult);
 static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult);
 static void EncDns_CacheStore(const WCHAR* domain, USHORT qtype, const DOH_RESULT* pResult, BOOLEAN is_failure, BOOLEAN is_bind_failure);
@@ -2076,7 +2076,7 @@ _FX void DoH_MarkServerFailed(void* pServer, ULONGLONG now)
     
     server->FailedUntil = now + DOH_SERVER_FAIL_COOLDOWN;
     
-    if (DNS_TraceFlag) {
+    if (DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(server->Host, DNS_ENCDNS_LOG_TAG)) {
         WCHAR msg[512];
         Sbie_snwprintf(msg, 512, L"[DoH] Server %s marked failed, retry after %d seconds",
             server->Host, DOH_SERVER_FAIL_COOLDOWN / 1000);
@@ -2200,7 +2200,7 @@ static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT*
                 memcpy(pResult, &g_DohCache[i].result, sizeof(DOH_RESULT));
                 LeaveCriticalSection(&g_DohCacheLock);
                 
-                if (DNS_DebugFlag) {
+                if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
                     WCHAR msg[512];
                     if (!g_DohCache[i].is_failure && pResult->ProtocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
                         Sbie_snwprintf(msg, 512, L"[EncDns] Cache HIT: %s (Type: %s, used=%s)",
@@ -3322,7 +3322,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 return FALSE;  // Skip this protocol, caller will try next
             }
             
-            if (DNS_DebugFlag) {
+            if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(server->Host, DNS_ENCDNS_LOG_TAG)) {
                 SbieApi_MonitorPutMsg(MONITOR_DNS, L"[EncDns] DoQ is available, proceeding...");
             }
             {
@@ -3335,7 +3335,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 doqServer.SelfSigned = server->SelfSigned;
                 doqServer.FailedUntil = 0;
                 
-                if (DNS_DebugFlag) {
+                if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(server->Host, DNS_ENCDNS_LOG_TAG)) {
                     WCHAR msg[256];
                     Sbie_snwprintf(msg, 256, L"[EncDns] Trying DoQ to %s:%d", server->Host, server->PortDoQ);
                     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -3785,7 +3785,7 @@ static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BYTE* response,
 // Returns: TRUE on successful parse, FALSE on error
 //---------------------------------------------------------------------------
 
-static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, DOH_RESULT* pResult)
+static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, const WCHAR* domain, DOH_RESULT* pResult)
 {
     DOH_DNS_HEADER* header;
     int offset;
@@ -3993,7 +3993,7 @@ static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, DO
 
     pResult->Success = TRUE;
 
-    if (DNS_DebugFlag) {
+    if (DNS_DebugFlag && (!domain || !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG))) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"[EncDns] Parsed %d answers from DNS response", pResult->AnswerCount);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -4352,7 +4352,7 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult)
     pResult->ProtocolUsed = protocolUsed;
 
     // Parse binary DNS wire format response
-    if (!EncDns_ParseDnsResponse(response, (int)bytes_read, pResult)) {
+    if (!EncDns_ParseDnsResponse(response, (int)bytes_read, domain, pResult)) {
         InterlockedDecrement(&g_DohActiveQueries);
         EncDns_SetInQuery(FALSE);
         if (g_DohQuerySemaphore) ReleaseSemaphore(g_DohQuerySemaphore, 1, NULL);

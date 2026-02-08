@@ -337,6 +337,9 @@ _FX void DNS_LogExclusion(const WCHAR* domain)
 {
     if (!DNS_TraceFlag || !domain)
         return;
+
+    if (DNS_ShouldSuppressLogTagged(domain, DNS_EXCL_LOG_TAG))
+        return;
     
     WCHAR msg[512];
     Sbie_snwprintf(msg, 512, L"DNS Exclusion: Domain '%s' matched exclusion list, skipping filter", domain);
@@ -1841,6 +1844,9 @@ _FX void DNS_LogRawSocketEncDnsRawResponse(const WCHAR* protocol, const WCHAR* d
 _FX void DNS_LogDebugExclusionFromQueryEx(const WCHAR* sourceTag, const WCHAR* domain)
 {
     if (!DNS_TraceFlag)
+        return;
+
+    if (domain && DNS_ShouldSuppressLogTagged(domain, DNS_EXCL_LOG_TAG))
         return;
     
     WCHAR msg[512];

@@ -50,6 +50,7 @@
 #include "dns_doq.h"
 #include "dns_encrypted.h"
 #include "dns_logging.h"
+#include "dns_rebind.h"  // For DNS_ENCDNS_LOG_TAG
 #include "dns_wire.h"
 #include "msquic_filter.h"  // For MsQuic_SetDoqInitializing and MsQuic_GetOriginalOpenVersion
 
@@ -722,8 +723,12 @@ _FX BOOLEAN DoQ_IsAvailable(void)
     
     if (DNS_DebugFlag) {
         WCHAR msg[256];
+        WCHAR key[256];
+        Sbie_snwprintf(key, 256, L"DoQAvailInit:%ld:%p", state, g_pQuicApi);
+        if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
         Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable: initial state=%ld, g_pQuicApi=%p", state, g_pQuicApi);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
     }
     
     // If not initialized yet (0), try to initialize with dynamic loading
@@ -755,9 +760,13 @@ _FX BOOLEAN DoQ_IsAvailable(void)
     BOOLEAN result = state == 1 && g_pQuicApi != NULL;
     if (DNS_DebugFlag) {
         WCHAR msg[256];
+        WCHAR key[256];
+        Sbie_snwprintf(key, 256, L"DoQAvailResult:%ld:%p:%d", state, g_pQuicApi, result ? 1 : 0);
+        if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
         Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable result: %s (state=%ld, g_pQuicApi=%p)", 
             result ? L"TRUE" : L"FALSE", state, g_pQuicApi);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
     }
     
     return result;
@@ -795,17 +804,27 @@ static QUIC_STATUS QUIC_API DoQ_ConnectionCallback(
             case 15: eventName = L"PEER_CERTIFICATE_RECEIVED"; break;
         }
         WCHAR msg[256];
+        WCHAR key[256];
+        const WCHAR* host = conn ? conn->Host : L"(null)";
+        USHORT port = conn ? conn->Port : 0;
+        Sbie_snwprintf(key, 256, L"DoQConnCb:%s:%u:%d", host, port, Event->Type);
+        if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
         Sbie_snwprintf(msg, 256, L"[DoQ] Connection callback: %s (%d) for %s:%d", 
-            eventName, Event->Type, conn ? conn->Host : L"(null)", conn ? conn->Port : 0);
+                eventName, Event->Type, host, port);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
     }
 
     switch (Event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED:
         if (DNS_DebugFlag) {
             WCHAR msg[256];
+            WCHAR key[256];
+            Sbie_snwprintf(key, 256, L"DoQConnected:%s:%u", conn->Host, conn->Port);
+            if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
             Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", conn->Host, conn->Port);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
         }
         conn->State = DOQ_STATE_CONNECTED;
         conn->ConnectStatus = QUIC_STATUS_SUCCESS;
@@ -975,7 +994,11 @@ static QUIC_STATUS QUIC_API DoQ_StreamCallback(
 
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         if (DNS_DebugFlag) {
+            WCHAR key[256];
+            Sbie_snwprintf(key, 256, L"DoQStreamShutdown:%p", Stream);
+            if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
             SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoQ] Stream shutdown complete");
+            }
         }
         if (!ctx->Completed) {
             ctx->Status = ctx->RecvComplete ? QUIC_STATUS_SUCCESS : QUIC_STATUS_ABORTED;
@@ -1247,8 +1270,12 @@ static DOQ_CONNECTION* DoQ_GetOrCreateConnection(const DOQ_SERVER* server)
 
     if (DNS_TraceFlag) {
         WCHAR msg[256];
+        WCHAR key[256];
+        Sbie_snwprintf(key, 256, L"DoQConnected:%s:%u", server->Host, server->Port);
+        if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
         Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", server->Host, server->Port);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
     }
 
     return conn;
