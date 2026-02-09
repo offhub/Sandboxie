@@ -793,12 +793,16 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         return FALSE;
     }
     
-    // Check DNSSEC: only show DNSSEC=y when mode is ENABLED and RRSIG actually present in response
+    // Check DNSSEC: only show DNSSEC=y/p when mode forces DNSSEC and RRSIG is present
+    WCHAR dnssec_tag_buf[16];
     const WCHAR* dnssec_tag = L"";
     if (domain) {
         DNSSEC_MODE raw_dnssec_mode = DNS_DnssecGetMode(domain);
-        if (raw_dnssec_mode == DNSSEC_MODE_ENABLED && DNS_Dnssec_ResponseHasRrsig(dns_data, dns_len))
-            dnssec_tag = L" DNSSEC=y";
+        if ((raw_dnssec_mode == DNSSEC_MODE_ENABLED || raw_dnssec_mode == DNSSEC_MODE_PERMISSIVE)
+            && DNS_Dnssec_ResponseHasRrsig(dns_data, dns_len)) {
+            Sbie_snwprintf(dnssec_tag_buf, ARRAYSIZE(dnssec_tag_buf), L" DNSSEC=%c", DNS_Dnssec_ModeToChar(raw_dnssec_mode));
+            dnssec_tag = dnssec_tag_buf;
+        }
     }
     
     // Get reason string
@@ -1092,7 +1096,7 @@ static int Socket_HandleDnsQuery(
     DNSSEC_MODE dnssec_mode = DNSSEC_MODE_DISABLED;  // Default
     if (do_flag && domain) {
         dnssec_mode = DNS_DnssecGetMode(domain);
-        // Note: DNSSEC_MODE_ENABLED (y mode) has no effect here since
+        // Note: DNSSEC_MODE_ENABLED (y) and DNSSEC_MODE_PERMISSIVE (p) have no effect here since
         // we already synthesized responses (not using raw encrypted DNS)
     }
     
@@ -1337,8 +1341,10 @@ static int Socket_BuildDoHResponse(
     }
     
     // Mode FILTER (f) = use raw response only when app sent EDNS+DO (respect app's DNSSEC choice)
+    // Mode PERMISSIVE (p) = use raw response when RRSIG present, but always apply filtering
     // Always apply IP filtering (rebind protection) even with RRSIG present
-    if (dnssec_mode == DNSSEC_MODE_FILTER && do_flag && doh_result.RawResponseLen > 0) {
+    if (((dnssec_mode == DNSSEC_MODE_FILTER && do_flag) || dnssec_mode == DNSSEC_MODE_PERMISSIVE)
+        && doh_result.RawResponseLen > 0) {
         if ((int)doh_result.RawResponseLen <= response_size) {
             memcpy(response, doh_result.RawResponse, doh_result.RawResponseLen);
             
@@ -1365,8 +1371,9 @@ static int Socket_BuildDoHResponse(
             
             if (DNS_TraceFlag) {
                 WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"%s DNS EncDns: DNSSEC filter-mode for %s (raw len=%d, filtered A=%lu AAAA=%lu)",
-                    protocol ? protocol : L"Raw", domain, (int)doh_result.RawResponseLen, filteredA, filteredAAAA);
+                Sbie_snwprintf(msg, 512, L"%s DNS EncDns: DNSSEC %c-mode for %s (raw len=%d, filtered A=%lu AAAA=%lu)",
+                    protocol ? protocol : L"Raw", DNS_Dnssec_ModeToChar(dnssec_mode),
+                    domain, (int)doh_result.RawResponseLen, filteredA, filteredAAAA);
                 SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
             }
             
@@ -1423,7 +1430,7 @@ static void Socket_AdjustDnssecForPassthrough(const WCHAR* domain, BYTE* dns_pay
         return;
 
     DNSSEC_MODE dnssec_mode = DNS_DnssecGetMode(domain);
-    if (dnssec_mode == DNSSEC_MODE_ENABLED) {
+    if (dnssec_mode == DNSSEC_MODE_ENABLED || dnssec_mode == DNSSEC_MODE_PERMISSIVE) {
         DNS_Dnssec_ModifyEdnsDOFlag(dns_payload, dns_payload_len, TRUE);
     } else if (dnssec_mode == DNSSEC_MODE_DISABLED) {
         DNS_Dnssec_ModifyEdnsDOFlag(dns_payload, dns_payload_len, FALSE);
@@ -2829,16 +2836,18 @@ _FX int Socket_WSASendTo(
                 
                 // Modify EDNS DO flag based on DnssecEnabled mode for TCP passthrough
                 // This ensures the real DNS server returns (or omits) RRSIG as appropriate:
-                //   y mode (ENABLED):  set DO flag -> server returns RRSIG records
-                //   n mode (DISABLED): clear DO flag -> server omits RRSIG records
-                //   f mode (FILTER):   leave unchanged -> respect app's EDNS choice
+                //   y mode (ENABLED):    set DO flag -> server returns RRSIG records
+                //   p mode (PERMISSIVE): set DO flag -> server returns RRSIG records
+                //   n mode (DISABLED):   clear DO flag -> server omits RRSIG records
+                //   f mode (FILTER):     leave unchanged -> respect app's EDNS choice
                 {
                     DNSSEC_MODE tcp_dnssec_mode = DNS_DnssecGetMode(domainName);
-                    if (tcp_dnssec_mode == DNSSEC_MODE_ENABLED) {
+                    if (tcp_dnssec_mode == DNSSEC_MODE_ENABLED || tcp_dnssec_mode == DNSSEC_MODE_PERMISSIVE) {
                         BOOLEAN modified = DNS_Dnssec_ModifyEdnsDOFlag((BYTE*)dns_payload, dns_payload_len, TRUE);
                         if (DNS_DebugFlag) {
                             WCHAR msg[256];
-                            Sbie_snwprintf(msg, 256, L"TCP DNS: DnssecEnabled=y, %s DO flag for %s",
+                            Sbie_snwprintf(msg, 256, L"TCP DNS: DnssecEnabled=%c, %s DO flag for %s",
+                                DNS_Dnssec_ModeToChar(tcp_dnssec_mode),
                                 modified ? L"set" : L"no EDNS to set", domainName);
                             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
                         }
@@ -3905,8 +3914,8 @@ _FX int Socket_BuildDnsResponse(
         BYTE ipv6_mapped[16];  // For IPv4-mapped IPv6 addresses
 
         // Apply DNS rebind protection: omit filtered IPs entirely.
-        // BUT: Skip rebind filtering if BOTH:
-        //   1. DnssecEnabled=y (DNSSEC_MODE_ENABLED) 
+        // BUT: Skip rebind filtering only if BOTH:
+        //   1. DnssecEnabled=y (DNSSEC_MODE_ENABLED)
         //   2. AND DO flag present in query (client wants DNSSEC signatures)
         // In that case, preserve all IPs for signature validation.
         BOOLEAN skip_rebind = FALSE;
@@ -4000,6 +4009,7 @@ _FX int Socket_BuildDnsResponse(
 
     // Append EDNS OPT record based on DNSSEC mode
     // - DNSSEC_MODE_ENABLED (y): Reached when raw response has no RRSIG (non-DNSSEC domain)
+    // - DNSSEC_MODE_PERMISSIVE (p): Append EDNS with DO flag (forced, but still filtered)
     // - DNSSEC_MODE_FILTER (f): Append EDNS with DO flag (tampering evidence)
     // - DNSSEC_MODE_DISABLED (n): Don't append EDNS (DNSSEC disabled signal)
     if (edns_record && edns_record_len > 0 && dnssec_mode != DNSSEC_MODE_DISABLED) {

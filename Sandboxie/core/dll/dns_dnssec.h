@@ -29,12 +29,17 @@
 // Per-domain/per-process control of DNSSEC behavior. Determines how DNS
 // responses are handled when DNSSEC records (RRSIG) are present.
 //
-// Three modes:
+// Four modes:
 //   y (ENABLED)  - Always query with EDNS+DO flag. If response contains RRSIG,
 //                  pass through raw response and skip DnsRebindProtection.
 //                  For domains that don't support DNSSEC (no RRSIG in response),
 //                  fall through to normal synthetic response path.
 //                  [+DNSSEC, *DnsRebindProtection (skip if RRSIG present)]
+//
+//   p (PERMISSIVE) - Always query with EDNS+DO flag, but always apply
+//                    DnsRebindProtection even if RRSIG is present. Preserves
+//                    DNSSEC records (like FILTER) while forcing DNSSEC queries.
+//                    [+DNSSEC, +DnsRebindProtection (always)]
 //
 //   f (FILTER)   - (DEFAULT) Don't force EDNS+DO, but if the app requests it
 //                  (DNS_QUERY_DNSSEC_OK flag), preserve it. When the app requests
@@ -51,10 +56,10 @@
 //                  [-DNSSEC, +DnsRebindProtection (always)]
 //
 // Configuration formats (same scoring system as DnsRebindProtection):
-//   DnssecEnabled=y|f|n                          # Global default
-//   DnssecEnabled=<domain>:y|f|n                  # Per-domain
-//   DnssecEnabled=<process>,y|f|n                 # Per-process
-//   DnssecEnabled=<process>,<domain>:y|f|n        # Per-process + per-domain
+//   DnssecEnabled=y|p|f|n                          # Global default
+//   DnssecEnabled=<domain>:y|p|f|n                  # Per-domain
+//   DnssecEnabled=<process>,y|p|f|n                 # Per-process
+//   DnssecEnabled=<process>,<domain>:y|p|f|n        # Per-process + per-domain
 //
 // Scoring (most specific match wins):
 //   - process pattern adds 1000000 + specificity(process)
@@ -65,6 +70,7 @@
 // Examples:
 //   DnssecEnabled=y                               # Enable globally
 //   DnssecEnabled=nslookup.exe,n                  # Disable for nslookup
+//   DnssecEnabled=example.com:p                   # Force DNSSEC but keep filtering
 //   DnssecEnabled=*.local:n                       # Disable for *.local
 //   DnssecEnabled=cloudflare.com:y                # Enable for cloudflare.com
 //---------------------------------------------------------------------------
@@ -80,8 +86,12 @@ extern "C" {
 typedef enum _DNSSEC_MODE {
     DNSSEC_MODE_ENABLED  = 0,  // y mode - pass through raw encrypted DNS (RRSIG preserved, DNSSEC enabled)
     DNSSEC_MODE_FILTER   = 1,  // f mode - filter + keep EDNS with broken RRSIG (tampering evidence)
-    DNSSEC_MODE_DISABLED = 2   // n mode - filter + no EDNS advertised (DNSSEC disabled signal)
+    DNSSEC_MODE_DISABLED = 2,  // n mode - filter + no EDNS advertised (DNSSEC disabled signal)
+    DNSSEC_MODE_PERMISSIVE = 3 // p mode - force DNSSEC queries, keep filtering enabled
 } DNSSEC_MODE;
+
+// Map DNSSEC mode to config char for logging (y/p/f/n or '?')
+WCHAR DNS_Dnssec_ModeToChar(DNSSEC_MODE mode);
 
 //---------------------------------------------------------------------------
 // Configuration API
@@ -129,7 +139,7 @@ void DNS_Dnssec_StripDnssecRecords(void* pRecordList);
 
 // Get the DnsQuery Options flag adjustment for DNSSEC mode.
 // Returns DNS_QUERY_DNSSEC_OK (0x01000000) that should be OR'd into Options
-// when mode is ENABLED, or 0 otherwise.
+// when mode is ENABLED or PERMISSIVE, or 0 otherwise.
 // For DISABLED mode, returns a flag to strip (caller should AND with ~result).
 // mode_out: 0 = no change, 1 = add DNSSEC_OK flag, -1 = strip DNSSEC_OK flag
 void DNS_Dnssec_GetQueryFlags(DNSSEC_MODE mode, int* mode_out);
@@ -141,6 +151,7 @@ void DNS_Dnssec_GetQueryFlags(DNSSEC_MODE mode, int* mode_out);
 // Post-process a DNS_RECORD list with DNSSEC-aware rebind protection and stripping.
 //   ENABLED mode  + RRSIG present: skip rebind, keep DNSSEC records
 //   ENABLED mode  + no RRSIG:      apply rebind, keep DNSSEC records
+//   PERMISSIVE mode:                apply rebind, keep DNSSEC records
 //   FILTER mode:                    apply rebind, keep DNSSEC records
 //   DISABLED mode:                  apply rebind, strip DNSSEC records
 // Returns TRUE if rebind was skipped (ENABLED + RRSIG).
@@ -150,9 +161,10 @@ BOOLEAN DNS_Dnssec_PostProcessRecordList(
     DNSSEC_MODE mode);
 
 // Adjust DnsQuery Options DWORD based on DNSSEC mode.
-//   ENABLED:  add DNS_QUERY_DNSSEC_OK
-//   FILTER:   no change (preserve app's choice)
-//   DISABLED: remove DNS_QUERY_DNSSEC_OK
+//   ENABLED:    add DNS_QUERY_DNSSEC_OK
+//   PERMISSIVE: add DNS_QUERY_DNSSEC_OK
+//   FILTER:     no change (preserve app's choice)
+//   DISABLED:   remove DNS_QUERY_DNSSEC_OK
 DWORD DNS_Dnssec_AdjustQueryOptions(DNSSEC_MODE mode, DWORD options);
 
 // Same as above but for ULONG64 (DnsQueryEx uses 64-bit options).

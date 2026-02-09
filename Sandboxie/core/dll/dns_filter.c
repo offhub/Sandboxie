@@ -514,9 +514,9 @@ static BOOLEAN DNSAPI_FilterDnsQueryExForName(
 // Try to extract raw DNS response preserving DNSSEC records (RRSIG, etc.)
 // for EncDns A/AAAA paths. Returns extracted PDNS_RECORD on success, NULL otherwise.
 //
-// Used when ENABLED mode always, or FILTER mode + app requested DNS_QUERY_DNSSEC_OK.
+// Used when ENABLED/PERMISSIVE always, or FILTER mode + app requested DNS_QUERY_DNSSEC_OK.
 // On success:
-//   - FILTER mode: rebind protection is applied
+//   - FILTER/PERMISSIVE mode: rebind protection is applied
 //   - ENABLED mode: rebind protection is skipped
 //
 static PDNS_RECORD DNSAPI_Dnssec_TryExtractRaw(
@@ -526,12 +526,13 @@ static PDNS_RECORD DNSAPI_Dnssec_TryExtractRaw(
     BYTE* rawResponse,
     DWORD rawResponseLen)
 {
-    // Only extract when mode allows and raw response has RRSIG
-    if (!((mode == DNSSEC_MODE_ENABLED
-           || (mode == DNSSEC_MODE_FILTER && (options & DNS_QUERY_DNSSEC_OK)))
-          && rawResponseLen > 0
-          && DNS_Dnssec_ResponseHasRrsig(rawResponse, (int)rawResponseLen)
-          && __sys_DnsExtractRecordsFromMessage_W))
+        // Only extract when mode allows and raw response has RRSIG
+        if (!((mode == DNSSEC_MODE_ENABLED
+                || mode == DNSSEC_MODE_PERMISSIVE
+                || (mode == DNSSEC_MODE_FILTER && (options & DNS_QUERY_DNSSEC_OK)))
+            && rawResponseLen > 0
+            && DNS_Dnssec_ResponseHasRrsig(rawResponse, (int)rawResponseLen)
+            && __sys_DnsExtractRecordsFromMessage_W))
         return NULL;
 
     DNS_FlipHeaderToHost(rawResponse, rawResponseLen);
@@ -546,7 +547,7 @@ static PDNS_RECORD DNSAPI_Dnssec_TryExtractRaw(
 
     // FILTER mode: always apply rebind protection
     // ENABLED mode: skip rebind (RRSIG validates IPs)
-    if (mode == DNSSEC_MODE_FILTER) {
+    if (mode == DNSSEC_MODE_FILTER || mode == DNSSEC_MODE_PERMISSIVE) {
         DNS_Rebind_SanitizeDnsRecordList(domain, &pRecords);
     }
     return pRecords;
@@ -3781,7 +3782,7 @@ passthrough_narrow:
                                 Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s EncDns(%s) DNSSEC=%c",
                                                apiName ? apiName : L"DnsQuery",
                                                EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
-                                               narrow_aa_dnssec == DNSSEC_MODE_ENABLED ? L'y' : L'f');
+                                               DNS_Dnssec_ModeToChar(narrow_aa_dnssec));
                                 DNS_LogDnsQueryResultWithReason(sourceTag, wName, wType,
                                                                DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
                                 DNS_FreeIPEntryList(&doh_list);
@@ -4000,12 +4001,13 @@ passthrough_narrow:
     }
 
     if (DNS_TraceFlag && wName) {
-        // Show DNSSEC=y only when RRSIG actually present in response
+        // Show DNSSEC=y/p only when RRSIG actually present in response
         WCHAR sysTag[64];
-        if (narrow_dnssec_mode == DNSSEC_MODE_ENABLED
+        if ((narrow_dnssec_mode == DNSSEC_MODE_ENABLED || narrow_dnssec_mode == DNSSEC_MODE_PERMISSIVE)
             && status == 0 && ppQueryResults && *ppQueryResults
             && DNS_Dnssec_RecordListHasRrsig(*ppQueryResults))
-            Sbie_snwprintf(sysTag, ARRAYSIZE(sysTag), L"%s DNSSEC=y", tagPassthrough);
+            Sbie_snwprintf(sysTag, ARRAYSIZE(sysTag), L"%s DNSSEC=%c", tagPassthrough,
+                           DNS_Dnssec_ModeToChar(narrow_dnssec_mode));
         else
             wcsncpy_s(sysTag, ARRAYSIZE(sysTag), tagPassthrough, _TRUNCATE);
         DNS_LogDnsQueryResultWithReason(sysTag, wName, wType,
@@ -4126,7 +4128,7 @@ passthrough_dnsquery_w:
                         WCHAR sourceTag[64];
                         Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns(%s) DNSSEC=%c",
                                        EncryptedDns_GetModeName(encdns_result.ProtocolUsed),
-                                       dnsquery_dnssec_mode == DNSSEC_MODE_ENABLED ? L'y' : L'f');
+                                       DNS_Dnssec_ModeToChar(dnsquery_dnssec_mode));
                         DNS_LogDnsQueryResultWithReason(sourceTag, pszName, wType,
                                                        DNS_RCODE_NOERROR, (PDNS_RECORDW*)&pDnssecRecords, passthroughReason);
                         DNS_FreeIPEntryList(&doh_list);
@@ -4289,11 +4291,14 @@ passthrough_dnsquery_w:
             DNS_Dnssec_PostProcessRecordList(pszName, (PDNS_RECORD*)ppQueryResults, sys_dnssec_mode);
         }
 
-        // Build DNSSEC-aware log prefix: show DNSSEC=y only when RRSIG actually present
+        // Build DNSSEC-aware log prefix: show DNSSEC=y/p only when RRSIG actually present
         const WCHAR* sys_log_prefix = L"DnsQuery_W Passthrough";
-        if (sys_dnssec_mode == DNSSEC_MODE_ENABLED && status == 0 && ppQueryResults && *ppQueryResults
+        if ((sys_dnssec_mode == DNSSEC_MODE_ENABLED || sys_dnssec_mode == DNSSEC_MODE_PERMISSIVE)
+            && status == 0 && ppQueryResults && *ppQueryResults
             && DNS_Dnssec_RecordListHasRrsig(*ppQueryResults))
-            sys_log_prefix = L"DnsQuery_W Passthrough DNSSEC=y";
+            sys_log_prefix = (sys_dnssec_mode == DNSSEC_MODE_ENABLED)
+                ? L"DnsQuery_W Passthrough DNSSEC=y"
+                : L"DnsQuery_W Passthrough DNSSEC=p";
 
         DNS_LogDnsQueryResultWithReason(sys_log_prefix, pszName, wType,
             status, ppQueryResults, passthroughReason);
@@ -4841,14 +4846,16 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
                     // Compute DNSSEC mode for logging and post-processing
                     DNSSEC_MODE ex_dnssec_mode = DNS_DnssecGetMode(pQueryRequest->QueryName);
 
-                    // Show DNSSEC=y only when RRSIG actually present in EncDns cache
-                    BOOLEAN exHasRrsig = (ex_dnssec_mode == DNSSEC_MODE_ENABLED
+                    // Show DNSSEC=y/p only when RRSIG actually present in EncDns cache
+                    BOOLEAN exHasRrsig = ((ex_dnssec_mode == DNSSEC_MODE_ENABLED
+                                           || ex_dnssec_mode == DNSSEC_MODE_PERMISSIVE)
                         && EncryptedDns_CacheHasRrsig(pQueryRequest->QueryName, pQueryRequest->QueryType));
 
                     WCHAR prefix[80];
                     if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
                         if (exHasRrsig)
-                            Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s) DNSSEC=y", EncryptedDns_GetModeName(protocolUsed));
+                            Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s) DNSSEC=%c",
+                                           EncryptedDns_GetModeName(protocolUsed), DNS_Dnssec_ModeToChar(ex_dnssec_mode));
                         else
                             Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s)", EncryptedDns_GetModeName(protocolUsed));
                     } else {
@@ -5035,13 +5042,18 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     }
     
     if (DNS_TraceFlag && pQueryRequest->QueryName) {
-        // Show DNSSEC=y only when RRSIG actually present in response records
-        BOOLEAN hasRrsig = (queryex_sys_dnssec_mode == DNSSEC_MODE_ENABLED
+        // Show DNSSEC=y/p only when RRSIG actually present in response records
+        BOOLEAN hasRrsig = ((queryex_sys_dnssec_mode == DNSSEC_MODE_ENABLED
+            || queryex_sys_dnssec_mode == DNSSEC_MODE_PERMISSIVE)
             && status == 0 && pQueryResults && pQueryResults->pQueryRecords
             && DNS_Dnssec_RecordListHasRrsig(pQueryResults->pQueryRecords));
         WCHAR passPrefix[64];
-        wcscpy_s(passPrefix, ARRAYSIZE(passPrefix),
-            hasRrsig ? L"DnsQueryEx Passthrough DNSSEC=y" : L"DnsQueryEx Passthrough");
+        if (hasRrsig) {
+            Sbie_snwprintf(passPrefix, ARRAYSIZE(passPrefix), L"DnsQueryEx Passthrough DNSSEC=%c",
+                           DNS_Dnssec_ModeToChar(queryex_sys_dnssec_mode));
+        } else {
+            wcscpy_s(passPrefix, ARRAYSIZE(passPrefix), L"DnsQueryEx Passthrough");
+        }
 
         // Debug: Log status and pQueryRecords pointer
         DNS_LogQueryExDebugStatus(status, asyncCtx, pQueryResults,

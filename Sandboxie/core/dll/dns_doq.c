@@ -726,8 +726,8 @@ _FX BOOLEAN DoQ_IsAvailable(void)
         WCHAR key[256];
         Sbie_snwprintf(key, 256, L"DoQAvailInit:%ld:%p", state, g_pQuicApi);
         if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-        Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable: initial state=%ld, g_pQuicApi=%p", state, g_pQuicApi);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable: initial state=%ld, g_pQuicApi=%p", state, g_pQuicApi);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
     
@@ -763,9 +763,9 @@ _FX BOOLEAN DoQ_IsAvailable(void)
         WCHAR key[256];
         Sbie_snwprintf(key, 256, L"DoQAvailResult:%ld:%p:%d", state, g_pQuicApi, result ? 1 : 0);
         if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-        Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable result: %s (state=%ld, g_pQuicApi=%p)", 
-            result ? L"TRUE" : L"FALSE", state, g_pQuicApi);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            Sbie_snwprintf(msg, 256, L"[DoQ] IsAvailable result: %s (state=%ld, g_pQuicApi=%p)", 
+                result ? L"TRUE" : L"FALSE", state, g_pQuicApi);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
     
@@ -809,9 +809,9 @@ static QUIC_STATUS QUIC_API DoQ_ConnectionCallback(
         USHORT port = conn ? conn->Port : 0;
         Sbie_snwprintf(key, 256, L"DoQConnCb:%s:%u:%d", host, port, Event->Type);
         if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-        Sbie_snwprintf(msg, 256, L"[DoQ] Connection callback: %s (%d) for %s:%d", 
+            Sbie_snwprintf(msg, 256, L"[DoQ] Connection callback: %s (%d) for %s:%d", 
                 eventName, Event->Type, host, port);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
 
@@ -822,8 +822,8 @@ static QUIC_STATUS QUIC_API DoQ_ConnectionCallback(
             WCHAR key[256];
             Sbie_snwprintf(key, 256, L"DoQConnected:%s:%u", conn->Host, conn->Port);
             if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-            Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", conn->Host, conn->Port);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", conn->Host, conn->Port);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
         }
         conn->State = DOQ_STATE_CONNECTED;
@@ -997,7 +997,7 @@ static QUIC_STATUS QUIC_API DoQ_StreamCallback(
             WCHAR key[256];
             Sbie_snwprintf(key, 256, L"DoQStreamShutdown:%p", Stream);
             if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-            SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoQ] Stream shutdown complete");
+                SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoQ] Stream shutdown complete");
             }
         }
         if (!ctx->Completed) {
@@ -1273,8 +1273,8 @@ static DOQ_CONNECTION* DoQ_GetOrCreateConnection(const DOQ_SERVER* server)
         WCHAR key[256];
         Sbie_snwprintf(key, 256, L"DoQConnected:%s:%u", server->Host, server->Port);
         if (!DNS_ShouldSuppressLogTagged(key, DNS_ENCDNS_LOG_TAG)) {
-        Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", server->Host, server->Port);
-        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            Sbie_snwprintf(msg, 256, L"[DoQ] Connected to %s:%d", server->Host, server->Port);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
 

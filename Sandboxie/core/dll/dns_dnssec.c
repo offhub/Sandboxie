@@ -213,7 +213,7 @@ _FX DNSSEC_MODE DNS_DnssecGetMode(const WCHAR* domain)
 static BOOLEAN DNS_Dnssec_ParseConfig(const WCHAR* str, WCHAR** out_process, WCHAR** out_domain, DNSSEC_MODE* out_mode)
 {
     // Parse format: [process,][domain:]mode
-    // mode = y|n|f
+    // mode = y|p|f|n
     if (!str || !*str)
         return FALSE;
 
@@ -250,6 +250,8 @@ static BOOLEAN DNS_Dnssec_ParseConfig(const WCHAR* str, WCHAR** out_process, WCH
     while (*ptr == L' ') ptr++;  // Skip whitespace
     if (*ptr == L'y' || *ptr == L'Y') {
         *out_mode = DNSSEC_MODE_ENABLED;
+    } else if (*ptr == L'p' || *ptr == L'P') {
+        *out_mode = DNSSEC_MODE_PERMISSIVE;
     } else if (*ptr == L'f' || *ptr == L'F') {
         *out_mode = DNSSEC_MODE_FILTER;
     } else if (*ptr == L'n' || *ptr == L'N') {
@@ -263,6 +265,26 @@ static BOOLEAN DNS_Dnssec_ParseConfig(const WCHAR* str, WCHAR** out_process, WCH
 
     Dll_Free(buf);
     return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_Dnssec_ModeToChar
+//---------------------------------------------------------------------------
+
+_FX WCHAR DNS_Dnssec_ModeToChar(DNSSEC_MODE mode)
+{
+    switch (mode) {
+        case DNSSEC_MODE_ENABLED:
+            return L'y';
+        case DNSSEC_MODE_PERMISSIVE:
+            return L'p';
+        case DNSSEC_MODE_FILTER:
+            return L'f';
+        case DNSSEC_MODE_DISABLED:
+            return L'n';
+        default:
+            return L'?';
+    }
 }
 
 //---------------------------------------------------------------------------
@@ -315,13 +337,11 @@ _FX void DNS_Dnssec_InitPatterns(void)
         count++;
 
         if (DNS_TraceFlag) {
-            const WCHAR* mode_str = (mode == DNSSEC_MODE_ENABLED) ? L"y" :
-                                   (mode == DNSSEC_MODE_FILTER) ? L"f" : L"n";
             WCHAR msg[512];
-            Sbie_snwprintf(msg, 512, L"[DNSSEC] Pattern: proc=%s domain=%s mode=%s",
+            Sbie_snwprintf(msg, 512, L"[DNSSEC] Pattern: proc=%s domain=%s mode=%c",
                 process_pattern ? process_pattern : L"*",
                 domain_pattern ? domain_pattern : L"*",
-                mode_str);
+                DNS_Dnssec_ModeToChar(mode));
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
@@ -615,9 +635,10 @@ _FX void DNS_Dnssec_StripDnssecRecords(void* ppRecordList)
 // DNS_Dnssec_GetQueryFlags
 //
 // Determine how to adjust DnsQuery Options flags based on DNSSEC mode:
-//   y (ENABLED):  mode_out = 1  -> caller should add DNS_QUERY_DNSSEC_OK
-//   f (FILTER):   mode_out = 0  -> no change (preserve app's choice)
-//   n (DISABLED): mode_out = -1 -> caller should strip DNS_QUERY_DNSSEC_OK
+//   y (ENABLED):    mode_out = 1  -> caller should add DNS_QUERY_DNSSEC_OK
+//   p (PERMISSIVE): mode_out = 1  -> caller should add DNS_QUERY_DNSSEC_OK
+//   f (FILTER):     mode_out = 0  -> no change (preserve app's choice)
+//   n (DISABLED):   mode_out = -1 -> caller should strip DNS_QUERY_DNSSEC_OK
 //---------------------------------------------------------------------------
 
 _FX void DNS_Dnssec_GetQueryFlags(DNSSEC_MODE mode, int* mode_out)
@@ -626,6 +647,9 @@ _FX void DNS_Dnssec_GetQueryFlags(DNSSEC_MODE mode, int* mode_out)
     
     switch (mode) {
         case DNSSEC_MODE_ENABLED:
+            *mode_out = 1;   // Force DNSSEC
+            break;
+        case DNSSEC_MODE_PERMISSIVE:
             *mode_out = 1;   // Force DNSSEC
             break;
         case DNSSEC_MODE_FILTER:
