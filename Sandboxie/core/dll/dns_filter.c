@@ -771,6 +771,26 @@ static __forceinline BOOLEAN DNS_EntryMatchesQueryFamily(const IP_ENTRY* entry, 
     return entry && ((isIPv6Query && entry->Type == AF_INET6) || (!isIPv6Query && entry->Type == AF_INET));
 }
 
+static const GUID kSvcidInetHostaddrByName = SVCID_INET_HOSTADDRBYNAME;
+static const GUID kSvcidInetHostaddrByInetString = SVCID_INET_HOSTADDRBYINETSTRING;
+
+static __forceinline BOOLEAN WSA_IsHostentClass(const GUID* serviceClassId)
+{
+    if (!serviceClassId)
+        return TRUE;
+
+    if (IsEqualGUID(serviceClassId, &kSvcidInetHostaddrByName))
+        return TRUE;
+
+    if (IsEqualGUID(serviceClassId, &kSvcidInetHostaddrByInetString))
+        return TRUE;
+
+    if (IS_SVCID_DNS(serviceClassId))
+        return TRUE;
+
+    return FALSE;
+}
+
 // Static assertion to ensure pointer size matches uintptr_t (required for offset storage)
 // This validates our assumption that offsets can be safely stored in pointer-typed fields
 #if defined(_WIN64)
@@ -939,6 +959,8 @@ _FX BOOLEAN WSA_FillResponseStructure(
 
     // Buffer not enough, return error
     if (*lpdwBufferLength < (DWORD)neededSize) {
+        DNS_DEBUG_LOG(L"[DNS] WSA_FillResponseStructure WSAEFAULT: have=%lu need=%lu domain=%s ipCount=%lu", \
+            (ULONG)*lpdwBufferLength, (ULONG)neededSize, pLookup->DomainName, (ULONG)ipCount);
         *lpdwBufferLength = (DWORD)neededSize;
         SetLastError(WSAEFAULT);
         return FALSE;
@@ -3024,6 +3046,13 @@ use_system_dns:
         if (pLookup) {
             pLookup->QueryType = queryType;
             pLookup->Filtered = FALSE;  // Mark as passthrough
+
+            if (lpqsRestrictions->lpServiceClassId) {
+                pLookup->ServiceClassId = Dll_Alloc(sizeof(GUID));
+                if (pLookup->ServiceClassId) {
+                    memcpy(pLookup->ServiceClassId, lpqsRestrictions->lpServiceClassId, sizeof(GUID));
+                }
+            }
         }
         
         WSA_LogPassthrough(
@@ -3245,49 +3274,75 @@ _FX int WSA_WSALookupServiceNextW(
         
         // Also process HOSTENT blob if available (CSADDR_INFO and HOSTENT may contain different data)
         if (lpqsResults->lpBlob != NULL && (query_type == DNS_TYPE_A || query_type == DNS_TYPE_AAAA || query_type == 255)) {
-            HOSTENT* hp = (HOSTENT*)lpqsResults->lpBlob->pBlobData;
-            USHORT expected_af = (query_type == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
-            
-            DNS_LogWSAPassthroughHOSTENT(hp->h_addrtype, expected_af, (hp->h_addrtype == expected_af ? 1 : 0));
-            
-            // Skip invalid/corrupt HOSTENT structures
-            if (hp->h_addrtype != AF_INET6 && hp->h_addrtype != AF_INET) {
-                DNS_LogWSAPassthroughInvalidHostent(hp->h_addrtype);
+            const GUID* hostentClassId = lpqsResults->lpServiceClassId;
+            if (!hostentClassId && pLookup && pLookup->ServiceClassId) {
+                hostentClassId = pLookup->ServiceClassId;
             }
-            else if (hp->h_addr_list && (hp->h_addrtype == expected_af || query_type == 255)) {
-                // Convert relative pointer to absolute
-                uintptr_t addrListOffset = GET_REL_FROM_PTR(hp->h_addr_list);
-                PCHAR* addrArray = (PCHAR*)ABS_PTR(hp, addrListOffset);
-                
-                WCHAR msg[2048];
-                Sbie_snwprintf(msg, ARRAYSIZE(msg), L"WSALookupService Passthrough(SysDns) HOSTENT: %s",
-                    lpqsResults->lpszServiceInstanceName);
-                
-                for (PCHAR* Addr = addrArray; *Addr; Addr++) {
-                    uintptr_t ipOffset = GET_REL_FROM_PTR(*Addr);
-                    PCHAR ptr = (PCHAR)ABS_PTR(hp, ipOffset);
 
-                    IP_ADDRESS ip;
-                    memset(&ip, 0, sizeof(ip));
-                    if (hp->h_addrtype == AF_INET6)
-                        memcpy(ip.Data, ptr, 16);
-                    else if (hp->h_addrtype == AF_INET)
-                        ip.Data32[3] = *(DWORD*)ptr;
+            DNS_DEBUG_LOG(L"  HOSTENT: ns=%lu blob_size=%lu blob_ptr=%p",
+                (ULONG)ns,
+                (ULONG)lpqsResults->lpBlob->cbSize,
+                lpqsResults->lpBlob->pBlobData);
+
+            if (!lpqsResults->lpBlob->pBlobData || lpqsResults->lpBlob->cbSize < sizeof(HOSTENT)) {
+                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (null or too small)");
+            } else if (!hostentClassId) {
+                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (no service class id)");
+            } else if (!WSA_IsHostentClass(hostentClassId)) {
+                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (non-hostent class Data1=0x%08lX)",
+                    hostentClassId ? hostentClassId->Data1 : 0);
+                if (hostentClassId) {
+                    DNS_DEBUG_LOG(L"  HOSTENT: Non-hostent GUID=%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX",
+                        hostentClassId->Data1, hostentClassId->Data2, hostentClassId->Data3,
+                        hostentClassId->Data4[0], hostentClassId->Data4[1], hostentClassId->Data4[2],
+                        hostentClassId->Data4[3], hostentClassId->Data4[4], hostentClassId->Data4[5],
+                        hostentClassId->Data4[6], hostentClassId->Data4[7]);
+                }
+            } else {
+                HOSTENT* hp = (HOSTENT*)lpqsResults->lpBlob->pBlobData;
+                USHORT expected_af = (query_type == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
+                
+                DNS_LogWSAPassthroughHOSTENT(hp->h_addrtype, expected_af, (hp->h_addrtype == expected_af ? 1 : 0));
+                
+                // Skip invalid/corrupt HOSTENT structures
+                if (hp->h_addrtype != AF_INET6 && hp->h_addrtype != AF_INET) {
+                    DNS_LogWSAPassthroughInvalidHostent(hp->h_addrtype);
+                }
+                else if (hp->h_addr_list && (hp->h_addrtype == expected_af || query_type == 255)) {
+                    // Convert relative pointer to absolute
+                    uintptr_t addrListOffset = GET_REL_FROM_PTR(hp->h_addr_list);
+                    PCHAR* addrArray = (PCHAR*)ABS_PTR(hp, addrListOffset);
                     
-                    // Apply filtering for AAAA when mapping disabled
-                    if (query_type == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6) {
-                        if (hp->h_addrtype == AF_INET) {
-                            continue;  // Skip IPv4 entries
+                    WCHAR msg[2048];
+                    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"WSALookupService Passthrough(SysDns) HOSTENT: %s",
+                        lpqsResults->lpszServiceInstanceName);
+                    
+                    for (PCHAR* Addr = addrArray; *Addr; Addr++) {
+                        uintptr_t ipOffset = GET_REL_FROM_PTR(*Addr);
+                        PCHAR ptr = (PCHAR)ABS_PTR(hp, ipOffset);
+
+                        IP_ADDRESS ip;
+                        memset(&ip, 0, sizeof(ip));
+                        if (hp->h_addrtype == AF_INET6)
+                            memcpy(ip.Data, ptr, 16);
+                        else if (hp->h_addrtype == AF_INET)
+                            ip.Data32[3] = *(DWORD*)ptr;
+                        
+                        // Apply filtering for AAAA when mapping disabled
+                        if (query_type == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6) {
+                            if (hp->h_addrtype == AF_INET) {
+                                continue;  // Skip IPv4 entries
+                            }
+                            if (hp->h_addrtype == AF_INET6 && DNS_IsIPv4Mapped(&ip)) {
+                                continue;  // Skip IPv4-mapped IPv6
+                            }
                         }
-                        if (hp->h_addrtype == AF_INET6 && DNS_IsIPv4Mapped(&ip)) {
-                            continue;  // Skip IPv4-mapped IPv6
-                        }
+                        
+                        WSA_DumpIP(hp->h_addrtype, &ip, msg);
                     }
                     
-                    WSA_DumpIP(hp->h_addrtype, &ip, msg);
+                    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
                 }
-                
-                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
             }
         }
     }
@@ -3322,6 +3377,13 @@ _FX int WSA_WSALookupServiceEnd(HANDLE hLookup)
             DNS_LogWSADebugRequestEnd(hLookup, TRUE);
 
             return NO_ERROR;
+        }
+
+        if (pLookup) {
+            if (pLookup->DomainName)
+                Dll_Free(pLookup->DomainName);
+            if (pLookup->ServiceClassId)
+                Dll_Free(pLookup->ServiceClassId);
         }
 
         EnterCriticalSection(&WSA_LookupMap_CritSec);
