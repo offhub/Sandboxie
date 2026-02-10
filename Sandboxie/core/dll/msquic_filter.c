@@ -43,8 +43,10 @@
 #include "msquic_defs.h"
 #include "msquic_filter.h"
 #include "dns_filter.h"
+#include "dns_filter_util.h"
 #include "dns_logging.h"
 #include "dns_encrypted.h"  // For EncryptedDns_IsQueryActive()
+#include "common/netfw.h"
 
 #if !defined(_DNSDEBUG)
 // Release builds: compile out debug-only logging paths.
@@ -411,46 +413,76 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
         return RealConnectionStart(Connection, Configuration, Family, ServerName, ServerPort);
     }
 
+    size_t server_name_len = wcslen(ServerNameW);
+    WCHAR* server_name_lwr = (WCHAR*)Dll_AllocTemp((server_name_len + 1) * sizeof(WCHAR));
+    const WCHAR* server_name = ServerNameW;
+    if (server_name_lwr) {
+        wmemcpy(server_name_lwr, ServerNameW, server_name_len);
+        server_name_lwr[server_name_len] = L'\0';
+        _wcslwr(server_name_lwr);
+        server_name = server_name_lwr;
+    }
+
+    if (server_name && *server_name && !DNS_IsValidDnsName(server_name)) {
+        IP_ADDRESS ip_address;
+        BOOLEAN is_ip = (_inet_pton(AF_INET, server_name, &ip_address) == 1) ||
+                        (_inet_pton(AF_INET6, server_name, &ip_address) == 1);
+        if (!is_ip) {
+            if (DNS_TraceFlag) {
+                WCHAR msg[512];
+                Sbie_snwprintf(msg, 512, L"[MsQuic] Blocked invalid hostname: %s:%u", server_name, ServerPort);
+                SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+            }
+            if (server_name_lwr)
+                Dll_Free(server_name_lwr);
+            return QUIC_STATUS_PERMISSION_DENIED;
+        }
+    }
+
     // Check if this is an encrypted DNS server hostname (same exclusion as DoH uses)
     // This allows DoQ connections to the configured DNS server even when FilterMsQuic is enabled
     if (DNS_DebugFlag) {
         WCHAR msg[256];
-        Sbie_snwprintf(msg, 256, L"[MsQuic] Checking server hostname: '%s' (UTF-8: '%S') port %u", ServerNameW, ServerName, ServerPort);
+        Sbie_snwprintf(msg, 256, L"[MsQuic] Checking server hostname: '%s' (UTF-8: '%S') port %u", server_name, ServerName, ServerPort);
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
-    BOOLEAN isServerHostname = EncryptedDns_IsServerHostname(ServerNameW);
+    BOOLEAN isServerHostname = EncryptedDns_IsServerHostname(server_name);
     if (DNS_DebugFlag) {
         WCHAR msg[256];
         Sbie_snwprintf(msg, 256, L"[MsQuic] EncryptedDns_IsServerHostname('%s') returned: %s", 
-            ServerNameW, isServerHostname ? L"TRUE" : L"FALSE");
+            server_name, isServerHostname ? L"TRUE" : L"FALSE");
         SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
     
     if (isServerHostname) {
         if (DNS_DebugFlag) {
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"[MsQuic] Bypass filter: encrypted DNS server %s:%u", ServerNameW, ServerPort);
+            Sbie_snwprintf(msg, 256, L"[MsQuic] Bypass filter: encrypted DNS server %s:%u", server_name, ServerPort);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
+        if (server_name_lwr)
+            Dll_Free(server_name_lwr);
         return RealConnectionStart(Connection, Configuration, Family, ServerName, ServerPort);
     } else {
         if (DNS_DebugFlag) {
             WCHAR msg[256];
-            Sbie_snwprintf(msg, 256, L"[MsQuic] Server hostname not recognized: %s:%u", ServerNameW, ServerPort);
+            Sbie_snwprintf(msg, 256, L"[MsQuic] Server hostname not recognized: %s:%u", server_name, ServerPort);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
         }
     }
 
     // Check exclusion list first (DNS_IsExcluded)
-    if (DNS_IsExcluded(ServerNameW)) {
-        DNS_TRACE_LOG(L"[MsQuic] Excluded: %s:%u", ServerNameW, ServerPort);
+    if (DNS_IsExcluded(server_name)) {
+        DNS_TRACE_LOG(L"[MsQuic] Excluded: %s:%u", server_name, ServerPort);
+        if (server_name_lwr)
+            Dll_Free(server_name_lwr);
         return RealConnectionStart(Connection, Configuration, Family, ServerName, ServerPort);
     }
 
     // Check if domain matches a filter rule
     // DNS_TYPE_A (1) is used since QUIC is IP-based
-    if (DNS_CheckFilter(ServerNameW, 1 /* DNS_TYPE_A */, &pEntries)) {
+    if (DNS_CheckFilter(server_name, 1 /* DNS_TYPE_A */, &pEntries)) {
         // Domain matched a filter rule
         if (pEntries == NULL) {
             // Block mode - no IPs configured means block
@@ -458,7 +490,7 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
             
             if (DNS_TraceFlag) {
                 WCHAR msg[512];
-                Sbie_snwprintf(msg, 512, L"[MsQuic] Blocked: %s:%u (block mode)", ServerNameW, ServerPort);
+                Sbie_snwprintf(msg, 512, L"[MsQuic] Blocked: %s:%u (block mode)", server_name, ServerPort);
                 SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
             }
         } else {
@@ -467,14 +499,14 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
             if (MsQuic_FilterMode == MSQUIC_FILTER_ALLOW_FILTER_IP) {
                 if (DNS_TraceFlag) {
                     WCHAR msg[512];
-                    Sbie_snwprintf(msg, 512, L"[MsQuic] Allowed: %s:%u (filter:ip allow mode)", ServerNameW, ServerPort);
+                    Sbie_snwprintf(msg, 512, L"[MsQuic] Allowed: %s:%u (filter:ip allow mode)", server_name, ServerPort);
                     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
                 }
             } else {
                 shouldBlock = TRUE;
                 if (DNS_TraceFlag) {
                     WCHAR msg[512];
-                    Sbie_snwprintf(msg, 512, L"[MsQuic] Blocked: %s:%u (filter:ip block mode)", ServerNameW, ServerPort);
+                    Sbie_snwprintf(msg, 512, L"[MsQuic] Blocked: %s:%u (filter:ip block mode)", server_name, ServerPort);
                     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
                 }
             }
@@ -483,10 +515,13 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
         // No filter match - passthrough
         if (DNS_TraceFlag) {
             WCHAR msg[512];
-            Sbie_snwprintf(msg, 512, L"[MsQuic] Passthrough: %s:%u", ServerNameW, ServerPort);
+            Sbie_snwprintf(msg, 512, L"[MsQuic] Passthrough: %s:%u", server_name, ServerPort);
             SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
         }
     }
+
+    if (server_name_lwr)
+        Dll_Free(server_name_lwr);
 
     if (shouldBlock) {
         // Return permission denied - connection will fail

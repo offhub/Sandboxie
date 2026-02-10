@@ -22,11 +22,13 @@
 #include <wchar.h>
 #include <string.h>
 #include <windns.h>
+#include <limits.h>
 
 #include "common/my_wsa.h" // _htons
 
 #include "dns_filter_util.h"
 #include "dns_rebind.h"
+
 
 static __inline BOOLEAN DNS_BuildSimpleQuery_CanWrite(int bufferSize, const BYTE* buffer, const BYTE* ptr, int needed)
 {
@@ -176,13 +178,150 @@ BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain)
 //---------------------------------------------------------------------------
 // DNS_IsValidDnsName
 //
-// Validates ASCII-only DNS names (A-labels). No Unicode/IDNA support.
+// Validates ASCII-only DNS names (A-labels). No Unicode conversion.
 // Rules:
 //   - Trailing dot allowed (root label); length limit is 253 excluding dot.
 //   - Multi-label DNS names allowed; per-label length <= 63.
 //   - Allows underscore for service labels (SRV/TXT).
 //   - Single-label names are capped at 15 chars (NetBIOS-style).
+//   - Punycode labels (xn--) are validated per RFC 3492 rules.
 //---------------------------------------------------------------------------
+
+static __inline WCHAR DNS_AsciiToLower(WCHAR ch)
+{
+    if (ch >= L'A' && ch <= L'Z')
+        return (WCHAR)(ch + (L'a' - L'A'));
+    return ch;
+}
+
+static __inline BOOLEAN DNS_IsPunycodePrefix(const WCHAR* label, size_t label_len)
+{
+    if (!label || label_len < 4)
+        return FALSE;
+    return (DNS_AsciiToLower(label[0]) == L'x' &&
+            DNS_AsciiToLower(label[1]) == L'n' &&
+            label[2] == L'-' &&
+            label[3] == L'-');
+}
+
+static __inline int DNS_Punycode_DecodeDigit(WCHAR ch)
+{
+    ch = DNS_AsciiToLower(ch);
+    if (ch >= L'a' && ch <= L'z')
+        return (int)(ch - L'a');
+    if (ch >= L'0' && ch <= L'9')
+        return (int)(ch - L'0') + 26;
+    return -1;
+}
+
+static ULONG DNS_Punycode_Adapt(ULONG delta, ULONG numpoints, BOOLEAN firsttime)
+{
+    const ULONG base = 36;
+    const ULONG tmin = 1;
+    const ULONG tmax = 26;
+    const ULONG skew = 38;
+    const ULONG damp = 700;
+
+    delta = firsttime ? (delta / damp) : (delta / 2);
+    delta += delta / numpoints;
+
+    ULONG k = 0;
+    while (delta > ((base - tmin) * tmax) / 2) {
+        delta /= (base - tmin);
+        k += base;
+    }
+
+    return k + (base - tmin + 1) * delta / (delta + skew);
+}
+
+static BOOLEAN DNS_IsValidPunycodeLabel(const WCHAR* label, size_t label_len)
+{
+    const ULONG base = 36;
+    const ULONG tmin = 1;
+    const ULONG tmax = 26;
+    const ULONG initial_n = 128;
+    const ULONG initial_bias = 72;
+
+    if (!DNS_IsPunycodePrefix(label, label_len))
+        return FALSE;
+
+    if (label_len <= 4)
+        return FALSE;
+
+    const WCHAR* payload = label + 4;
+    size_t payload_len = label_len - 4;
+
+    for (size_t i = 0; i < payload_len; ++i) {
+        WCHAR ch = payload[i];
+        if (ch == L'-')
+            continue;
+        if (DNS_Punycode_DecodeDigit(ch) < 0)
+            return FALSE;
+    }
+
+    size_t delim = (size_t)-1;
+    for (size_t i = 0; i < payload_len; ++i) {
+        if (payload[i] == L'-')
+            delim = i;
+    }
+
+    ULONG out_len = 0;
+    if (delim != (size_t)-1) {
+        for (size_t j = 0; j < delim; ++j) {
+            if (payload[j] >= 0x80)
+                return FALSE;
+        }
+        out_len = (ULONG)delim;
+    }
+
+    ULONG n = initial_n;
+    ULONG i = 0;
+    ULONG bias = initial_bias;
+    size_t in_idx = (delim == (size_t)-1) ? 0 : (delim + 1);
+
+    while (in_idx < payload_len) {
+        ULONG oldi = i;
+        ULONG w = 1;
+
+        for (ULONG k = base;; k += base) {
+            if (in_idx >= payload_len)
+                return FALSE;
+
+            int digit = DNS_Punycode_DecodeDigit(payload[in_idx++]);
+            if (digit < 0)
+                return FALSE;
+
+            if ((ULONG)digit > (ULONG_MAX - i) / w)
+                return FALSE;
+            i += (ULONG)digit * w;
+
+            ULONG t = (k <= bias) ? tmin : (k >= bias + tmax) ? tmax : (k - bias);
+            if ((ULONG)digit < t)
+                break;
+
+            if (w > ULONG_MAX / (base - t))
+                return FALSE;
+            w *= (base - t);
+        }
+
+        bias = DNS_Punycode_Adapt(i - oldi, out_len + 1, oldi == 0);
+
+        if (i / (out_len + 1) > (ULONG_MAX - n))
+            return FALSE;
+        n += i / (out_len + 1);
+        i %= (out_len + 1);
+
+        if (n > 0x10FFFF || (n >= 0xD800 && n <= 0xDFFF))
+            return FALSE;
+
+        out_len++;
+        if (out_len > 63)
+            return FALSE;
+        i++;
+    }
+
+    return out_len > 0;
+}
 
 BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
 {
@@ -197,8 +336,10 @@ BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
         return FALSE;
 
     size_t label_len = 0;
+    size_t label_start = 0;
     WCHAR label_first = 0;
     WCHAR label_last = 0;
+    BOOLEAN label_has_underscore = FALSE;
     BOOLEAN has_dot = FALSE;
 
     for (size_t i = 0; i < len; ++i) {
@@ -209,9 +350,17 @@ BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
                 return FALSE;
             if (label_first == L'-' || label_last == L'-')
                 return FALSE;
+            if (DNS_IsPunycodePrefix(domain + label_start, label_len)) {
+                if (label_has_underscore)
+                    return FALSE;
+                if (!DNS_IsValidPunycodeLabel(domain + label_start, label_len))
+                    return FALSE;
+            }
             label_len = 0;
+            label_start = i + 1;
             label_first = 0;
             label_last = 0;
+            label_has_underscore = FALSE;
             continue;
         }
 
@@ -222,6 +371,9 @@ BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
               (ch >= L'0' && ch <= L'9') || ch == L'-' || ch == L'_')) {
             return FALSE;
         }
+
+        if (ch == L'_')
+            label_has_underscore = TRUE;
 
         if (label_len == 0)
             label_first = ch;
@@ -235,6 +387,12 @@ BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
         return FALSE;
     if (label_first == L'-' || label_last == L'-')
         return FALSE;
+    if (DNS_IsPunycodePrefix(domain + label_start, label_len)) {
+        if (label_has_underscore)
+            return FALSE;
+        if (!DNS_IsValidPunycodeLabel(domain + label_start, label_len))
+            return FALSE;
+    }
 
     if (!has_dot && len > 15)
         return FALSE;

@@ -1292,6 +1292,7 @@ static void DNS_ParseExclusionPatterns(DNS_EXCLUSION_LIST* excl, const WCHAR* va
 
             wcscpy(pattern, ptr);
             _wcslwr(pattern);
+
             excl->patterns[excl->count] = pattern;
             excl->modes[excl->count] = (BYTE)mode;
             excl->count++;
@@ -1725,6 +1726,7 @@ static void DNS_LoadTypeFilterEntries(void)
             // Should not happen - free type filter
             Dll_Free(type_filter);
         }
+
     }
 }
 
@@ -2112,7 +2114,7 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
     wmemcpy(domain_copy, domain, domain_len);
     domain_copy[domain_len] = L'\0';
     _wcslwr(domain_copy);  // DNS comparison is case-insensitive
-    
+
     PATTERN* found = NULL;
     // Use DNS-specific matching that handles FQDN trailing dots properly
     int match_result = DNS_DomainMatchPatternList(domain_copy, domain_len, &temp_list, &found);
@@ -2389,7 +2391,7 @@ static HINTERNET WINAPI DNS_WinHttpConnect(
             wmemcpy(domain_lwr, pswzServerName, domain_len);
             domain_lwr[domain_len] = L'\0';
             _wcslwr(domain_lwr);
-            
+
             // Check exclusion first
             if (DNS_IsExcluded(domain_lwr)) {
                 DNS_LogExclusion(domain_lwr);
@@ -2764,8 +2766,11 @@ _FX int WSA_WSALookupServiceBeginW(
     }
     
     if (DNS_FilterEnabled && lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
-        ULONG path_len = wcslen(lpqsRestrictions->lpszServiceInstanceName);
+        size_t path_len = wcslen(lpqsRestrictions->lpszServiceInstanceName);
         WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
+        if (!path_lwr)
+            goto use_system_dns;
+
         wmemcpy(path_lwr, lpqsRestrictions->lpszServiceInstanceName, path_len);
         path_lwr[path_len] = L'\0';
         _wcslwr(path_lwr);
@@ -2806,7 +2811,14 @@ _FX int WSA_WSALookupServiceBeginW(
                             pLookup->NoMore = FALSE;
                             pLookup->QueryType = queryType;
                             
-                            pLookup->DomainName = Dll_Alloc((path_len + 1) * sizeof(WCHAR));
+                            if (path_len > (SIZE_T)((ULONG_MAX / sizeof(WCHAR)) - 1)) {
+                                Dll_Free(path_lwr);
+                                DNS_FreeIPEntryList(&doh_list);
+                                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                                return SOCKET_ERROR;
+                            }
+
+                            pLookup->DomainName = Dll_Alloc((ULONG)((path_len + 1) * sizeof(WCHAR)));
                             if (pLookup->DomainName) {
                                 wcscpy_s(pLookup->DomainName, path_len + 1, lpqsRestrictions->lpszServiceInstanceName);
                             }
@@ -2886,7 +2898,14 @@ _FX int WSA_WSALookupServiceBeginW(
             if (pLookup) {
                 pLookup->Filtered = TRUE;
 
-                pLookup->DomainName = Dll_Alloc((path_len + 1) * sizeof(WCHAR));
+                if (path_len > (SIZE_T)((ULONG_MAX / sizeof(WCHAR)) - 1)) {
+                    Dll_Free(path_lwr);
+                    Dll_Free(fakeHandle);
+                    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                    return SOCKET_ERROR;
+                }
+
+                pLookup->DomainName = Dll_Alloc((ULONG)((path_len + 1) * sizeof(WCHAR)));
                 if (pLookup->DomainName) {
                     wcscpy_s(pLookup->DomainName, path_len + 1, lpqsRestrictions->lpszServiceInstanceName);
                 }
