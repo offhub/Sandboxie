@@ -113,7 +113,8 @@ static __inline void DNS_FlipHeaderToHost(BYTE* pBuffer, DWORD bufferLen)
 #define DNS_FLAG_TC             0x0200  // Truncation
 #define DNS_FLAG_RD             0x0100  // Recursion Desired
 #define DNS_FLAG_RA             0x0080  // Recursion Available
-#define DNS_FLAG_Z_MASK         0x0070  // Reserved (must be zero)
+#define DNS_FLAG_AD             0x0020  // Authentic Data (response)
+#define DNS_FLAG_CD             0x0010  // Checking Disabled (query)
 
 // Response Code (RCODE, 4 bits)
 #define DNS_FLAG_RCODE_MASK     0x000F
@@ -181,9 +182,7 @@ typedef struct _DNS_WIRE_RR {
 //   RDLENGTH  (16 bits):  Length of RDATA (options)
 //   RDATA     (variable): EDNS options
 //
-// Flags (in network byte order in TTL field):
-//   Bit 15 (0x8000): DO bit - DNSSEC OK
-//   Bits 14-0: Reserved (must be zero)
+// Flags (in network byte order in TTL field)
 //---------------------------------------------------------------------------
 
 #pragma pack(push, 1)
@@ -200,7 +199,7 @@ typedef struct _DNS_OPT_RECORD {
 #define DNS_OPT_RECORD_HEADER_SIZE  11
 
 // EDNS flags (stored in network byte order in the low 16 bits of extended_flags)
-#define DNS_EDNS_FLAG_DO            0x8000  // DNSSEC OK flag
+#define DNS_EDNS_FLAG_DO            0x8000
 
 //---------------------------------------------------------------------------
 // DNS Query/Record Types (RFC 1035, RFC 3596, RFC 9460)

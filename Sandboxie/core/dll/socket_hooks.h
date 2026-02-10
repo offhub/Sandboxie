@@ -53,9 +53,6 @@ struct _DNS_TYPE_FILTER;
 // Initialize socket hooks (called from WSA_InitNetDnsFilter)
 BOOLEAN Socket_InitHooks(HMODULE module, BOOLEAN has_valid_certificate);
 
-// DNSSEC mode (from dns_dnssec.h)
-#include "dns_dnssec.h"
-
 // Check if FilterRawDns setting is enabled (for external use)
 BOOLEAN Socket_GetRawDnsFilterEnabled(BOOLEAN has_valid_certificate);
 
@@ -108,8 +105,7 @@ int Socket_BuildDnsResponse(
     struct _DNS_TYPE_FILTER* type_filter,
     const WCHAR*   domain,
     const BYTE*    edns_record,
-    int            edns_record_len,
-    DNSSEC_MODE    dnssec_mode);
+    int            edns_record_len);
 
 // WSARecvMsg interception for Cygwin UDP recv support
 // Called by WSA_WSAIoctl in net.c when WSARecvMsg extension is requested

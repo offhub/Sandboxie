@@ -206,12 +206,17 @@ _FX BOOLEAN EncryptedDns_LoadConfig(void)
     return DoH_LoadConfig();
 }
 
-_FX BOOLEAN EncryptedDns_Query(const WCHAR* domain, USHORT qtype, ENCRYPTED_DNS_RESULT* pResult)
+_FX BOOLEAN EncryptedDns_QueryEx(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, ENCRYPTED_DNS_RESULT* pResult)
 {
     // Query is handled by DoH module (dns_doh.c)
     // which implements the main query logic, protocol selection,
     // and dispatches to DoQ as needed in AUTO mode
-    return DoH_Query(domain, qtype, pResult);
+    return DoH_Query(domain, qtype, dnssec_ok, options, pResult);
+}
+
+_FX BOOLEAN EncryptedDns_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, ENCRYPTED_DNS_RESULT* pResult)
+{
+    return EncryptedDns_QueryEx(domain, qtype, dnssec_ok, NULL, pResult);
 }
 
 _FX BOOLEAN EncryptedDns_IsEnabled(void)

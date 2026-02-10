@@ -159,6 +159,8 @@ BOOLEAN DoQ_Query(
     const DOQ_SERVER* server,
     const WCHAR* domain,
     USHORT qtype,
+    BOOLEAN dnssec_ok,
+    const ENCRYPTED_DNS_QUERY_OPTIONS* options,
     ENCRYPTED_DNS_RESULT* pResult
 );
 

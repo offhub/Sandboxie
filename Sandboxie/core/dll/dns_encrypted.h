@@ -289,6 +289,13 @@ typedef ENCRYPTED_DNS_RESULT DOH_RESULT;
 #define DOH_HTTP3_BACKOFF_3             ENCRYPTED_DNS_HTTP3_BACKOFF_3
 #define DOH_HTTP3_BACKOFF_MAX           ENCRYPTED_DNS_HTTP3_BACKOFF_MAX
 
+typedef struct _ENCRYPTED_DNS_QUERY_OPTIONS
+{
+    USHORT  DnsFlags;         // DNS header flags (host order), use DNS_FLAG_RD/DNS_FLAG_CD
+    USHORT  EdnsPayloadSize;  // EDNS UDP payload size (0 = omit EDNS unless dnssec_ok)
+    BOOLEAN UseDnsFlags;      // TRUE to honor DnsFlags, FALSE to use default RD
+} ENCRYPTED_DNS_QUERY_OPTIONS;
+
 //---------------------------------------------------------------------------
 // Public API
 //---------------------------------------------------------------------------
@@ -304,21 +311,28 @@ void EncryptedDns_Cleanup(void);
 // Returns TRUE if encrypted DNS is enabled (URL configured), FALSE otherwise
 BOOLEAN EncryptedDns_LoadConfig(void);
 
+// Query encrypted DNS server with optional EDNS/header flags
+BOOLEAN EncryptedDns_QueryEx(
+    const WCHAR* domain,
+    USHORT qtype,
+    BOOLEAN dnssec_ok,
+    const ENCRYPTED_DNS_QUERY_OPTIONS* options,
+    ENCRYPTED_DNS_RESULT* pResult
+);
+
 // Query encrypted DNS server for domain (passthrough queries only)
 // Returns TRUE if query succeeded, FALSE on error
 // Result is written to pResult parameter
 BOOLEAN EncryptedDns_Query(
     const WCHAR* domain,
     USHORT qtype,
+    BOOLEAN dnssec_ok,
     ENCRYPTED_DNS_RESULT* pResult
 );
 
 // Check if encrypted DNS is enabled (EncryptedDnsServer configured)
 BOOLEAN EncryptedDns_IsEnabled(void);
 
-// Check cached encrypted DNS response for RRSIG presence (DNSSEC)
-// Returns TRUE if cache entry exists with RRSIG, FALSE otherwise
-BOOLEAN EncryptedDns_CacheHasRrsig(const WCHAR* domain, USHORT qtype);
 
 // Get server hostname (for exclusion from filtering)
 // Returns hostname without protocol/path (e.g., "cloudflare-dns.com")

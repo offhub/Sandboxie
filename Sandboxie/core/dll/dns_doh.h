@@ -134,7 +134,8 @@ BOOLEAN EncryptedDns_LoadConfig(void);
 BOOLEAN EncryptedDns_Query(
     const WCHAR* domain,
     USHORT qtype,
-    DOH_RESULT* pResult
+    BOOLEAN dnssec_ok,
+    ENCRYPTED_DNS_RESULT* pResult
 );
 
 // Check if encrypted DNS is enabled (EncryptedDnsServer configured)
@@ -171,7 +172,7 @@ BOOLEAN DoH_LoadConfig(void);
 
 // Encrypted DNS query implementation (DoH/DoH2/DoH3/DoQ)
 // Returns TRUE on success, FALSE on error
-BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, ENCRYPTED_DNS_RESULT* pResult);
+BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, ENCRYPTED_DNS_RESULT* pResult);
 
 // Check if DoH is enabled (configuration loaded)
 BOOLEAN DoH_IsEnabled(void);

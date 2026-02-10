@@ -34,7 +34,6 @@
 #include "dns_logging.h"
 #include "dns_filter_util.h"
 #include "dns_wire.h"
-#include "dns_dnssec.h"
 #include "dns_encrypted.h"  // For EncryptedDns_IsServerHostname()
 #include "common/netfw.h"
 #include "common/list.h"
@@ -72,8 +71,6 @@ _FX void DNS_Rebind_AppendFilteredIpMsg(
     Sbie_snwprintf(msg + len, avail + 1, L"%s", ip_msg);
 }
 
-// DNSSEC Configuration moved to dns_dnssec.c/dns_dnssec.h
-
 //---------------------------------------------------------------------------
 // Configuration
 //---------------------------------------------------------------------------
@@ -92,6 +89,9 @@ _FX void DNS_Rebind_AppendFilteredIpMsg(
 //   - Action flag (y|n) is the last/only token and is mandatory.
 //     * If missing/empty/invalid, it is treated as 'n' (disabled).
 //   - <domain> supports '*' and '?' wildcards (case-insensitive).
+//   - Special token: @nodot@ matches single-label names (no dots, trailing dot ignored).
+//   - Special token: @ip@ matches IP literals (IPv4/IPv6).
+//   - IP literals and single-label domains are ignored unless @ip@/@nodot@ is explicitly configured.
 //   - More specific rules override less specific rules (exact domain beats '*.domain').
 // Examples:
 //   DnsRebindProtection=y                                 # Enable globally
@@ -99,6 +99,8 @@ _FX void DNS_Rebind_AppendFilteredIpMsg(
 //   DnsRebindProtection=*.local:y                         # Enable for *.local
 //   DnsRebindProtection=*.example.com:n                  # Disable for all *.example.com
 //   DnsRebindProtection=host123.example.com:y            # Re-enable for one exact name
+//   DnsRebindProtection=@nodot@:y                        # Opt-in for single-label names
+//   DnsRebindProtection=@ip@:y                           # Opt-in for IP literals
 static LIST DNS_RebindPatterns;
 
 //---------------------------------------------------------------------------
@@ -151,100 +153,6 @@ static BOOLEAN DNS_Rebind_ParseWireForSanitize(
 static P_DnsRecordListFree DNS_Rebind_GetDnsRecordListFree(void);
 static P_DnsQuery_W DNS_Rebind_GetDnsQueryW(void);
 
-static BOOLEAN DNS_Rebind_DnssecHasRrsigForType(const WCHAR* domain, WORD qtype)
-{
-    if (!domain || !*domain)
-        return FALSE;
-
-    if (EncryptedDns_IsEnabled()) {
-        if (EncryptedDns_IsQueryActive())
-        {
-            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
-                DNS_DEBUG_LOG(L"[DNS Rebind] DNSSEC EncDns probe skipped for %s (query active)", domain);
-            return FALSE;
-        }
-        if (EncryptedDns_CacheHasRrsig(domain, qtype))
-            return TRUE;
-        ENCRYPTED_DNS_RESULT encResult;
-        if (!EncryptedDns_Query(domain, qtype, &encResult))
-            return FALSE;
-        if (encResult.RawResponseLen == 0)
-            return FALSE;
-        return DNS_Dnssec_ResponseHasRrsig(encResult.RawResponse, (int)encResult.RawResponseLen);
-    }
-
-    P_DnsQuery_W dnsQueryW = (P_DnsQuery_W)DNSAPI_GetSystemDnsQueryW();
-    if (!dnsQueryW)
-        dnsQueryW = DNS_Rebind_GetDnsQueryW();
-    if (!dnsQueryW)
-        return FALSE;
-
-    PDNS_RECORD records = NULL;
-    DNS_STATUS st = dnsQueryW(domain, qtype, DNS_QUERY_DNSSEC_OK, NULL, &records, NULL);
-    if (st != 0 || !records)
-        return FALSE;
-
-    BOOLEAN has_rrsig = DNS_Dnssec_RecordListHasRrsig(records);
-    P_DnsRecordListFree freeRec = (P_DnsRecordListFree)DNSAPI_GetSystemDnsRecordListFree();
-    if (!freeRec)
-        freeRec = DNS_Rebind_GetDnsRecordListFree();
-    if (freeRec)
-        freeRec(records, DnsFreeRecordList);
-    else if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
-        DNS_DEBUG_LOG(L"[DNS Rebind] DnsRecordListFree not available while probing %s", domain);
-
-    return has_rrsig;
-}
-
-static BOOLEAN DNS_Rebind_DnssecShouldSkipWsaQuerySetW(const WCHAR* domain, LPWSAQUERYSETW lpqsResults)
-{
-    if (!domain || !lpqsResults)
-        return FALSE;
-
-    DNSSEC_MODE mode = DNS_DnssecGetMode(domain);
-    if (mode != DNSSEC_MODE_ENABLED)
-        return FALSE;
-
-    BOOLEAN want_a = FALSE;
-    BOOLEAN want_aaaa = FALSE;
-
-    if (lpqsResults->dwNumberOfCsAddrs > 0 && lpqsResults->lpcsaBuffer) {
-        for (DWORD i = 0; i < lpqsResults->dwNumberOfCsAddrs; ++i) {
-            SOCKADDR* sa = lpqsResults->lpcsaBuffer[i].RemoteAddr.lpSockaddr;
-            if (!sa)
-                continue;
-            if (sa->sa_family == AF_INET)
-                want_a = TRUE;
-            else if (sa->sa_family == AF_INET6)
-                want_aaaa = TRUE;
-        }
-    }
-
-    if (lpqsResults->lpBlob && lpqsResults->lpBlob->pBlobData && lpqsResults->lpBlob->cbSize >= sizeof(HOSTENT)) {
-        HOSTENT* hp = (HOSTENT*)lpqsResults->lpBlob->pBlobData;
-        if (hp->h_addrtype == AF_INET)
-            want_a = TRUE;
-        else if (hp->h_addrtype == AF_INET6)
-            want_aaaa = TRUE;
-    }
-
-    if (!want_a && !want_aaaa)
-        want_a = TRUE;
-
-    if (EncryptedDns_IsEnabled()) {
-        if (want_a && EncryptedDns_CacheHasRrsig(domain, DNS_TYPE_A))
-            return TRUE;
-        if (want_aaaa && EncryptedDns_CacheHasRrsig(domain, DNS_TYPE_AAAA))
-            return TRUE;
-    }
-
-    if (want_a && DNS_Rebind_DnssecHasRrsigForType(domain, DNS_TYPE_A))
-        return TRUE;
-    if (want_aaaa && DNS_Rebind_DnssecHasRrsigForType(domain, DNS_TYPE_AAAA))
-        return TRUE;
-
-    return FALSE;
-}
 
 // Generic function pointer resolver - reduces boilerplate for lazy-loading APIs
 #define DEFINE_LAZY_PROC(type, name, dll, proc) \
@@ -470,7 +378,7 @@ _FX BOOLEAN DNS_Rebind_SanitizeDnsWireResponseKeepLengthNodata(
 
     if (filteredA || filteredAAAA) {
         // Filtered IPs have been replaced in-place with 0.0.0.0/:: above.
-        // The DNS wire format structure is preserved (record counts, offsets, RRSIG, OPT)
+        // The DNS wire format structure is preserved (record counts, offsets, OPT)
         // so the response remains parseable. TCP payload-only buffers require this
         // approach because the length prefix was already delivered to the client.
 
@@ -534,6 +442,7 @@ typedef struct _REBIND_IP_RULE {
 // Indicates whether DnsRebindProtection has any enabled patterns.
 // Used to suppress FilterDnsIP-related logging when protection is disabled.
 static BOOLEAN DNS_Rebind_ProtectionEnabled = FALSE;
+static LONG DNS_Rebind_Initialized = 0;
 
 //---------------------------------------------------------------------------
 // Simple wildcard pattern matcher (supports * and ? wildcards)
@@ -546,10 +455,14 @@ static BOOLEAN DNS_Rebind_ParseProtectionConfig(
     WCHAR** pDomainOut,
     BOOLEAN* pEnabledOut);
 static BOOLEAN DNS_Rebind_AddPattern(const WCHAR* process_pattern, const WCHAR* domain_pattern, BOOLEAN enabled);
+static BOOLEAN DNS_Rebind_IsIpLiteral(const WCHAR* domain);
 
 static BOOLEAN DNS_Rebind_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
     if (!pattern || !str) return FALSE;
 
+    if (_wcsicmp(pattern, L"@ip@") == 0) {
+        return DNS_Rebind_IsIpLiteral(str);
+    }
     if (_wcsicmp(pattern, L"@nodot@") == 0) {
         return DNS_IsSingleLabelDomain(str);
     }
@@ -692,6 +605,17 @@ static BOOLEAN DNS_Rebind_ParseIpAddressString(const WCHAR* ip_string, USHORT* p
     *pAf = af;
     *pIpOut = ip;
     return TRUE;
+}
+
+static BOOLEAN DNS_Rebind_IsIpLiteral(const WCHAR* domain)
+{
+    if (!domain || !domain[0])
+        return FALSE;
+
+    USHORT af = 0;
+    IP_ADDRESS ip;
+    memset(&ip, 0, sizeof(ip));
+    return DNS_Rebind_ParseIpAddressString(domain, &af, &ip);
 }
 
 static BOOLEAN DNS_Rebind_ParseIpCidrPattern(const WCHAR* ip_pattern, USHORT* pAf, UCHAR* pPrefix, IP_ADDRESS* pIpOut)
@@ -1405,6 +1329,10 @@ _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
         return FALSE;
     }
 
+    // Skip IP literals and single-label domains unless explicitly enabled via @ip@/@nodot@.
+    const BOOLEAN is_ip_literal = DNS_Rebind_IsIpLiteral(domain);
+    const BOOLEAN is_single_label = (!is_ip_literal && DNS_IsSingleLabelDomain(domain));
+
     // Check if domain is excluded (NetworkDnsFilterExclude)
     // If it is, let the exclusion rule handle it (don't apply rebind protection)
     if (DNS_IsExcluded(domain)) {
@@ -1442,10 +1370,21 @@ _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
 
         // Check domain pattern if present
         if (entry->domain_pattern) {
+            if (is_ip_literal && _wcsicmp(entry->domain_pattern, L"@ip@") != 0) {
+                entry = (REBIND_PATTERN*)List_Next(entry);
+                continue;
+            }
+            if (is_single_label && _wcsicmp(entry->domain_pattern, L"@nodot@") != 0) {
+                entry = (REBIND_PATTERN*)List_Next(entry);
+                continue;
+            }
             if (!DNS_Rebind_MatchWildcard(entry->domain_pattern, domain)) {
                 entry = (REBIND_PATTERN*)List_Next(entry);
                 continue;
             }
+        } else if (is_ip_literal || is_single_label) {
+            entry = (REBIND_PATTERN*)List_Next(entry);
+            continue;
         }
 
         // Both matched (or were not specified). Compute specificity.
@@ -1505,7 +1444,7 @@ _FX BOOLEAN DNS_Rebind_ShouldFilterIpForDomain(const WCHAR* domain, const IP_ADD
     if (!DNS_Rebind_IsEnabledForDomain(domain))
         return FALSE;
 
-    // Determine qtype from address family hint (shared by DNSSEC and NetworkDnsFilter checks)
+    // Determine qtype from address family hint (shared by NetworkDnsFilter checks)
     USHORT qtype;
     if (af_hint == AF_INET)
         qtype = DNS_TYPE_A;
@@ -1513,22 +1452,6 @@ _FX BOOLEAN DNS_Rebind_ShouldFilterIpForDomain(const WCHAR* domain, const IP_ADD
         qtype = DNS_TYPE_AAAA;
     else
         qtype = DNS_Rebind_IsV4Like(pIP) ? DNS_TYPE_A : DNS_TYPE_AAAA;
-
-    // DNSSEC skip: when DnssecEnabled=y and RRSIG records are present in the
-    // EncDns cache or system DNS response for this domain/type, skip rebind
-    // filtering. The RRSIG proves the response was DNSSEC-signed and validated.
-    if (DNS_DnssecGetMode(domain) == DNSSEC_MODE_ENABLED) {
-        if (EncryptedDns_IsEnabled() && EncryptedDns_CacheHasRrsig(domain, qtype)) {
-            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
-                DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - EncDns cache RRSIG", domain, DNS_GetTypeName(qtype));
-            return FALSE;
-        }
-        if (DNS_Rebind_DnssecHasRrsigForType(domain, qtype)) {
-            if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
-                DNS_TRACE_LOG(L"[DNS Rebind] DNSSEC skip for %s (type %s) - system DNS RRSIG", domain, DNS_GetTypeName(qtype));
-            return FALSE;
-        }
-    }
 
     // If domain is filtered by NetworkDnsFilter for this IP family, don't apply rebind protection.
     // This keeps filter rules authoritative per address family.
@@ -1658,16 +1581,6 @@ _FX void DNS_Rebind_SanitizeWSAQuerySetW(const WCHAR* domain, LPWSAQUERYSETW lpq
     if (!DNS_Rebind_IsEnabledForDomain(domain))
         return;
 
-    // DNSSEC skip: when DnssecEnabled=y and RRSIG is present for this domain,
-    // skip WSAQUERYSETW rebind sanitization entirely (trusted DNSSEC response).
-    // This is an early-return optimization; the per-IP check in
-    // DNS_Rebind_ShouldFilterIpForDomain also checks RRSIG.
-    if (DNS_Rebind_DnssecShouldSkipWsaQuerySetW(domain, lpqsResults)) {
-        if (!DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT))
-            DNS_TRACE_LOG(L"[DNS Rebind] Skipping WSAQUERYSETW sanitization for %s (DNSSEC RRSIG present)", domain);
-        return;
-    }
-
     ULONG filtered_csaddr = 0;
     ULONG kept_csaddr = 0;
     ULONG filtered_hostent = 0;
@@ -1756,6 +1669,8 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
 
     ULONG filteredA = 0;
     ULONG filteredAAAA = 0;
+    WCHAR filtered_msg[512];
+    filtered_msg[0] = L'\0';
 
     PDNS_RECORD prev = NULL;
     PDNS_RECORD rec = *ppRecords;
@@ -1769,6 +1684,11 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
             if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip, AF_INET)) {
                 filtered = TRUE;
                 ++filteredA;
+                DNS_Rebind_AppendFilteredIpMsg(
+                    filtered_msg,
+                    (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                    AF_INET,
+                    &ip);
             }
         }
         else if (rec->wType == DNS_TYPE_AAAA) {
@@ -1777,6 +1697,11 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
             if (DNS_Rebind_ShouldFilterIpForDomain(domain, &ip, AF_INET6)) {
                 filtered = TRUE;
                 ++filteredAAAA;
+                DNS_Rebind_AppendFilteredIpMsg(
+                    filtered_msg,
+                    (SIZE_T)(sizeof(filtered_msg) / sizeof(filtered_msg[0])),
+                    AF_INET6,
+                    &ip);
             }
         }
 
@@ -1796,6 +1721,10 @@ _FX void DNS_Rebind_SanitizeDnsRecordList(const WCHAR* domain, PDNS_RECORD* ppRe
         }
 
         rec = next;
+    }
+
+    if (filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_FILTER)) {
+        DNS_TRACE_LOG(L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, filtered_msg);
     }
 
     if ((filteredA || filteredAAAA) && !DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_DEFAULT)) {
@@ -2191,6 +2120,9 @@ static BOOLEAN DNS_Rebind_AddPattern(const WCHAR* process_pattern, const WCHAR* 
 
 _FX BOOLEAN DNS_Rebind_Init(void)
 {
+    if (InterlockedCompareExchange(&DNS_Rebind_Initialized, 1, 0) != 0)
+        return TRUE;
+
     // Initialize pattern lists
     List_Init(&DNS_RebindPatterns);
     List_Init(&DNS_RebindFilteredIpRules);

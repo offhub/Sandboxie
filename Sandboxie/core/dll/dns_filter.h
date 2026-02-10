@@ -80,7 +80,7 @@ BOOLEAN DNS_IsExcluded(const WCHAR* domain);
 BOOLEAN DNS_IsExcludedWithMode(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* pModeOut);
 BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries);
 
-// Accessors for unhooked DNSAPI functions (used by rebind/DNSSEC probes)
+// Accessors for unhooked DNSAPI functions (used by rebind probes)
 void* DNSAPI_GetSystemDnsQueryW(void);
 void* DNSAPI_GetSystemDnsRecordListFree(void);
 

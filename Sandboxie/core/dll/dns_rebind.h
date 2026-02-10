@@ -44,11 +44,6 @@ void DNS_Rebind_AppendFilteredIpMsg(
 	ADDRESS_FAMILY af,
 	const IP_ADDRESS* pIP);
 
-//---------------------------------------------------------------------------
-// DNSSEC Support (moved to dns_dnssec.h)
-//---------------------------------------------------------------------------
-
-#include "dns_dnssec.h"
 
 // ANSI version of addrinfo (not in wsa_defs.h). Keep local to core/dll code.
 // Note: This intentionally avoids pulling in winsock2.h.
@@ -80,10 +75,14 @@ typedef struct addrinfo {
 //     * action (y|n) is the last/only token; missing/invalid is treated as 'n'
 //     * <domain> supports '*' and '?' wildcards (case-insensitive)
 //     * Special token: @nodot@ matches single-label names (no dots, trailing dot ignored)
+//     * Special token: @ip@ matches IP literals (IPv4/IPv6)
+//     * IP literals and single-label domains are ignored unless @ip@/@nodot@ is explicitly configured
 //     * Examples:
 //         DnsRebindProtection=*.local:y
 //         DnsRebindProtection=*.example.com:n
 //         DnsRebindProtection=host123.example.com:y
+//         DnsRebindProtection=@nodot@:y
+//         DnsRebindProtection=@ip@:y
 //     * Requires valid certificate (DNS_HasValidCertificate)
 //
 // Filtered IP Rules:

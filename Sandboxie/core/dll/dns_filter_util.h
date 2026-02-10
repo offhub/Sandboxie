@@ -31,13 +31,11 @@ extern "C" {
 #endif
 
 // Internal helper for DnsQueryRaw passthrough (moved out of dns_filter.c)
-// If has_do_flag=TRUE, appends EDNS OPT record with DO flag (for DNSSEC)
 int DNS_BuildSimpleQuery(
     const WCHAR* domain,
     USHORT qtype,
     BYTE* buffer,
-    int bufferSize,
-    BOOLEAN has_do_flag);
+    int bufferSize);
 
 // Builds a DNS_RECORD linked list from IP_ENTRY list.
 PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
@@ -55,6 +53,10 @@ BOOLEAN DNS_IsTypeInFilterListEx(
 
 // Returns TRUE if domain is a single-label name (no dots, trailing dot ignored)
 BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain);
+
+// Returns TRUE if domain is a DNS/NetBIOS-compatible hostname (ASCII, LDH/underscore)
+// Trailing dots are allowed. IP literals should be handled separately.
+BOOLEAN DNS_IsValidDnsName(const WCHAR* domain);
 
 #ifdef __cplusplus
 }

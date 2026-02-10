@@ -1297,14 +1297,8 @@ static void DoQ_ReleaseConnection(DOQ_CONNECTION* conn)
 //---------------------------------------------------------------------------
 //
 // RFC 1035: Standard DNS query (header + question section)
-// RFC 6891: EDNS (OPT record in additional section with DO flag for DNSSEC)
-//
-// Parameters:
-//   has_do_flag: If TRUE, appends EDNS OPT record with DO flag (DNSSEC OK)
-//                This signals to upstream server to include RRSIG records
-//
-
-static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer, UINT32 bufferSize, BOOLEAN has_do_flag)
+static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer, UINT32 bufferSize,
+    BOOLEAN do_flag, BOOLEAN use_query_flags, USHORT query_flags, USHORT edns_payload_size)
 {
     DNS_WIRE_HEADER* header;
     BYTE* p;
@@ -1312,9 +1306,9 @@ static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer,
     UINT32 queryLen;
     static USHORT s_TransactionId = 0;
     UINT32 required_size = DOQ_LENGTH_PREFIX_SIZE + 12 + 4 + 256;
+    BOOLEAN include_edns = (do_flag || edns_payload_size > 0);
 
-    // Reserve space for EDNS OPT record if needed (1 + 2 + 2 + 4 + 2 = 11 bytes)
-    if (has_do_flag)
+    if (include_edns)
         required_size += 11;
 
     if (bufferSize < required_size)
@@ -1327,10 +1321,15 @@ static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer,
     // Fill header
     memset(header, 0, sizeof(DNS_WIRE_HEADER));
     header->TransactionID = _htons((USHORT)InterlockedIncrement((LONG*)&s_TransactionId));
-    header->Flags = _htons(DNS_FLAG_RD);  // Recursion desired
+    {
+        USHORT header_flags = DNS_FLAG_RD;
+        if (use_query_flags) {
+            header_flags = (USHORT)(query_flags & (DNS_FLAG_RD | DNS_FLAG_CD));
+        }
+        header->Flags = _htons(header_flags);
+    }
     header->Questions = _htons(1);
-    header->AdditionalRRs = _htons(has_do_flag ? 1 : 0);  // 1 additional record (OPT) if EDNS needed
-
+    header->AdditionalRRs = _htons(include_edns ? 1 : 0);
     p += sizeof(DNS_WIRE_HEADER);
 
     // Encode domain name (label format)
@@ -1367,14 +1366,16 @@ static UINT32 DoQ_BuildDnsQuery(const WCHAR* domain, USHORT qtype, BYTE* buffer,
     *(USHORT*)p = _htons(1);  // IN class
     p += 2;
 
-    // Append EDNS OPT record if DO flag requested
-    if (has_do_flag) {
+    if (include_edns) {
+        USHORT udp_payload = edns_payload_size > 0 ? edns_payload_size : 4096;
+        UINT32 ext_flags = do_flag ? DNS_EDNS_FLAG_DO : 0;
+
         *p++ = 0;                          // ROOT name for OPT
         *(USHORT*)p = _htons(41);          // TYPE = OPT
         p += 2;
-        *(USHORT*)p = _htons(4096);        // UDP payload size
+        *(USHORT*)p = _htons(udp_payload); // UDP payload size
         p += 2;
-        *(UINT32*)p = _htonl(0x00008000); // EDNS version 0, DO flag (bit 15 of flags field) set
+        *(UINT32*)p = _htonl(ext_flags);   // EDNS version 0, flags
         p += 4;
         *(USHORT*)p = _htons(0);           // RDLEN = 0 (no RDATA options)
         p += 2;
@@ -1538,6 +1539,8 @@ _FX BOOLEAN DoQ_Query(
     const DOQ_SERVER* server,
     const WCHAR* domain,
     USHORT qtype,
+    BOOLEAN dnssec_ok,
+    const ENCRYPTED_DNS_QUERY_OPTIONS* options,
     ENCRYPTED_DNS_RESULT* pResult)
 {
     DOQ_CONNECTION* conn = NULL;
@@ -1586,8 +1589,21 @@ _FX BOOLEAN DoQ_Query(
     }
     ctx.pResult = pResult;
 
-    // Build DNS query with length prefix and EDNS DO flag (requests RRSIG for DNSSEC-signed domains)
-    ctx.QueryLength = DoQ_BuildDnsQuery(domain, qtype, ctx.QueryBuffer, sizeof(ctx.QueryBuffer), TRUE);
+    // Build DNS query with length prefix
+    {
+        USHORT query_flags = DNS_FLAG_RD;
+        USHORT edns_payload = 0;
+        BOOLEAN use_query_flags = FALSE;
+
+        if (options) {
+            query_flags = options->DnsFlags;
+            edns_payload = options->EdnsPayloadSize;
+            use_query_flags = options->UseDnsFlags;
+        }
+
+        ctx.QueryLength = DoQ_BuildDnsQuery(domain, qtype, ctx.QueryBuffer, sizeof(ctx.QueryBuffer),
+                                            dnssec_ok, use_query_flags, query_flags, edns_payload);
+    }
     if (ctx.QueryLength == 0) {
         CloseHandle(ctx.CompletionEvent);
         DoQ_ReleaseConnection(conn);

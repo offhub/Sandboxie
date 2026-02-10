@@ -86,8 +86,8 @@
 #include "dns_doq.h"
 #include "dns_filter.h"
 #include "dns_logging.h"
-#include "dns_dnssec.h"
 #include "dns_rebind.h"    // For DNS_ENCDNS_LOG_TAG
+#include "dns_wire.h"
 #include "winhttp_defs.h"  // WinHTTP function pointers and constants
 
 #include <windows.h>
@@ -417,9 +417,9 @@ typedef struct _DOH_PROTOCOL_SELECTION {
 
 static BOOLEAN EncDns_ParseUrlToServer(const WCHAR* url, DOH_SERVER* server);
 static BOOLEAN EncDns_LoadBackends(void);
-static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
-static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
-static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
+static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
+static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
+static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out);
 
 // Helper functions for DoH_HttpRequest_WinHttp decomposition
 static BOOLEAN DoH_SelectProtocolMode(DOH_SERVER* server, ULONGLONG now, DOH_PROTOCOL_SELECTION* result);
@@ -2228,21 +2228,6 @@ static BOOLEAN EncDns_CacheLookup(const WCHAR* domain, USHORT qtype, DOH_RESULT*
     return FALSE;
 }
 
-_FX BOOLEAN EncryptedDns_CacheHasRrsig(const WCHAR* domain, USHORT qtype)
-{
-    if (!domain || !*domain)
-        return FALSE;
-
-    DOH_RESULT result;
-    if (!EncDns_CacheLookup(domain, qtype, &result))
-        return FALSE;
-
-    if (result.RawResponseLen == 0)
-        return FALSE;
-
-    return DNS_Dnssec_ResponseHasRrsig(result.RawResponse, (int)result.RawResponseLen);
-}
-
 //---------------------------------------------------------------------------
 // DoH_EncodeDnsName
 //
@@ -2343,11 +2328,17 @@ static BOOLEAN DoH_BuildDnsQuery(
     USHORT qtype,
     BYTE* buffer,
     int bufferSize,
+    BOOLEAN do_flag,
+    BOOLEAN use_query_flags,
+    USHORT query_flags,
+    USHORT edns_payload_size,
     int* queryLen)
 {
     DOH_DNS_HEADER* header;
     int nameLen;
     BYTE* p;
+    BOOLEAN include_edns;
+    USHORT header_flags;
 
     if (!domain || !buffer || !queryLen || bufferSize < 512)
         return FALSE;
@@ -2362,18 +2353,26 @@ static BOOLEAN DoH_BuildDnsQuery(
     header->TransactionID = (USHORT)(GetTickCount64() & 0xFFFF);
 
     // Flags: Standard query with recursion desired
-    // QR=0 (query), Opcode=0 (standard), RD=1 (recursion desired)
-    header->Flags = _htons(0x0100);  // 0000000100000000 in binary
+    // Preserve RD/CD bits if provided by the caller.
+    header_flags = DNS_FLAG_RD;
+    if (use_query_flags) {
+        header_flags = (USHORT)(query_flags & (DNS_FLAG_RD | DNS_FLAG_CD));
+    }
+    header->Flags = _htons(header_flags);
 
     // Counts
     header->Questions = _htons(1);   // 1 question
     header->AnswerRRs = 0;
     header->AuthorityRRs = 0;
-    header->AdditionalRRs = _htons(1);  // 1 additional record (EDNS OPT with DO flag)
+    include_edns = (do_flag || edns_payload_size > 0);
+    header->AdditionalRRs = _htons(include_edns ? 1 : 0);
 
     // Encode domain name after header
     p = buffer + sizeof(DOH_DNS_HEADER);
-    nameLen = DoH_EncodeDnsName(domain, p, bufferSize - sizeof(DOH_DNS_HEADER) - 4 - 11);
+    {
+        int extra = include_edns ? DNS_OPT_RECORD_HEADER_SIZE : 0;
+        nameLen = DoH_EncodeDnsName(domain, p, bufferSize - sizeof(DOH_DNS_HEADER) - 4 - extra);
+    }
     
     if (nameLen <= 0)
         return FALSE;
@@ -2388,18 +2387,20 @@ static BOOLEAN DoH_BuildDnsQuery(
     *(USHORT*)p = _htons(1);  // QCLASS_IN = 1
     p += 2;
 
-    // Append EDNS OPT record with DO flag (RFC 6891)
-    // This signals the server to include RRSIG records for DNSSEC-signed domains.
-    // Safe for all queries: servers that don't support DNSSEC simply ignore the DO flag.
-    *p++ = 0;                          // ROOT name for OPT record
-    *(USHORT*)p = _htons(41);          // TYPE = OPT (41)
-    p += 2;
-    *(USHORT*)p = _htons(4096);        // UDP payload size (requestor's max)
-    p += 2;
-    *(UINT32*)p = _htonl(0x00008000);  // Extended RCODE=0, version=0, DO flag set (bit 15 of flags)
-    p += 4;
-    *(USHORT*)p = _htons(0);           // RDLEN = 0 (no options)
-    p += 2;
+    if (include_edns) {
+        USHORT udp_payload = edns_payload_size > 0 ? edns_payload_size : 4096;
+        UINT32 ext_flags = do_flag ? DNS_EDNS_FLAG_DO : 0;
+
+        *p++ = 0;                          // ROOT name for OPT
+        *(USHORT*)p = _htons(41);          // TYPE = OPT
+        p += 2;
+        *(USHORT*)p = _htons(udp_payload); // UDP payload size
+        p += 2;
+        *(UINT32*)p = _htonl(ext_flags);   // EDNS version 0, flags
+        p += 4;
+        *(USHORT*)p = _htons(0);           // RDLEN = 0 (no options)
+        p += 2;
+    }
 
     *queryLen = (int)(p - buffer);
 
@@ -3054,7 +3055,7 @@ static void DoH_ValidateProtocolUsed(HINTERNET hRequest, DOH_SERVER* server,
 // Returns: TRUE on success (HTTP 200 with valid response), FALSE on error
 //---------------------------------------------------------------------------
 
-static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
+static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
 {
     HINTERNET hConnect = NULL;
     HINTERNET hRequest = NULL;
@@ -3077,11 +3078,24 @@ static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, 
         return FALSE;
 
     // Build DNS query in wire format
-    if (!DoH_BuildDnsQuery(domain, qtype, query_buffer, sizeof(query_buffer), &query_len)) {
-        if (DNS_TraceFlag) {
-            SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoH] Failed to build DNS query");
+    {
+        USHORT query_flags = DNS_FLAG_RD;
+        USHORT edns_payload = 0;
+        BOOLEAN use_query_flags = FALSE;
+
+        if (options) {
+            query_flags = options->DnsFlags;
+            edns_payload = options->EdnsPayloadSize;
+            use_query_flags = options->UseDnsFlags;
         }
-        return FALSE;
+
+        if (!DoH_BuildDnsQuery(domain, qtype, query_buffer, sizeof(query_buffer),
+                               dnssec_ok, use_query_flags, query_flags, edns_payload, &query_len)) {
+            if (DNS_TraceFlag) {
+                SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoH] Failed to build DNS query");
+            }
+            return FALSE;
+        }
     }
 
     if (!InterlockedCompareExchange(&g_DohLockValid, 0, 0))
@@ -3265,7 +3279,7 @@ cleanup:
 //---------------------------------------------------------------------------
 
 static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
-    const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
+    const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
 {
     // Note: DoQ_Query and DoQ_IsAvailable are declared in dns_doq.h
     // DoQ uses DOQ_SERVER struct and ENCRYPTED_DNS_RESULT, not raw response buffers
@@ -3342,7 +3356,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 }
                 
                 // Call DoQ_Query which returns parsed result
-                if (!DoQ_Query(&doqServer, domain, qtype, &doqResult)) {
+                if (!DoQ_Query(&doqServer, domain, qtype, dnssec_ok, options, &doqResult)) {
                     if (DNS_DebugFlag) {
                         SbieApi_MonitorPutMsg(MONITOR_DNS, L"[EncDns] DoQ query failed");
                     }
@@ -3470,7 +3484,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 // Temporarily set Http3Mode to force HTTP/3
                 CHAR savedHttp3Mode = server->Http3Mode;
                 server->Http3Mode = 1;  // HTTP/3 only
-                BOOLEAN result = DoH_HttpRequest_WinHttp(server, domain, qtype, response, response_size, bytes_read, protocol_used_out);
+                BOOLEAN result = DoH_HttpRequest_WinHttp(server, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, protocol_used_out);
                 server->Http3Mode = savedHttp3Mode;
                 return result;
             } else {
@@ -3496,7 +3510,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
             {
                 CHAR savedHttp3Mode = server->Http3Mode;
                 server->Http3Mode = 0;  // HTTP/2 only
-                BOOLEAN result = DoH_HttpRequest_WinHttp(server, domain, qtype, response, response_size, bytes_read, protocol_used_out);
+                BOOLEAN result = DoH_HttpRequest_WinHttp(server, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, protocol_used_out);
                 server->Http3Mode = savedHttp3Mode;
                 return result;
             }
@@ -3508,7 +3522,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 Sbie_snwprintf(msg, 256, L"[EncDns] Trying DoH to %s:%d", server->Host, server->Port);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
-            return DoH_HttpRequest_WinHttp(server, domain, qtype, response, response_size, bytes_read, protocol_used_out);
+            return DoH_HttpRequest_WinHttp(server, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, protocol_used_out);
             
         case ENCRYPTED_DNS_MODE_DOT:
             // DNS over TLS - not yet implemented
@@ -3532,7 +3546,7 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
 //   - AUTO: Tries DoQ → DoH3 → DoH2 → DoH with fallback and backoff
 //---------------------------------------------------------------------------
 
-static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
+static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
 {
     ULONGLONG now;
     ENCRYPTED_DNS_MODE tryMode;
@@ -3648,7 +3662,7 @@ static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, U
             
             // Try this protocol
             ENCRYPTED_DNS_MODE used = ENCRYPTED_DNS_MODE_AUTO;
-            if (EncDns_TryProtocol(server, tryMode, domain, qtype, response, response_size, bytes_read, &used)) {
+            if (EncDns_TryProtocol(server, tryMode, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, &used)) {
                 // Success - clear backoff for this protocol
                 EnterCriticalSection(&g_DohConfigLock);
                 server->AutoBackoff[tryMode].BackoffUntil = 0;
@@ -3690,7 +3704,7 @@ static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, U
     // Non-AUTO mode: dispatch directly to the specified protocol
     {
         ENCRYPTED_DNS_MODE used = ENCRYPTED_DNS_MODE_AUTO;
-        BOOLEAN ok = EncDns_TryProtocol(server, server->ProtocolMode, domain, qtype, response, response_size, bytes_read, &used);
+        BOOLEAN ok = EncDns_TryProtocol(server, server->ProtocolMode, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, &used);
         if (ok && protocol_used_out)
             *protocol_used_out = used;
         return ok;
@@ -3701,7 +3715,7 @@ static BOOLEAN EncDns_RequestToServer(DOH_SERVER* server, const WCHAR* domain, U
 // EncDns_Request - Make request with multi-server failover
 //---------------------------------------------------------------------------
 
-static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
+static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, BYTE* response, DWORD response_size, DWORD* bytes_read, ENCRYPTED_DNS_MODE* protocol_used_out)
 {
     ULONGLONG now = GetTickCount64();
     ULONG attempts = 0;
@@ -3747,7 +3761,7 @@ static BOOLEAN EncDns_Request(const WCHAR* domain, USHORT qtype, BYTE* response,
         }
 
         ENCRYPTED_DNS_MODE used = ENCRYPTED_DNS_MODE_AUTO;
-        if (EncDns_RequestToServer(server, domain, qtype, response, response_size, bytes_read, &used)) {
+        if (EncDns_RequestToServer(server, domain, qtype, dnssec_ok, options, response, response_size, bytes_read, &used)) {
             if (protocol_used_out)
                 *protocol_used_out = used;
             // Clear failure state on success
@@ -4146,7 +4160,7 @@ static BOOLEAN DoH_ParseJsonResponse(const WCHAR* json, DOH_RESULT* pResult)
 // Note: Always returns pResult->Success=TRUE for graceful failure semantics
 //---------------------------------------------------------------------------
 
-_FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult)
+_FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, const ENCRYPTED_DNS_QUERY_OPTIONS* options, DOH_RESULT* pResult)
 {
     BYTE response[8192];
     DWORD bytes_read = 0;
@@ -4333,7 +4347,7 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, DOH_RESULT* pResult)
     }
 
     ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-    if (!EncDns_Request(domain, qtype, response, sizeof(response), &bytes_read, &protocolUsed)) {
+    if (!EncDns_Request(domain, qtype, dnssec_ok, options, response, sizeof(response), &bytes_read, &protocolUsed)) {
         InterlockedDecrement(&g_DohActiveQueries);
         EncDns_SetInQuery(FALSE);
         if (g_DohQuerySemaphore) ReleaseSemaphore(g_DohQuerySemaphore, 1, NULL);

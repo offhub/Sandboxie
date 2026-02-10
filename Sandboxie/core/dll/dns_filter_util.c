@@ -174,25 +174,89 @@ BOOLEAN DNS_IsSingleLabelDomain(const WCHAR* domain)
 }
 
 //---------------------------------------------------------------------------
-// DNS_BuildSimpleQuery - Build DNS wire format query with optional EDNS
+// DNS_IsValidDnsName
+//
+// Validates ASCII-only DNS names (A-labels). No Unicode/IDNA support.
+// Rules:
+//   - Trailing dot allowed (root label); length limit is 253 excluding dot.
+//   - Multi-label DNS names allowed; per-label length <= 63.
+//   - Allows underscore for service labels (SRV/TXT).
+//   - Single-label names are capped at 15 chars (NetBIOS-style).
+//---------------------------------------------------------------------------
+
+BOOLEAN DNS_IsValidDnsName(const WCHAR* domain)
+{
+    if (!domain || !*domain)
+        return FALSE;
+
+    size_t len = wcslen(domain);
+    while (len > 0 && domain[len - 1] == L'.')
+        len--;
+
+    if (len == 0 || len > 253)
+        return FALSE;
+
+    size_t label_len = 0;
+    WCHAR label_first = 0;
+    WCHAR label_last = 0;
+    BOOLEAN has_dot = FALSE;
+
+    for (size_t i = 0; i < len; ++i) {
+        WCHAR ch = domain[i];
+        if (ch == L'.') {
+            has_dot = TRUE;
+            if (label_len == 0 || label_len > 63)
+                return FALSE;
+            if (label_first == L'-' || label_last == L'-')
+                return FALSE;
+            label_len = 0;
+            label_first = 0;
+            label_last = 0;
+            continue;
+        }
+
+        if (ch <= 0x20 || ch == 0x7F || ch == L'/' || ch == L'\\')
+            return FALSE;
+
+        if (!((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+              (ch >= L'0' && ch <= L'9') || ch == L'-' || ch == L'_')) {
+            return FALSE;
+        }
+
+        if (label_len == 0)
+            label_first = ch;
+        label_last = ch;
+        label_len++;
+        if (label_len > 63)
+            return FALSE;
+    }
+
+    if (label_len == 0 || label_len > 63)
+        return FALSE;
+    if (label_first == L'-' || label_last == L'-')
+        return FALSE;
+
+    if (!has_dot && len > 15)
+        return FALSE;
+
+    return TRUE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_BuildSimpleQuery - Build DNS wire format query
 //---------------------------------------------------------------------------
 //
 // RFC 1035: Standard DNS query (header + question section)
-// RFC 6891: EDNS (OPT record in additional section with DO flag for DNSSEC)
-//
-// Parameters:
-//   has_do_flag: If TRUE, appends EDNS OPT record with DO flag (DNSSEC OK)
-//                This signals to upstream server to include RRSIG records
-//
-
 int DNS_BuildSimpleQuery(
     const WCHAR* domain,
     USHORT qtype,
     BYTE* buffer,
-    int bufferSize,
-    BOOLEAN has_do_flag)
+    int bufferSize)
 {
     if (!domain || !buffer || bufferSize < 512)
+        return 0;
+
+    if (!DNS_IsValidDnsName(domain))
         return 0;
 
     char domainA[256];
@@ -221,7 +285,7 @@ int DNS_BuildSimpleQuery(
     ptr += 2;
     *(USHORT*)ptr = 0;  // Authority RRs
     ptr += 2;
-    *(USHORT*)ptr = _htons(has_do_flag ? 1 : 0);  // Additional RRs (OPT record if EDNS needed)
+    *(USHORT*)ptr = 0;  // Additional RRs
     ptr += 2;
 
     char* namePtr = domainA;
@@ -257,20 +321,6 @@ int DNS_BuildSimpleQuery(
 
     *(USHORT*)ptr = _htons(1);  // QClass (IN)
     ptr += 2;
-
-    // Append EDNS OPT record if DO flag requested
-    if (has_do_flag) {
-        ENSURE_SPACE(11);
-        *ptr++ = 0;                          // ROOT name for OPT
-        *(USHORT*)ptr = _htons(41);          // TYPE = OPT
-        ptr += 2;
-        *(USHORT*)ptr = _htons(4096);        // UDP payload size
-        ptr += 2;
-        *(UINT32*)ptr = _htonl(0x80000000); // EDNS version 0, DO flag (bit 15) set
-        ptr += 4;
-        *(USHORT*)ptr = _htons(0);           // RDLEN = 0 (no RDATA options)
-        ptr += 2;
-    }
 
     return (int)(ptr - buffer);
 }

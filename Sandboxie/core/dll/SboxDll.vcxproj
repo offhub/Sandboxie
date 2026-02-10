@@ -499,7 +499,6 @@
     <ClCompile Include="dllmain.c" />
     <ClCompile Include="dllmem.c" />
     <ClCompile Include="dllpath.c" />
-    <ClCompile Include="dns_dnssec.c" />
     <ClCompile Include="dns_doh.c" />
     <ClCompile Include="dns_doq.c" />
     <ClCompile Include="dns_encrypted.c" />
@@ -818,7 +817,6 @@
     <ClInclude Include="debug.h" />
     <ClInclude Include="dll.h" />
     <ClInclude Include="dnsapi_filter.h" />
-    <ClInclude Include="dns_dnssec.h" />
     <ClInclude Include="dns_doh.h" />
     <ClInclude Include="dns_doq.h" />
     <ClInclude Include="dns_encrypted.h" />
