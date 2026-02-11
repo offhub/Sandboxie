@@ -133,11 +133,19 @@
 #define WSAAPI WINAPI
 #endif
 
-// Magic marker for our ADDRINFOW allocations
-// We set bit 31 of ai_flags to mark structures allocated from our private heap
-// This allows free functions to distinguish our allocations from system allocations
-// Standard ai_flags values use lower bits (AI_PASSIVE=0x01, AI_CANONNAME=0x02, etc.)
-#define AI_SBIE_MARKER  0x80000000
+#ifndef AI_CANONNAME
+#define AI_CANONNAME 0x0002
+#endif
+
+#ifndef AI_NUMERICHOST
+#define AI_NUMERICHOST 0x0004
+#endif
+
+// NOTE: AI_SBIE_MARKER (0x80000000) was previously used to tag our ADDRINFOW 
+// allocations in ai_flags, but setting bit 31 made ai_flags negative (signed int),
+// which could confuse applications like ping.exe that check ai_flags.
+// Allocation ownership is now detected via HeapValidate on the private heap.
+// #define AI_SBIE_MARKER  0x80000000  // REMOVED - no longer used
 
 // ANSI version of addrinfo is defined in dns_rebind.h (ADDRINFOA/PADDRINFOA)
 
@@ -295,9 +303,9 @@ static VOID WSAAPI WSA_FreeAddrInfoW(
 static VOID WSAAPI WSA_FreeAddrInfoExW(
     PADDRINFOEXW    pAddrInfoEx);
 
-// Helper function to check if an ADDRINFO structure is ours
-// Returns TRUE if it has our magic marker (AI_SBIE_MARKER)
-static BOOLEAN DNS_IsOurAddrInfo(int ai_flags);
+// Helper function to check if an ADDRINFO allocation is ours
+// Returns TRUE if the pointer belongs to our private DNS filter heap
+static BOOLEAN DNS_IsOurAddrInfo(PVOID pAddrInfo);
 
 // DNS Type Filter Helper Functions (internal use only)
 static BOOLEAN DNS_ParseTypeName(const WCHAR* name, USHORT* type_out, BOOLEAN* is_negated);
@@ -305,7 +313,7 @@ static BOOLEAN DNS_ParseTypeName(const WCHAR* name, USHORT* type_out, BOOLEAN* i
 // EncDns helper functions (forward declarations)
 static BOOLEAN DNS_TryDoHQuery(const WCHAR* domain, USHORT qtype, LIST* pListOut, DOH_RESULT* pFullResult);
 static void DNS_FreeIPEntryList(LIST* pList);
-static BOOLEAN DNS_DoHQueryForFamily(const WCHAR* domain, int family, LIST* pListOut, ENCRYPTED_DNS_MODE* protocolUsedOut);
+static BOOLEAN DNS_DoHQueryForFamily(const WCHAR* domain, int family, LIST* pListOut, ENCRYPTED_DNS_MODE* protocolUsedOut, WCHAR* cnameOut, SIZE_T cnameOutCch);
 static int DNS_DoHBuildWSALookup(LPWSAQUERYSETW lpqsRestrictions, LPHANDLE lphLookup);
 static BOOLEAN WSA_ConvertAddrInfoWToEx(PADDRINFOW pResultW, PADDRINFOEXW* ppResultEx);
 static BOOLEAN DNS_DoHQueryForGetAddrInfoExW(PCWSTR pName, int family, const ADDRINFOEXW* hints, PCWSTR pServiceName, PADDRINFOEXW* ppResult, ENCRYPTED_DNS_MODE* protocolUsedOut);
@@ -336,7 +344,9 @@ int Socket_BuildDnsResponse(
     struct _DNS_TYPE_FILTER* type_filter,
     const WCHAR*   domain,
     const BYTE*    edns_record,
-    int            edns_record_len);
+    int            edns_record_len,
+    const WCHAR*   cname_owner,
+    const WCHAR*   cname_target);
 
 // Initialization functions
 BOOLEAN DNSAPI_Init(HMODULE module);
@@ -589,6 +599,7 @@ static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level);
 static BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain);
 static BOOLEAN DNS_LoadFilterEntries(void);
 static BOOLEAN DNS_IsIPAddress(const WCHAR* str);
+static BOOLEAN DNS_IsValidQueryName(const WCHAR* name);
 static BOOLEAN DNS_IsPrivateIpLiteral(const WCHAR* domain);
 static BOOLEAN DNS_IsLocalReverseDnsName(const WCHAR* domain);
 
@@ -818,6 +829,25 @@ static __forceinline BOOLEAN WSA_IsHostentClass(const GUID* serviceClassId)
         return TRUE;
 
     return FALSE;
+}
+
+static __forceinline BOOLEAN WSA_IsDnsNamespace(DWORD nameSpace)
+{
+    return (nameSpace == NS_DNS || nameSpace == NS_ALL);
+}
+
+static __forceinline BOOLEAN WSA_ShouldValidateHostQuery(const WSAQUERYSETW* query)
+{
+    if (!query)
+        return FALSE;
+
+    if (!WSA_IsHostentClass(query->lpServiceClassId))
+        return FALSE;
+
+    if (!WSA_IsDnsNamespace(query->dwNameSpace))
+        return FALSE;
+
+    return TRUE;
 }
 
 // Static assertion to ensure pointer size matches uintptr_t (required for offset storage)
@@ -2005,7 +2035,7 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
     if (!domain)
         return FALSE;
 
-    if (!DNS_IsIPAddress(domain) && !DNS_IsValidDnsName(domain))
+    if (!DNS_IsValidQueryName(domain))
         return FALSE;
 
     // Automatically exclude encrypted DNS server hostname to prevent re-entrancy loops
@@ -2994,6 +3024,9 @@ _FX int WSA_WSALookupServiceBeginW(
     }
     
     if (DNS_FilterEnabled && lpqsRestrictions && lpqsRestrictions->lpszServiceInstanceName) {
+        if (!WSA_ShouldValidateHostQuery(lpqsRestrictions))
+            goto use_system_dns;
+
         size_t path_len = wcslen(lpqsRestrictions->lpszServiceInstanceName);
         WCHAR* path_lwr = (WCHAR*)Dll_AllocTemp((path_len + 4) * sizeof(WCHAR));
         if (!path_lwr)
@@ -3921,7 +3954,7 @@ static DNS_STATUS DNSAPI_DnsQuery_NarrowCommon(
             if (wName) {
                 MultiByteToWideChar(codePage, 0, pszName, -1, wName, nameLen);
 
-                if (!DNS_IsIPAddress(wName) && !DNS_IsValidDnsName(wName)) {
+                if (!DNS_IsValidQueryName(wName)) {
                     WCHAR blockTag[128];
                     DNS_LogBlocked(DNS_GetBlockedTag(tagIntercepted, blockTag, ARRAYSIZE(blockTag)),
                                    wName, wType, L"Invalid hostname");
@@ -4269,7 +4302,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQuery_W(
     BOOLEAN exclude_enc_passthrough = FALSE;
     
     if (DNS_FilterEnabled && pszName) {
-        if (!DNS_IsIPAddress(pszName) && !DNS_IsValidDnsName(pszName)) {
+        if (!DNS_IsValidQueryName(pszName)) {
             if (ppQueryResults)
                 *ppQueryResults = NULL;
             DNS_LogBlocked(L"DnsQuery_W Blocked", pszName, wType, L"Invalid hostname");
@@ -5049,7 +5082,7 @@ _FX DNS_STATUS DNSAPI_DnsQueryEx(
     }
 
     if (DNS_FilterEnabled && pQueryRequest->QueryName &&
-        !DNS_IsIPAddress(pQueryRequest->QueryName) && !DNS_IsValidDnsName(pQueryRequest->QueryName)) {
+        !DNS_IsValidQueryName(pQueryRequest->QueryName)) {
         if (pQueryResults) {
             pQueryResults->QueryStatus = DNS_ERROR_RCODE_NAME_ERROR;
             pQueryResults->pQueryRecords = NULL;
@@ -5561,7 +5594,9 @@ static BOOLEAN DNSAPI_TryDoHForDnsQueryRaw(
                 NULL,
                 rebind_domain,
                 edns_len > 0 ? edns_buffer : NULL,
-                edns_len);
+                edns_len,
+                NULL,
+                NULL);
                 
             // Free the temporary IP list
             DNS_FreeIPEntryList(&doh_list);
@@ -5680,7 +5715,7 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
         return __sys_DnsQueryRaw(pQueryRequest, pCancelHandle);
     }
 
-    if (DNS_FilterEnabled && !DNS_IsIPAddress(domain) && !DNS_IsValidDnsName(domain)) {
+    if (DNS_FilterEnabled && !DNS_IsValidQueryName(domain)) {
         BYTE tempQuery[512];
         const BYTE* queryPtr = NULL;
         int queryLen = 0;
@@ -5915,7 +5950,9 @@ _FX DNS_STATUS WINAPI DNSAPI_DnsQueryRaw(
                                         type_filter,
                                         domain,
                                         edns_len > 0 ? edns_buffer : NULL,
-                                        edns_len);
+                                        edns_len,
+                                        NULL,
+                                        NULL);
                                 }
 
                                 if (response_len > 0) {
@@ -6186,12 +6223,24 @@ static PADDRINFOW WSA_BuildAddrInfoList(
     const WCHAR*    pNodeName,
     const WCHAR*    pServiceName,
     const ADDRINFOW* pHints,
-    LIST*           pEntries)
+    LIST*           pEntries,
+    const WCHAR*    pCanonName)
 {
     if (!pEntries || !List_Head(pEntries))
         return NULL;
 
     BOOLEAN rebindEnabled = (pNodeName ? DNS_Rebind_IsEnabledForDomain(pNodeName) : FALSE);
+    const WCHAR* canonName = pCanonName ? pCanonName : pNodeName;
+    BOOLEAN wantCanonName = FALSE;
+    if (pCanonName && pCanonName[0]) {
+        wantCanonName = TRUE;
+    } else if (pHints && (pHints->ai_flags & AI_CANONNAME)) {
+        wantCanonName = TRUE;
+    }
+
+    if (DNS_TraceFlag && pNodeName && canonName && wantCanonName && wcscmp(pNodeName, canonName) != 0) {
+        DNS_TRACE_LOG(L"[GetAddrInfo] Canonname override: %s -> %s", pNodeName, canonName);
+    }
 
     // Determine what address families to return based on hints
     int requestedFamily = AF_UNSPEC;
@@ -6250,7 +6299,8 @@ static PADDRINFOW WSA_BuildAddrInfoList(
 
         // Calculate sizes for this entry
         SIZE_T addrSize = (entry->Type == AF_INET6) ? sizeof(SOCKADDR_IN6_LH) : sizeof(SOCKADDR_IN);
-        SIZE_T nodeNameLen = pNodeName ? (wcslen(pNodeName) + 1) * sizeof(WCHAR) : 0;
+        // Only allocate space for canonname in the FIRST entry (per RFC 3493)
+        SIZE_T nodeNameLen = (pHead == NULL && canonName) ? (wcslen(canonName) + 1) * sizeof(WCHAR) : 0;
         
         // Allocate ADDRINFOW + sockaddr + canonname in one block
         // Use private heap to distinguish OUR allocations from system allocations
@@ -6270,9 +6320,13 @@ static PADDRINFOW WSA_BuildAddrInfoList(
 
         PADDRINFOW pInfo = (PADDRINFOW)pBlock;
 
-        // Mark this as our allocation with magic marker in ai_flags (bit 31)
-        // This allows free functions to distinguish our allocations from system allocations
-        pInfo->ai_flags = AI_SBIE_MARKER;
+        // Set result ai_flags: only AI_CANONNAME on first entry (per RFC 3493)
+        // Do NOT copy hint-only flags (AI_PASSIVE, AI_NUMERICHOST, AI_ADDRCONFIG, etc.)
+        // Our allocation is identified by HeapValidate on the private heap, not by flags.
+        pInfo->ai_flags = 0;
+        if (pHead == NULL && wantCanonName) {
+            pInfo->ai_flags |= AI_CANONNAME;
+        }
         pInfo->ai_family = entry->Type;
         pInfo->ai_socktype = socktype;
         pInfo->ai_protocol = protocol;
@@ -6299,10 +6353,11 @@ static PADDRINFOW WSA_BuildAddrInfoList(
             continue;
         }
 
-        // Copy canonical name if provided
-        if (pNodeName && nodeNameLen > 0) {
+        // Copy canonical name if provided - ONLY for the first entry (per RFC 3493)
+        // Windows ping.exe and other apps expect ai_canonname only on the first ADDRINFOW
+        if (pHead == NULL && wantCanonName && canonName && nodeNameLen > 0) {
             pInfo->ai_canonname = (PWSTR)(pBlock + sizeof(ADDRINFOW) + addrSize);
-            wcscpy(pInfo->ai_canonname, pNodeName);
+            wcscpy(pInfo->ai_canonname, canonName);
         }
 
         // Link into list
@@ -6313,6 +6368,15 @@ static PADDRINFOW WSA_BuildAddrInfoList(
             pTail->ai_next = pInfo;
             pTail = pInfo;
         }
+    }
+
+    // Debug: dump the returned ADDRINFOW to verify ai_canonname is set
+    if (DNS_DebugFlag && pHead) {
+        WCHAR msg[512];
+        Sbie_snwprintf(msg, 512, L"[GetAddrInfo] Result dump: ai_flags=0x%08X, ai_family=%d, ai_socktype=%d, ai_protocol=%d, ai_canonname=%s",
+            pHead->ai_flags, pHead->ai_family, pHead->ai_socktype, pHead->ai_protocol,
+            pHead->ai_canonname ? pHead->ai_canonname : L"(NULL)");
+        SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
     }
 
     return pHead;
@@ -6645,6 +6709,21 @@ static BOOLEAN DNS_IsIPAddress(const WCHAR* str)
     if (hasColon) return TRUE;
     
     return FALSE;
+}
+
+//---------------------------------------------------------------------------
+// DNS_IsValidQueryName
+//
+// Returns TRUE if the name is a valid DNS query target: either an IP address
+// literal or a well-formed DNS hostname.  This is the inverse of the repeated
+// "!DNS_IsIPAddress(x) && !DNS_IsValidDnsName(x)" idiom used throughout the
+// filtering hooks to reject garbage input early.
+//---------------------------------------------------------------------------
+
+static BOOLEAN DNS_IsValidQueryName(const WCHAR* name)
+{
+    if (!name || !*name) return FALSE;
+    return DNS_IsIPAddress(name) || DNS_IsValidDnsName(name);
 }
 
 //---------------------------------------------------------------------------
@@ -7112,7 +7191,7 @@ static BOOLEAN DNS_TryDoHQuery(
         return FALSE;
     }
 
-    if (!DNS_IsIPAddress(domain) && !DNS_IsValidDnsName(domain)) {
+    if (!DNS_IsValidQueryName(domain)) {
         if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
             DNS_DEBUG_LOG(L"[EncDns] Invalid hostname, skipping query: %s", domain);
         }
@@ -7340,11 +7419,16 @@ static BOOLEAN DNS_DoHQueryForFamily(
     const WCHAR* domain,
     int family,
     LIST* pListOut,
-    ENCRYPTED_DNS_MODE* protocolUsedOut)
+    ENCRYPTED_DNS_MODE* protocolUsedOut,
+    WCHAR* cnameOut,
+    SIZE_T cnameOutCch)
 {
     if (!EncryptedDns_IsEnabled() || !domain || !pListOut) {
         return FALSE;
     }
+
+    if (cnameOut && cnameOutCch > 0)
+        cnameOut[0] = L'\0';
 
     if (protocolUsedOut)
         *protocolUsedOut = ENCRYPTED_DNS_MODE_AUTO;
@@ -7361,6 +7445,10 @@ static BOOLEAN DNS_DoHQueryForFamily(
         if (DNS_TryDoHQuery(domain, qtype, pListOut, &encdns_result)) {
             if (protocolUsedOut)
                 *protocolUsedOut = encdns_result.ProtocolUsed;
+            if (cnameOut && cnameOutCch > 0 && encdns_result.HasCname && encdns_result.CnameTarget[0] != L'\0') {
+                wcsncpy(cnameOut, encdns_result.CnameTarget, cnameOutCch - 1);
+                cnameOut[cnameOutCch - 1] = L'\0';
+            }
             hasResults = TRUE;
         }
         return hasResults;
@@ -7373,6 +7461,11 @@ static BOOLEAN DNS_DoHQueryForFamily(
         if (DNS_TryDoHQuery(domain, DNS_TYPE_A, &doh_list_a, &doh_result_a)) {
             if (protocolUsedOut && *protocolUsedOut == ENCRYPTED_DNS_MODE_AUTO)
                 *protocolUsedOut = doh_result_a.ProtocolUsed;
+            if (cnameOut && cnameOutCch > 0 && cnameOut[0] == L'\0' &&
+                doh_result_a.HasCname && doh_result_a.CnameTarget[0] != L'\0') {
+                wcsncpy(cnameOut, doh_result_a.CnameTarget, cnameOutCch - 1);
+                cnameOut[cnameOutCch - 1] = L'\0';
+            }
             // Move A records to combined list
             IP_ENTRY* pEntry = (IP_ENTRY*)List_Head(&doh_list_a);
             while (pEntry) {
@@ -7389,6 +7482,11 @@ static BOOLEAN DNS_DoHQueryForFamily(
         if (DNS_TryDoHQuery(domain, DNS_TYPE_AAAA, &doh_list_aaaa, &doh_result_aaaa)) {
             if (protocolUsedOut && *protocolUsedOut == ENCRYPTED_DNS_MODE_AUTO)
                 *protocolUsedOut = doh_result_aaaa.ProtocolUsed;
+            if (cnameOut && cnameOutCch > 0 && cnameOut[0] == L'\0' &&
+                doh_result_aaaa.HasCname && doh_result_aaaa.CnameTarget[0] != L'\0') {
+                wcsncpy(cnameOut, doh_result_aaaa.CnameTarget, cnameOutCch - 1);
+                cnameOut[cnameOutCch - 1] = L'\0';
+            }
             // Append AAAA records to combined list
             IP_ENTRY* pEntry = (IP_ENTRY*)List_Head(&doh_list_aaaa);
             while (pEntry) {
@@ -7407,6 +7505,10 @@ static BOOLEAN DNS_DoHQueryForFamily(
         if (DNS_TryDoHQuery(domain, qtype, pListOut, &encdns_result)) {
             if (protocolUsedOut)
                 *protocolUsedOut = encdns_result.ProtocolUsed;
+            if (cnameOut && cnameOutCch > 0 && encdns_result.HasCname && encdns_result.CnameTarget[0] != L'\0') {
+                wcsncpy(cnameOut, encdns_result.CnameTarget, cnameOutCch - 1);
+                cnameOut[cnameOutCch - 1] = L'\0';
+            }
             hasResults = TRUE;
         }
     }
@@ -7657,7 +7759,8 @@ static BOOLEAN DNS_DoHQueryForGetAddrInfoExW(
 
     LIST doh_list;
     ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-    if (!DNS_DoHQueryForFamily(pName, family, &doh_list, &protocolUsed)) {
+    WCHAR cname_target[256];
+    if (!DNS_DoHQueryForFamily(pName, family, &doh_list, &protocolUsed, cname_target, ARRAYSIZE(cname_target))) {
         return FALSE;
     }
 
@@ -7673,7 +7776,8 @@ static BOOLEAN DNS_DoHQueryForGetAddrInfoExW(
         hintsW.ai_protocol = hints->ai_protocol;
     }
     
-    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, &doh_list);
+    const WCHAR* canon_name = (cname_target[0] != L'\0') ? cname_target : NULL;
+    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, &doh_list, canon_name);
     DNS_FreeIPEntryList(&doh_list);
     
     if (!pResultW) {
@@ -7704,11 +7808,13 @@ typedef enum _GAI_NAME_CHECK_RESULT {
     GAI_NAME_CHECK_EXCLUDED_SYS,
     GAI_NAME_CHECK_INVALID,
     GAI_NAME_CHECK_PASSTHROUGH_SYS,
+    GAI_NAME_CHECK_NUMERICHOST_REJECT,  // AI_NUMERICHOST set for non-IP name
 } GAI_NAME_CHECK_RESULT;
 
 static GAI_NAME_CHECK_RESULT GAI_PrepareNameLwrForCheck(
     PCWSTR pName,
     int family,
+    int hints_flags,
     WCHAR** nameLwrOut,
     BOOLEAN* excludedFromFilteringOut,
     DNS_EXCLUDE_RESOLVE_MODE* excludeModeOut,
@@ -7728,6 +7834,18 @@ static GAI_NAME_CHECK_RESULT GAI_PrepareNameLwrForCheck(
     if (!pName || !nameLwrOut || !excludedFromFilteringOut || !excludeModeOut)
         return GAI_NAME_CHECK_PASSTHROUGH_SYS;
 
+    // AI_NUMERICHOST: caller asserts the hostname is already a numeric IP literal.
+    // If set and the name is NOT numeric, the system returns WSAHOST_NOT_FOUND.
+    // We MUST match this behavior. Applications like ping.exe first probe with
+    // AI_NUMERICHOST to detect IP literals; if we return success for a hostname,
+    // ping thinks it's numeric and skips the second call (with AI_CANONNAME)
+    // that would display the canonical name.
+    if ((hints_flags & AI_NUMERICHOST) && !DNS_IsIPAddress(pName)) {
+        if (passthroughReasonOut)
+            *passthroughReasonOut = L"AI_NUMERICHOST set for non-IP";
+        return GAI_NAME_CHECK_NUMERICHOST_REJECT;
+    }
+
     SIZE_T nameLen = wcslen(pName);
     if (nameLen == 0 || nameLen > 255) {
         if (passthroughReasonOut)
@@ -7745,7 +7863,7 @@ static GAI_NAME_CHECK_RESULT GAI_PrepareNameLwrForCheck(
 
     *nameLwrOut = nameLwr;
 
-    if (!DNS_IsIPAddress(nameLwr) && !DNS_IsValidDnsName(nameLwr)) {
+    if (!DNS_IsValidQueryName(nameLwr)) {
         if (passthroughReasonOut)
             *passthroughReasonOut = L"invalid hostname";
         Dll_Free(nameLwr);
@@ -7779,6 +7897,161 @@ static GAI_NAME_CHECK_RESULT GAI_PrepareNameLwrForCheck(
 }
 
 //---------------------------------------------------------------------------
+// GAI_SysPassthroughWithRebind
+//
+// Shared helper: call system GetAddrInfoW and apply DNS rebind sanitization.
+// Used by multiple paths in WSA_GetAddrInfoW when falling through to system DNS.
+//---------------------------------------------------------------------------
+
+static INT GAI_SysPassthroughWithRebind(
+    PCWSTR pNodeName, PCWSTR pServiceName, const ADDRINFOW* pHints, PADDRINFOW* ppResult)
+{
+    INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
+    if (result == 0 && ppResult && *ppResult) {
+        DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
+        if (ppResult && !*ppResult) {
+            if (__sys_WSASetLastError)
+                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+            return WSAHOST_NOT_FOUND;
+        }
+    }
+    return result;
+}
+
+//---------------------------------------------------------------------------
+// GAI_TryEncDnsForGetAddrInfoW
+//
+// Shared helper: attempt EncDns resolution for GetAddrInfoW.
+//   - Queries EncDns for the domain
+//   - On success: builds ADDRINFOW list, logs, sets *ppResult, returns 0
+//   - On failure: logs, returns WSAHOST_NOT_FOUND
+//
+// Parameters:
+//   pNodeName, pServiceName, pHints, family - forwarded from caller
+//   tagSuffix  - optional suffix for the log source tag (e.g. L"no cert", L"type passthrough")
+//   ppResult   - [out] synthesized ADDRINFOW chain on success
+//
+// Returns: 0 on success, WSAHOST_NOT_FOUND on failure.
+//          Caller should return the result directly.
+//---------------------------------------------------------------------------
+
+static INT GAI_TryEncDnsForGetAddrInfoW(
+    PCWSTR pNodeName, PCWSTR pServiceName, const ADDRINFOW* pHints,
+    int family, const WCHAR* tagSuffix, PADDRINFOW* ppResult)
+{
+    LIST doh_list;
+    ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
+    WCHAR cname_target[256];
+    if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list, &protocolUsed, cname_target, ARRAYSIZE(cname_target))) {
+        const WCHAR* canon_name = (cname_target[0] != L'\0') ? cname_target : NULL;
+        PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list, canon_name);
+        if (pResult) {
+            WCHAR baseTag[64];
+            DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", protocolUsed);
+            if (tagSuffix && tagSuffix[0]) {
+                WCHAR sourceTag[96];
+                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (%s)", baseTag, tagSuffix);
+                GAI_LogIntercepted(sourceTag, pNodeName, family, &doh_list, TRUE);
+            } else {
+                GAI_LogIntercepted(baseTag, pNodeName, family, &doh_list, TRUE);
+            }
+            DNS_FreeIPEntryList(&doh_list);
+            *ppResult = pResult;
+            return 0;
+        }
+    }
+
+    // EncDns query failed or returned no records
+    DNS_FreeIPEntryList(&doh_list);
+    {
+        WCHAR baseTag[64];
+        DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", ENCRYPTED_DNS_MODE_AUTO);
+        if (tagSuffix && tagSuffix[0]) {
+            WCHAR sourceTag[96];
+            Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (%s)", baseTag, tagSuffix);
+            GAI_LogPassthrough(sourceTag, pNodeName, family, L"no EncDns records");
+        } else {
+            GAI_LogPassthrough(baseTag, pNodeName, family, L"no EncDns records");
+        }
+    }
+    return WSAHOST_NOT_FOUND;
+}
+
+//---------------------------------------------------------------------------
+// GAI_TryEncDnsForGetAddrInfoExW
+//
+// Shared helper: attempt EncDns resolution for GetAddrInfoExW.
+//   - Queries EncDns and builds ADDRINFOEXW chain
+//   - On success: logs, sets *ppResult, returns 0
+//   - On failure: logs, returns WSAHOST_NOT_FOUND
+//---------------------------------------------------------------------------
+
+static INT GAI_TryEncDnsForGetAddrInfoExW(
+    PCWSTR pName, int family, const ADDRINFOEXW* hints, PCWSTR pServiceName,
+    const WCHAR* tagSuffix, PADDRINFOEXW* ppResult)
+{
+    PADDRINFOEXW pResultEx = NULL;
+    ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
+    if (DNS_DoHQueryForGetAddrInfoExW(pName, family, hints, pServiceName, &pResultEx, &protocolUsed)) {
+        LIST log_list;
+        WSA_BuildIPEntryListFromAddrInfoExW(pResultEx, &log_list);
+        WCHAR baseTag[64];
+        DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", protocolUsed);
+        if (tagSuffix && tagSuffix[0]) {
+            WCHAR sourceTag[96];
+            Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (%s)", baseTag, tagSuffix);
+            GAI_LogIntercepted(sourceTag, pName, family, &log_list, TRUE);
+        } else {
+            GAI_LogIntercepted(baseTag, pName, family, &log_list, TRUE);
+        }
+        DNS_FreeIPEntryList(&log_list);
+        *ppResult = pResultEx;
+        return 0;
+    }
+
+    // EncDns query failed or returned no records
+    {
+        WCHAR baseTag[64];
+        DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", ENCRYPTED_DNS_MODE_AUTO);
+        if (tagSuffix && tagSuffix[0]) {
+            WCHAR sourceTag[96];
+            Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (%s)", baseTag, tagSuffix);
+            GAI_LogPassthrough(sourceTag, pName, family, L"no EncDns records");
+        } else {
+            GAI_LogPassthrough(baseTag, pName, family, L"no EncDns records");
+        }
+    }
+    if (ppResult) *ppResult = NULL;
+    if (__sys_WSASetLastError)
+        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+    return WSAHOST_NOT_FOUND;
+}
+
+//---------------------------------------------------------------------------
+// GAI_CallSysExW
+//
+// Shared helper: call system GetAddrInfoExW with async/sync branching.
+// Handles the re-entrancy flag for async calls automatically.
+//---------------------------------------------------------------------------
+
+static INT GAI_CallSysExW(
+    PCWSTR pName, PCWSTR pServiceName, DWORD dwNameSpace, LPGUID lpNspId,
+    const ADDRINFOEXW* hints, PADDRINFOEXW* ppResult, struct timeval* timeout,
+    LPOVERLAPPED lpOverlapped, LPLOOKUPSERVICE_COMPLETION_ROUTINE lpCompletionRoutine,
+    LPHANDLE lpHandle, BOOLEAN isAsync)
+{
+    if (isAsync) {
+        return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
+            pName, pServiceName, dwNameSpace, lpNspId,
+            hints, ppResult, timeout, lpOverlapped,
+            lpCompletionRoutine, lpHandle);
+    }
+    return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                 hints, ppResult, timeout, lpOverlapped,
+                                 lpCompletionRoutine, lpHandle);
+}
+
+//---------------------------------------------------------------------------
 // WSA_GetAddrInfoW
 //
 // Hook for GetAddrInfoW - filters DNS queries and synthesizes responses
@@ -7792,9 +8065,10 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
     PADDRINFOW*     ppResult)
 {
     int family = pHints ? pHints->ai_family : AF_UNSPEC;
+    int hints_flags = pHints ? pHints->ai_flags : 0;
     
-    // Debug log entry
-    GAI_LogDebugEntry(L"GetAddrInfoW", pNodeName, pServiceName, family);
+    // Debug log entry with hints details
+    GAI_LogDebugEntryEx(L"GetAddrInfoW", pNodeName, pServiceName, family, pHints);
     
     // Check if we're being called from within system's getaddrinfo (ANSI)
     // If so, passthrough to avoid returning our private heap allocations
@@ -7813,7 +8087,19 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
     DNS_EXCLUDE_RESOLVE_MODE excludeMode = DNS_EXCLUDE_RESOLVE_SYS;
     const WCHAR* passthroughReason = NULL;
     GAI_NAME_CHECK_RESULT precheck = GAI_PrepareNameLwrForCheck(
-        pNodeName, family, &nameLwr, &excludedFromFiltering, &excludeMode, &passthroughReason);
+        pNodeName, family, hints_flags, &nameLwr, &excludedFromFiltering, &excludeMode, &passthroughReason);
+
+    if (precheck == GAI_NAME_CHECK_NUMERICHOST_REJECT) {
+        if (DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"[GetAddrInfoW] AI_NUMERICHOST set for non-IP '%s' - returning error", pNodeName);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        *ppResult = NULL;
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+        return WSAHOST_NOT_FOUND;
+    }
 
     if (precheck == GAI_NAME_CHECK_INVALID) {
         if (nameLwr)
@@ -7868,47 +8154,15 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             
-            LIST doh_list;
-            ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list, &protocolUsed)) {
-                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
-                if (pResult) {
-                    WCHAR sourceTag[64];
-                    DNS_FormatEncDnsSourceTag(sourceTag, ARRAYSIZE(sourceTag), L"GetAddrInfoW", protocolUsed);
-                    GAI_LogIntercepted(sourceTag, pNodeName, family, &doh_list, TRUE);
-                    DNS_FreeIPEntryList(&doh_list);
-                    Dll_Free(nameLwr);
-                    *ppResult = pResult;
-                    return 0;
-                }
-            }
-            
-            // EncDns query failed or returned no records - return error instead of fallback
-            DNS_FreeIPEntryList(&doh_list);
-            {
-                WCHAR sourceTag[64];
-                DNS_FormatEncDnsSourceTag(sourceTag, ARRAYSIZE(sourceTag), L"GetAddrInfoW", ENCRYPTED_DNS_MODE_AUTO);
-                GAI_LogPassthrough(sourceTag, pNodeName, family, L"no EncDns records");
-            }
+            INT encResult = GAI_TryEncDnsForGetAddrInfoW(pNodeName, pServiceName, pHints, family, NULL, ppResult);
             Dll_Free(nameLwr);
-            return WSAHOST_NOT_FOUND;
+            return encResult;
         }
         
         // EncDns disabled - use system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no filter match");
         Dll_Free(nameLwr);
-        {
-            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
-            if (result == 0 && ppResult && *ppResult) {
-                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
-                if (ppResult && !*ppResult) {
-                    if (__sys_WSASetLastError)
-                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-                    return WSAHOST_NOT_FOUND;
-                }
-            }
-            return result;
-        }
+        return GAI_SysPassthroughWithRebind(pNodeName, pServiceName, pHints, ppResult);
     }
 
     // Domain matches filter - check certificate
@@ -7916,51 +8170,15 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
     if (!DNS_HasValidCertificate) {
         // Domain matches filter but no cert - use encrypted DNS exclusively if enabled, otherwise passthrough
         if (EncryptedDns_IsEnabled()) {
-            LIST doh_list;
-            ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list, &protocolUsed)) {
-                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
-                if (pResult) {
-                    WCHAR baseTag[64];
-                    WCHAR sourceTag[80];
-                    DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", protocolUsed);
-                    Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (no cert)", baseTag);
-                    GAI_LogIntercepted(sourceTag, pNodeName, family, &doh_list, TRUE);
-                    DNS_FreeIPEntryList(&doh_list);
-                    Dll_Free(nameLwr);
-                    *ppResult = pResult;
-                    return 0;
-                }
-            }
-            
-            // EncDns query failed or returned no records - return error instead of fallback
-            DNS_FreeIPEntryList(&doh_list);
-            {
-                WCHAR baseTag[64];
-                WCHAR sourceTag[80];
-                DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", ENCRYPTED_DNS_MODE_AUTO);
-                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (no cert)", baseTag);
-                GAI_LogPassthrough(sourceTag, pNodeName, family, L"no EncDns records");
-            }
+            INT encResult = GAI_TryEncDnsForGetAddrInfoW(pNodeName, pServiceName, pHints, family, L"no cert", ppResult);
             Dll_Free(nameLwr);
-            return WSAHOST_NOT_FOUND;
+            return encResult;
         }
         
         // EncDns disabled - use system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"no certificate");
         Dll_Free(nameLwr);
-        {
-            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
-            if (result == 0 && ppResult && *ppResult) {
-                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
-                if (ppResult && !*ppResult) {
-                    if (__sys_WSASetLastError)
-                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-                    return WSAHOST_NOT_FOUND;
-                }
-            }
-            return result;
-        }
+        return GAI_SysPassthroughWithRebind(pNodeName, pServiceName, pHints, ppResult);
     }
 
     aux = Pattern_Aux(found);
@@ -7996,55 +8214,19 @@ _FX INT WSAAPI WSA_GetAddrInfoW(
     if (type_filter && !DNS_IsTypeInFilterList(type_filter, wType)) {
         // Type not in filter list or negated - try encrypted DNS first, then passthrough
         if (EncryptedDns_IsEnabled()) {
-            LIST doh_list;
-            ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-            if (DNS_DoHQueryForFamily(pNodeName, family, &doh_list, &protocolUsed)) {
-                PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, &doh_list);
-                if (pResult) {
-                    WCHAR baseTag[64];
-                    WCHAR sourceTag[92];
-                    DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", protocolUsed);
-                    Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (type passthrough)", baseTag);
-                    GAI_LogIntercepted(sourceTag, pNodeName, family, &doh_list, TRUE);
-                    DNS_FreeIPEntryList(&doh_list);
-                    Dll_Free(nameLwr);
-                    *ppResult = pResult;
-                    return 0;
-                }
-            }
-            
-            // EncDns query failed or returned no records - return error instead of fallback
-            DNS_FreeIPEntryList(&doh_list);
-            {
-                WCHAR baseTag[64];
-                WCHAR sourceTag[92];
-                DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoW", ENCRYPTED_DNS_MODE_AUTO);
-                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (type passthrough)", baseTag);
-                GAI_LogPassthrough(sourceTag, pNodeName, family, L"no EncDns records");
-            }
+            INT encResult = GAI_TryEncDnsForGetAddrInfoW(pNodeName, pServiceName, pHints, family, L"type passthrough", ppResult);
             Dll_Free(nameLwr);
-            return WSAHOST_NOT_FOUND;
+            return encResult;
         }
         
         // EncDns disabled - passthrough to system DNS
         GAI_LogPassthrough(L"GetAddrInfoW", pNodeName, family, L"type not in filter");
         Dll_Free(nameLwr);
-        {
-            INT result = __sys_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
-            if (result == 0 && ppResult && *ppResult) {
-                DNS_Rebind_SanitizeAddrInfoW(pNodeName, ppResult);
-                if (ppResult && !*ppResult) {
-                    if (__sys_WSASetLastError)
-                        __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-                    return WSAHOST_NOT_FOUND;
-                }
-            }
-            return result;
-        }
+        return GAI_SysPassthroughWithRebind(pNodeName, pServiceName, pHints, ppResult);
     }
 
     // Build synthesized response
-    PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, pEntries);
+    PADDRINFOW pResult = WSA_BuildAddrInfoList(pNodeName, pServiceName, pHints, pEntries, NULL);
     if (!pResult) {
         // No matching entries for requested family - return NODATA-like error
         GAI_LogNoData(L"GetAddrInfoW", pNodeName, family);
@@ -8089,7 +8271,7 @@ _FX INT WSAAPI WSA_getaddrinfo(
         }
         WCHAR* nodeW = (WCHAR*)Dll_AllocTemp((ULONG)(wlen * sizeof(WCHAR)));
         if (nodeW && MultiByteToWideChar(CP_ACP, 0, pNodeName, -1, nodeW, wlen) > 0) {
-            if (!DNS_IsIPAddress(nodeW) && !DNS_IsValidDnsName(nodeW)) {
+            if (!DNS_IsValidQueryName(nodeW)) {
                 GAI_LogBlocked(L"getaddrinfo", nodeW, family);
                 if (__sys_WSASetLastError)
                     __sys_WSASetLastError(WSAHOST_NOT_FOUND);
@@ -8153,28 +8335,14 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
     LPHANDLE        lpHandle)
 {
     int family = hints ? hints->ai_family : AF_UNSPEC;
+    int hints_flags = hints ? hints->ai_flags : 0;
     BOOLEAN isAsync = (lpOverlapped || lpCompletionRoutine) ? TRUE : FALSE;
     
     // Debug log entry
-    GAI_LogDebugEntry(L"GetAddrInfoExW", pName, pServiceName, family);
+    GAI_LogDebugEntryEx(L"GetAddrInfoExW", pName, pServiceName, family, (const ADDRINFOW*)hints);
     
     // Check basic preconditions - passthrough if not filterable
     if (!DNS_FilterEnabled || !pName || !ppResult) {
-        if (isAsync) {
-            // Set re-entrancy flag to prevent WSALookupService from double-intercepting
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                     hints, ppResult, timeout, lpOverlapped,
-                                     lpCompletionRoutine, lpHandle);
-    }
-
-    // Convert to lowercase for checking
-    SIZE_T nameLen = wcslen(pName);
-    if (nameLen == 0 || nameLen > 255) {
         if (isAsync) {
             return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
                 pName, pServiceName, dwNameSpace, lpNspId,
@@ -8191,7 +8359,19 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
     DNS_EXCLUDE_RESOLVE_MODE excludeMode = DNS_EXCLUDE_RESOLVE_SYS;
     const WCHAR* passthroughReason = NULL;
     GAI_NAME_CHECK_RESULT precheck = GAI_PrepareNameLwrForCheck(
-        pName, family, &nameLwr, &excludedFromFiltering, &excludeMode, &passthroughReason);
+        pName, family, hints_flags, &nameLwr, &excludedFromFiltering, &excludeMode, &passthroughReason);
+
+    if (precheck == GAI_NAME_CHECK_NUMERICHOST_REJECT) {
+        if (DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"[GetAddrInfoExW] AI_NUMERICHOST set for non-IP '%s' - returning error", pName);
+            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+        }
+        *ppResult = NULL;
+        if (__sys_WSASetLastError)
+            __sys_WSASetLastError(WSAHOST_NOT_FOUND);
+        return WSAHOST_NOT_FOUND;
+    }
 
     if (precheck == GAI_NAME_CHECK_INVALID) {
         if (nameLwr)
@@ -8208,34 +8388,18 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
             GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, passthroughReason);
         if (nameLwr)
             Dll_Free(nameLwr);
-
-        if (isAsync) {
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                    hints, ppResult, timeout, lpOverlapped,
-                                    lpCompletionRoutine, lpHandle);
+        return GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                              hints, ppResult, timeout, lpOverlapped,
+                              lpCompletionRoutine, lpHandle, isAsync);
     }
 
     if (precheck == GAI_NAME_CHECK_EXCLUDED_SYS) {
         if (nameLwr)
             Dll_Free(nameLwr);
 
-        INT result;
-        if (isAsync) {
-            result = WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        } else {
-            result = __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                          hints, ppResult, timeout, lpOverlapped,
-                                          lpCompletionRoutine, lpHandle);
-        }
+        INT result = GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                                    hints, ppResult, timeout, lpOverlapped,
+                                    lpCompletionRoutine, lpHandle, isAsync);
 
         if (result == 0 && ppResult && *ppResult) {
             LIST log_list;
@@ -8266,48 +8430,18 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
             
-            PADDRINFOEXW pResultEx = NULL;
-            ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-            if (DNS_DoHQueryForGetAddrInfoExW(pName, family, hints, pServiceName, &pResultEx, &protocolUsed)) {
-                LIST log_list;
-                WSA_BuildIPEntryListFromAddrInfoExW(pResultEx, &log_list);
-                WCHAR sourceTag[64];
-                DNS_FormatEncDnsSourceTag(sourceTag, ARRAYSIZE(sourceTag), L"GetAddrInfoExW", protocolUsed);
-                GAI_LogIntercepted(sourceTag, pName, family, &log_list, TRUE);
-                DNS_FreeIPEntryList(&log_list);
-                Dll_Free(nameLwr);
-                *ppResult = pResultEx;
-                if (lpHandle) *lpHandle = NULL;
-                return 0;
-            }
-            
-            // EncDns query failed or returned no records - return error instead of fallback
-            {
-                WCHAR sourceTag[64];
-                DNS_FormatEncDnsSourceTag(sourceTag, ARRAYSIZE(sourceTag), L"GetAddrInfoExW", ENCRYPTED_DNS_MODE_AUTO);
-                GAI_LogPassthrough(sourceTag, pName, family, L"no EncDns records");
-            }
+            INT encResult = GAI_TryEncDnsForGetAddrInfoExW(pName, family, hints, pServiceName, NULL, ppResult);
+            if (encResult == 0 && lpHandle) *lpHandle = NULL;
             Dll_Free(nameLwr);
-            if (ppResult) *ppResult = NULL;
-            if (lpHandle) *lpHandle = NULL;
-            if (__sys_WSASetLastError)
-                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-            return WSAHOST_NOT_FOUND;
+            return encResult;
         }
         
         // EncDns disabled - passthrough to system DNS
         GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, L"no filter match");
         Dll_Free(nameLwr);
-        if (isAsync) {
-            // Set re-entrancy flag to prevent WSALookupService from double-intercepting
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                     hints, ppResult, timeout, lpOverlapped,
-                                     lpCompletionRoutine, lpHandle);
+        return GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                              hints, ppResult, timeout, lpOverlapped,
+                              lpCompletionRoutine, lpHandle, isAsync);
     }
 
     // Domain matches filter - check certificate
@@ -8315,66 +8449,27 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
     if (!DNS_HasValidCertificate) {
         // Domain matches filter but no cert - use encrypted DNS exclusively if enabled, otherwise passthrough
         if (EncryptedDns_IsEnabled()) {
-            PADDRINFOEXW pResultEx = NULL;
-            ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-            if (DNS_DoHQueryForGetAddrInfoExW(pName, family, hints, pServiceName, &pResultEx, &protocolUsed)) {
-                LIST log_list;
-                WSA_BuildIPEntryListFromAddrInfoExW(pResultEx, &log_list);
-                WCHAR baseTag[64];
-                WCHAR sourceTag[80];
-                DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", protocolUsed);
-                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (no cert)", baseTag);
-                GAI_LogIntercepted(sourceTag, pName, family, &log_list, TRUE);
-                DNS_FreeIPEntryList(&log_list);
-                Dll_Free(nameLwr);
-                *ppResult = pResultEx;
-                if (lpHandle) *lpHandle = NULL;
-                return 0;
-            }
-            
-            // EncDns query failed or returned no records - return error instead of fallback
-            {
-                WCHAR baseTag[64];
-                WCHAR sourceTag[80];
-                DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", ENCRYPTED_DNS_MODE_AUTO);
-                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (no cert)", baseTag);
-                GAI_LogPassthrough(sourceTag, pName, family, L"no EncDns records");
-            }
+            INT encResult = GAI_TryEncDnsForGetAddrInfoExW(pName, family, hints, pServiceName, L"no cert", ppResult);
+            if (encResult == 0 && lpHandle) *lpHandle = NULL;
             Dll_Free(nameLwr);
-            if (ppResult) *ppResult = NULL;
-            if (lpHandle) *lpHandle = NULL;
-            if (__sys_WSASetLastError)
-                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-            return WSAHOST_NOT_FOUND;
+            return encResult;
         }
         
         // EncDns disabled - passthrough to system DNS
         GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, L"no certificate");
         Dll_Free(nameLwr);
-        if (isAsync) {
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                     hints, ppResult, timeout, lpOverlapped,
-                                     lpCompletionRoutine, lpHandle);
+        return GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                              hints, ppResult, timeout, lpOverlapped,
+                              lpCompletionRoutine, lpHandle, isAsync);
     }
 
     // Get aux data from filter pattern
     PVOID* aux = Pattern_Aux(found);
     if (!aux || !*aux) {
         Dll_Free(nameLwr);
-        if (isAsync) {
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                     hints, ppResult, timeout, lpOverlapped,
-                                     lpCompletionRoutine, lpHandle);
+        return GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                              hints, ppResult, timeout, lpOverlapped,
+                              lpCompletionRoutine, lpHandle, isAsync);
     }
 
     // --- Domain matches a filter with valid aux, we handle it directly (sync or async) ---
@@ -8393,51 +8488,20 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
             wType = DNS_TYPE_A;  // Will return both if available
     }
 
-    // Check type filter (e.g., NetworkDnsFilter=example.com/A,AAAA)
-    // If the requested type isn't allowed, try EncDns first, then passthrough to system (async or sync)
+    // Check type filter
     if (type_filter && !DNS_IsTypeInFilterList(type_filter, wType)) {
-        // Try encrypted DNS for negated type passthrough queries
-        PADDRINFOEXW pResultEx = NULL;
-        ENCRYPTED_DNS_MODE protocolUsed = ENCRYPTED_DNS_MODE_AUTO;
-        if (DNS_DoHQueryForGetAddrInfoExW(pName, family, hints, pServiceName, &pResultEx, &protocolUsed)) {
-            WCHAR baseTag[64];
-            WCHAR sourceTag[92];
-            DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", protocolUsed);
-            Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (type passthrough)", baseTag);
-            GAI_LogPassthrough(sourceTag, pName, family, L"success");
-            *ppResult = pResultEx;
-            if (lpHandle) *lpHandle = NULL;
-            return 0;
-        }
-        
-        // Encrypted DNS failed or disabled
+        // Type not in filter list - try encrypted DNS first, then passthrough
         if (EncryptedDns_IsEnabled()) {
-            // Encrypted DNS enabled but failed - return error instead of fallback
-            {
-                WCHAR baseTag[64];
-                WCHAR sourceTag[92];
-                DNS_FormatEncDnsSourceTag(baseTag, ARRAYSIZE(baseTag), L"GetAddrInfoExW", ENCRYPTED_DNS_MODE_AUTO);
-                Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"%s (type passthrough)", baseTag);
-                GAI_LogPassthrough(sourceTag, pName, family, L"no EncDns records");
-            }
-            if (ppResult) *ppResult = NULL;
-            if (lpHandle) *lpHandle = NULL;
-            if (__sys_WSASetLastError)
-                __sys_WSASetLastError(WSAHOST_NOT_FOUND);
-            return WSAHOST_NOT_FOUND;
+            INT encResult = GAI_TryEncDnsForGetAddrInfoExW(pName, family, hints, pServiceName, L"type passthrough", ppResult);
+            if (encResult == 0 && lpHandle) *lpHandle = NULL;
+            return encResult;
         }
         
         // EncDns disabled - passthrough to system DNS
         GAI_LogPassthrough(L"GetAddrInfoExW", pName, family, L"type not in filter");
-        if (isAsync) {
-            return WSA_CallSysGetAddrInfoExW_WithReentrancyFlag(
-                pName, pServiceName, dwNameSpace, lpNspId,
-                hints, ppResult, timeout, lpOverlapped,
-                lpCompletionRoutine, lpHandle);
-        }
-        return __sys_GetAddrInfoExW(pName, pServiceName, dwNameSpace, lpNspId,
-                                     hints, ppResult, timeout, lpOverlapped,
-                                     lpCompletionRoutine, lpHandle);
+        return GAI_CallSysExW(pName, pServiceName, dwNameSpace, lpNspId,
+                              hints, ppResult, timeout, lpOverlapped,
+                              lpCompletionRoutine, lpHandle, isAsync);
     }
 
     // Block mode - domain is blocked
@@ -8473,7 +8537,7 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
     }
 
     // Build basic ADDRINFOW first
-    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, pEntries);
+    PADDRINFOW pResultW = WSA_BuildAddrInfoList(pName, pServiceName, &hintsW, pEntries, NULL);
     if (!pResultW) {
         GAI_LogNoData(L"GetAddrInfoExW", pName, family);
         
@@ -8522,13 +8586,19 @@ _FX INT WSAAPI WSA_GetAddrInfoExW(
 //---------------------------------------------------------------------------
 // DNS_IsOurAddrInfo
 //
-// Helper function to check if an ADDRINFO structure belongs to us
-// Returns TRUE if it has our magic marker (AI_SBIE_MARKER in ai_flags)
+// Helper function to check if an ADDRINFO allocation belongs to us.
+// Uses HeapValidate on the private DNS filter heap instead of flags-based
+// marker. This avoids setting non-standard bits in ai_flags which could
+// confuse applications (e.g., ping.exe not displaying canonical names
+// when ai_flags has high bit set making it negative as signed int).
 //---------------------------------------------------------------------------
 
-_FX BOOLEAN DNS_IsOurAddrInfo(int ai_flags)
+_FX BOOLEAN DNS_IsOurAddrInfo(PVOID pAddrInfo)
 {
-    return (ai_flags & AI_SBIE_MARKER) != 0;
+    HANDLE hHeap = g_DnsFilterHeap;
+    if (!hHeap || !pAddrInfo)
+        return FALSE;
+    return HeapValidate(hHeap, 0, pAddrInfo) ? TRUE : FALSE;
 }
 
 //---------------------------------------------------------------------------
@@ -8549,19 +8619,15 @@ static VOID WSA_FreeAddrInfo_Common(PVOID pAddrInfo, P_freeaddrinfo_void sysFree
         return;
     }
 
-    // All addrinfo variants have ai_flags as the first field.
-    if (!DNS_IsOurAddrInfo(*(int*)pAddrInfo)) {
+    // Check if this allocation belongs to our private DNS filter heap.
+    // Uses HeapValidate instead of flags-based marker to avoid polluting ai_flags.
+    if (!DNS_IsOurAddrInfo(pAddrInfo)) {
         if (sysFree)
             sysFree(pAddrInfo);
         return;
     }
 
-    HANDLE hHeap = DNS_GetFilterHeap();
-    if (!hHeap) {
-        if (sysFree)
-            sysFree(pAddrInfo);
-        return;
-    }
+    HANDLE hHeap = g_DnsFilterHeap;  // Already validated non-NULL in DNS_IsOurAddrInfo
 
     // CRITICAL: Our implementations allocate everything in ONE block!
     // Do NOT free embedded pointers (ai_addr/ai_canonname) separately.

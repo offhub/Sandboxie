@@ -19,6 +19,14 @@
 #ifndef _WSA_DEFS_H
 #define _WSA_DEFS_H
 
+// Namespace identifiers (from ws2spi.h / nspapi.h)
+#ifndef NS_ALL
+#define NS_ALL 0
+#endif
+#ifndef NS_DNS
+#define NS_DNS 12
+#endif
+
 //---------------------------------------------------------------------------
 // Prototypes
 //---------------------------------------------------------------------------

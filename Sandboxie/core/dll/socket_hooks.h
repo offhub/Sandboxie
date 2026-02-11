@@ -105,7 +105,9 @@ int Socket_BuildDnsResponse(
     struct _DNS_TYPE_FILTER* type_filter,
     const WCHAR*   domain,
     const BYTE*    edns_record,
-    int            edns_record_len);
+    int            edns_record_len,
+    const WCHAR*   cname_owner,
+    const WCHAR*   cname_target);
 
 // WSARecvMsg interception for Cygwin UDP recv support
 // Called by WSA_WSAIoctl in net.c when WSARecvMsg extension is requested

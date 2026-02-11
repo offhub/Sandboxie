@@ -1345,6 +1345,34 @@ _FX void GAI_LogDebugEntry(const WCHAR* funcName, const WCHAR* domain, const WCH
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
+_FX void GAI_LogDebugEntryEx(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family, const void* pHints)
+{
+    if (!DNS_DebugFlag)
+        return;
+    if (!domain)
+        return;
+    
+    WCHAR msg[512];
+    // ADDRINFOW and ADDRINFOEXW share the same first 4 int-sized fields:
+    //   ai_flags, ai_family, ai_socktype, ai_protocol
+    typedef struct { int ai_flags; int ai_family; int ai_socktype; int ai_protocol; } HINTS_COMMON;
+    const HINTS_COMMON* h = (const HINTS_COMMON*)pHints;
+    
+    if (h) {
+        Sbie_snwprintf(msg, 512,
+            L"  %s Entry: domain=%s, service=%s, family=%s, hints.ai_flags=0x%08X, hints.ai_socktype=%d, hints.ai_protocol=%d",
+            funcName ? funcName : L"GetAddrInfo",
+            domain, service ? service : L"(null)",
+            GAI_GetFamilyName(family),
+            h->ai_flags, h->ai_socktype, h->ai_protocol);
+    } else {
+        Sbie_snwprintf(msg, 512, L"  %s Entry: domain=%s, service=%s, family=Any, hints=(NULL)",
+            funcName ? funcName : L"GetAddrInfo",
+            domain, service ? service : L"(null)");
+    }
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
 //---------------------------------------------------------------------------
 // Debug logging helpers
 //---------------------------------------------------------------------------

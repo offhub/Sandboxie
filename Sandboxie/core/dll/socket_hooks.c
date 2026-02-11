@@ -459,7 +459,9 @@ static BOOLEAN Socket_TryHandleIpLiteralDnsQuery(
         NULL,
         domainName,
         edns_len > 0 ? edns_buffer : NULL,
-        edns_len);
+        edns_len,
+        NULL,
+        NULL);
 
     // Free temporary IP list
     IP_ENTRY* pFree = (IP_ENTRY*)List_Head(&ip_list);
@@ -512,7 +514,9 @@ static BOOLEAN Socket_BlockInvalidDomain(
         NULL,
         domainName,
         edns_len > 0 ? edns_buffer : NULL,
-        edns_len);
+        edns_len,
+        NULL,
+        NULL);
 
     if (response_len <= 0) {
         if (dns_payload_len >= (int)sizeof(DNS_WIRE_HEADER)) {
@@ -671,7 +675,58 @@ static int Socket_MatchDomainHierarchical(
     PATTERN**      found);
 
 // Fake response helpers
-int Socket_BuildDnsResponse(
+static int Socket_EncodeDnsNameAscii(const WCHAR* name, BYTE* out, int out_size)
+{
+    if (!name || !out || out_size <= 0)
+        return -1;
+
+    int offset = 0;
+    const WCHAR* label = name;
+    const WCHAR* p = name;
+
+    while (*p) {
+        if (*p == L'.') {
+            int label_len = (int)(p - label);
+            if (label_len <= 0 || label_len > 63)
+                return -1;
+            if (offset + 1 + label_len >= out_size)
+                return -1;
+
+            out[offset++] = (BYTE)label_len;
+            for (int i = 0; i < label_len; i++) {
+                WCHAR ch = label[i];
+                if (ch > 0x7F)
+                    return -1;
+                out[offset++] = (BYTE)ch;
+            }
+            label = p + 1;
+        }
+        p++;
+    }
+
+    if (p != label) {
+        int label_len = (int)(p - label);
+        if (label_len <= 0 || label_len > 63)
+            return -1;
+        if (offset + 1 + label_len >= out_size)
+            return -1;
+        out[offset++] = (BYTE)label_len;
+        for (int i = 0; i < label_len; i++) {
+            WCHAR ch = label[i];
+            if (ch > 0x7F)
+                return -1;
+            out[offset++] = (BYTE)ch;
+        }
+    }
+
+    if (offset + 1 > out_size)
+        return -1;
+    out[offset++] = 0;
+
+    return offset;
+}
+
+_FX int Socket_BuildDnsResponse(
     const BYTE*    query,
     int            query_len,
     struct _LIST*  pEntries,
@@ -682,7 +737,9 @@ int Socket_BuildDnsResponse(
     struct _DNS_TYPE_FILTER* type_filter,
     const WCHAR*   domain,
     const BYTE*    edns_record,
-    int            edns_record_len);
+    int            edns_record_len,
+    const WCHAR*   cname_owner,
+    const WCHAR*   cname_target);
 
 static BOOLEAN Socket_HasFakeResponse(SOCKET s);
 
@@ -1113,7 +1170,9 @@ static int Socket_HandleDnsQuery(
     int response_len = Socket_BuildDnsResponse(
         dns_payload, dns_payload_len, pEntries, pEntries == NULL, 
         response, response_size, qtype, type_filter, domain,
-        edns_len > 0 ? edns_buffer : NULL, edns_len);
+        edns_len > 0 ? edns_buffer : NULL, edns_len,
+        NULL,
+        NULL);
     
     // Handle errors
     if (response_len < 0 && DNS_TraceFlag) {
@@ -1357,7 +1416,9 @@ static int Socket_BuildDoHResponse(
     const WCHAR* rebind_domain = excludeEnc ? NULL : domain;
     int response_len = Socket_BuildDnsResponse(
         query, query_len, &ip_list, FALSE, response, response_size, qtype, NULL, rebind_domain,
-        edns_len > 0 ? edns_buffer : NULL, edns_len);
+        edns_len > 0 ? edns_buffer : NULL, edns_len,
+        (doh_result.HasCname && doh_result.CnameOwner[0] != L'\0') ? doh_result.CnameOwner : NULL,
+        (doh_result.HasCname && doh_result.CnameTarget[0] != L'\0') ? doh_result.CnameTarget : NULL);
     
     // Free the IP list
     IP_ENTRY* entry = (IP_ENTRY*)List_Head(&ip_list);
@@ -3686,7 +3747,9 @@ _FX int Socket_BuildDnsResponse(
     struct _DNS_TYPE_FILTER* type_filter,
     const WCHAR*   domain,
     const BYTE*    edns_record,
-    int            edns_record_len)
+    int            edns_record_len,
+    const WCHAR*   cname_owner,
+    const WCHAR*   cname_target)
 {
     if (!query || !response || query_len < sizeof(DNS_WIRE_HEADER) || response_size < 512)
         return -1;
@@ -3836,6 +3899,7 @@ _FX int Socket_BuildDnsResponse(
 
     // Actual number of answer RRs emitted (may differ from pre-count due to rebind filtering).
     USHORT built_answers = 0;
+    USHORT cname_target_ptr = 0;
     
     // Check if we need IPv4-to-IPv6 mapping (AAAA query with no IPv6 addresses)
     BOOLEAN need_ipv4_mapping = FALSE;
@@ -3857,6 +3921,33 @@ _FX int Socket_BuildDnsResponse(
     WCHAR filtered_msg[512];
     filtered_msg[0] = L'\0';
     
+    if ((qtype_host == DNS_TYPE_A || qtype_host == DNS_TYPE_AAAA) &&
+        cname_owner && cname_owner[0] != L'\0' &&
+        cname_target && cname_target[0] != L'\0') {
+        int cname_rdata_max = response_size - offset - (int)sizeof(DNS_RR);
+        if (cname_rdata_max > 0) {
+            int cname_rdata_len = Socket_EncodeDnsNameAscii(
+                cname_target,
+                response + offset + sizeof(DNS_RR),
+                cname_rdata_max);
+            if (cname_rdata_len > 0) {
+                DNS_RR* rr = (DNS_RR*)(response + offset);
+                rr->name = _htons(0xC00C);
+                rr->type = _htons(DNS_TYPE_CNAME);
+                rr->rr_class = _htons(1);
+                rr->ttl = _htonl(300);
+                rr->rdlength = _htons((USHORT)cname_rdata_len);
+                cname_target_ptr = (USHORT)(0xC000 | (offset + (int)sizeof(DNS_RR)));
+                offset += sizeof(DNS_RR) + cname_rdata_len;
+                built_answers++;
+                if (DNS_TraceFlag && cname_owner && cname_owner[0] != L'\0') {
+                    DNS_TRACE_LOG(L"[EncDns] Raw response owner set to CNAME target: %s -> %s",
+                        cname_owner, cname_target);
+                }
+            }
+        }
+    }
+
     while (entry) {
         BOOLEAN match = FALSE;
         int rdata_len = 0;
@@ -3908,7 +3999,7 @@ _FX int Socket_BuildDnsResponse(
             DNS_RR* rr = (DNS_RR*)(response + offset);
             
             // Compressed name pointer (0xC00C points to offset 12 - first question name)
-            rr->name = _htons(0xC00C);
+            rr->name = _htons(cname_target_ptr ? cname_target_ptr : 0xC00C);
             rr->type = _htons(record_type);  // Use actual record type (A or AAAA), not query type
             rr->rr_class = _htons(1);  // IN (Internet)
             rr->ttl = _htonl(300);     // 5 minutes TTL

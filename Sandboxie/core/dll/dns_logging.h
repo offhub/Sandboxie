@@ -271,6 +271,10 @@ void GAI_LogNoData(const WCHAR* funcName, const WCHAR* domain, int family);
 // Debug: Log GetAddrInfo* function entry
 void GAI_LogDebugEntry(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family);
 
+// Debug: Log GetAddrInfo* function entry with hints details (flags, socktype, protocol)
+// pHints should point to an ADDRINFOW or compatible struct (first 4 int fields match ADDRINFOEXW).
+void GAI_LogDebugEntryEx(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family, const void* pHints);
+
 //---------------------------------------------------------------------------
 // Debug logging helpers
 //---------------------------------------------------------------------------
