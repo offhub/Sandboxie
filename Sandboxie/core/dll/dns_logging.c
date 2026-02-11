@@ -1436,6 +1436,19 @@ _FX void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value)
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
+_FX void DNS_LogExclusionInitDefault(const WCHAR* label, const WCHAR* value)
+{
+    if (!value || !DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+
+    if (!label || !*label)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, 512, L"DNS Exclusion Init: %s, Patterns='%s'", label, value);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
 //---------------------------------------------------------------------------
 // DnsQueryEx Debug Logging
 //---------------------------------------------------------------------------

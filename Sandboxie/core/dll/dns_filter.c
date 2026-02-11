@@ -56,6 +56,13 @@
 //         * sys: resolve via system DNS
 //         * enc: resolve via EncryptedDnsServer (if configured)
 //     - Special token: @nodot@ matches single-label names (no dots, trailing dot ignored)
+//     - Special token: @ip@ matches IP literals (IPv4/IPv6)
+//     - Special token: @pip@ matches private IP literals (RFC1918, ULA fc00::/7, loopback)
+//     - Special token: @lrdns@ matches local reverse DNS names for private/loopback IPs
+//     - Default behavior when EncDns is enabled: treat IP literals as sys:@ip@
+//     - Default behavior when EncDns is enabled: treat single-label names as sys:@nodot@
+//     - Default behavior when EncDns is enabled: treat private IPs as sys:@pip@
+//     - Default behavior when EncDns is enabled: treat local reverse DNS as sys:@lrdns@
 //
 // Hook enablement / behavior toggles:
 //   FilterDnsApi=[process,]y|n     (default: y)
@@ -571,6 +578,7 @@ static ULONG DNS_ExclusionListCount = 0;
 static BOOLEAN DNS_ExclusionsLoaded = FALSE;
 static BOOLEAN DNS_DebugOptionsLoaded = FALSE;
 static BOOLEAN DNS_DebugExclusionLogs = FALSE;
+static BOOLEAN DNS_DefaultExclusionLogged = FALSE;
 
 static void DNS_EnsureDebugOptionsLoaded(void);
 static void DNS_LoadExclusionRules(void);
@@ -581,6 +589,8 @@ static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level);
 static BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain);
 static BOOLEAN DNS_LoadFilterEntries(void);
 static BOOLEAN DNS_IsIPAddress(const WCHAR* str);
+static BOOLEAN DNS_IsPrivateIpLiteral(const WCHAR* domain);
+static BOOLEAN DNS_IsLocalReverseDnsName(const WCHAR* domain);
 
 static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* pModeOut);
 
@@ -760,6 +770,25 @@ _FX WSA_LOOKUP* WSA_GetLookup(HANDLE h, BOOLEAN bCanAdd)
     
     LeaveCriticalSection(&WSA_LookupMap_CritSec);
     return pLookup;
+}
+
+//---------------------------------------------------------------------------
+// WSA_FormatGUID - Format a GUID to full hex string
+//---------------------------------------------------------------------------
+
+static __forceinline void WSA_FormatGUID(const GUID* guid, WCHAR* buffer, SIZE_T bufferSize)
+{
+    if (!guid || !buffer || bufferSize < 37) {  // 36 chars + null terminator
+        if (buffer && bufferSize > 0) buffer[0] = L'\0';
+        return;
+    }
+    
+    Sbie_snwprintf(buffer, bufferSize, 
+        L"%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX",
+        guid->Data1, guid->Data2, guid->Data3,
+        guid->Data4[0], guid->Data4[1], guid->Data4[2],
+        guid->Data4[3], guid->Data4[4], guid->Data4[5],
+        guid->Data4[6], guid->Data4[7]);
 }
 
 //---------------------------------------------------------------------------
@@ -959,8 +988,13 @@ _FX BOOLEAN WSA_FillResponseStructure(
 
     // Buffer not enough, return error
     if (*lpdwBufferLength < (DWORD)neededSize) {
-        DNS_DEBUG_LOG(L"[DNS] WSA_FillResponseStructure WSAEFAULT: have=%lu need=%lu domain=%s ipCount=%lu", \
-            (ULONG)*lpdwBufferLength, (ULONG)neededSize, pLookup->DomainName, (ULONG)ipCount);
+        WCHAR guidBuf[37] = L"";
+        if (pLookup->ServiceClassId) {
+            WSA_FormatGUID(pLookup->ServiceClassId, guidBuf, sizeof(guidBuf) / sizeof(guidBuf[0]));
+        }
+        DNS_DEBUG_LOG(L"[DNS] WSA_FillResponseStructure WSAEFAULT: have=%lu need=%lu domain=%s ipCount=%lu guid=%s", \
+            (ULONG)*lpdwBufferLength, (ULONG)neededSize, pLookup->DomainName, (ULONG)ipCount, \
+            guidBuf[0] ? guidBuf : L"null");
         *lpdwBufferLength = (DWORD)neededSize;
         SetLastError(WSAEFAULT);
         return FALSE;
@@ -1326,6 +1360,54 @@ static void DNS_ParseExclusionPatterns(DNS_EXCLUSION_LIST* excl, const WCHAR* va
     Dll_Free(local_buf);
 }
 
+static BOOLEAN DNS_ExclusionListHasToken(const DNS_EXCLUSION_LIST* excl, const WCHAR* token)
+{
+    if (!excl || !token)
+        return FALSE;
+
+    for (ULONG i = 0; i < excl->count; ++i) {
+        const WCHAR* pattern = excl->patterns[i];
+        if (pattern && _wcsicmp(pattern, token) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN DNS_TokenOverriddenForImage(const WCHAR* token)
+{
+    if (!token)
+        return FALSE;
+
+    const WCHAR* image = Dll_ImageName;
+    for (ULONG i = 0; i < DNS_ExclusionListCount; ++i) {
+        const DNS_EXCLUSION_LIST* excl = &DNS_ExclusionLists[i];
+        if (excl->image_name) {
+            if (!image || _wcsicmp(excl->image_name, image) != 0)
+                continue;
+        }
+
+        if (DNS_ExclusionListHasToken(excl, token))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static void DNS_AppendDefaultExclusionToken(WCHAR* buf, size_t buf_cch, const WCHAR* token)
+{
+    if (!buf || !token || buf_cch == 0)
+        return;
+
+    size_t len = wcslen(buf);
+    if (len > 0) {
+        wcsncat(buf, L";", buf_cch - len - 1);
+        len = wcslen(buf);
+    }
+
+    wcsncat(buf, token, buf_cch - len - 1);
+}
+
 static void DNS_LoadExclusionRules(void)
 {
     DNS_EnsureDebugOptionsLoaded();
@@ -1360,6 +1442,26 @@ static void DNS_LoadExclusionRules(void)
 
         DNS_LogExclusionInit(excl->image_name, value);
         DNS_ParseExclusionPatterns(excl, value);
+    }
+
+    if (EncryptedDns_IsEnabled() && !DNS_DefaultExclusionLogged) {
+        WCHAR defaults[128];
+        defaults[0] = L'\0';
+
+        if (!DNS_TokenOverriddenForImage(L"@ip@"))
+            DNS_AppendDefaultExclusionToken(defaults, ARRAYSIZE(defaults), L"sys:@ip@");
+        if (!DNS_TokenOverriddenForImage(L"@nodot@"))
+            DNS_AppendDefaultExclusionToken(defaults, ARRAYSIZE(defaults), L"sys:@nodot@");
+        if (!DNS_TokenOverriddenForImage(L"@pip@"))
+            DNS_AppendDefaultExclusionToken(defaults, ARRAYSIZE(defaults), L"sys:@pip@");
+        if (!DNS_TokenOverriddenForImage(L"@lrdns@"))
+            DNS_AppendDefaultExclusionToken(defaults, ARRAYSIZE(defaults), L"sys:@lrdns@");
+
+        if (defaults[0] != L'\0') {
+            DNS_LogExclusionInitDefault(L"Global - EncDns (default)", defaults);
+        }
+
+        DNS_DefaultExclusionLogged = TRUE;
     }
 }
 
@@ -1954,6 +2056,34 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
             return TRUE;
     }
 
+    // Default EncDns behavior: single-label names are treated as sys:@nodot@ unless overridden.
+    if (EncryptedDns_IsEnabled() && DNS_IsSingleLabelDomain(domain)) {
+        if (pModeOut)
+            *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
+        return TRUE;
+    }
+
+    // Default EncDns behavior: private/local IP literals are treated as sys:@pip@ unless overridden.
+    if (EncryptedDns_IsEnabled() && DNS_IsPrivateIpLiteral(domain)) {
+        if (pModeOut)
+            *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
+        return TRUE;
+    }
+
+    // Default EncDns behavior: IP literals are treated as sys:@ip@ unless overridden.
+    if (EncryptedDns_IsEnabled() && DNS_IsIPAddress(domain)) {
+        if (pModeOut)
+            *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
+        return TRUE;
+    }
+
+    // Default EncDns behavior: local reverse DNS names are treated as sys:@lrdns@ unless overridden.
+    if (EncryptedDns_IsEnabled() && DNS_IsLocalReverseDnsName(domain)) {
+        if (pModeOut)
+            *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
+        return TRUE;
+    }
+
     return FALSE;
 }
 
@@ -2094,6 +2224,15 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
 
     BOOLEAN has_nodot_token = FALSE;
     ULONG nodot_index = 0;
+    BOOLEAN has_ip_token = FALSE;
+    ULONG ip_index = 0;
+    BOOLEAN has_pip_token = FALSE;
+    ULONG pip_index = 0;
+    BOOLEAN has_lrdns_token = FALSE;
+    ULONG lrdns_index = 0;
+    const BOOLEAN is_ip_literal = DNS_IsIPAddress(domain);
+    const BOOLEAN is_private_ip_literal = is_ip_literal ? DNS_IsPrivateIpLiteral(domain) : FALSE;
+    const BOOLEAN is_local_reverse = DNS_IsLocalReverseDnsName(domain);
     
     // Add all patterns from exclusion list to temp pattern list
     for (ULONG j = 0; j < excl->count; ++j) {
@@ -2104,6 +2243,24 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
         if (_wcsicmp(pattern, L"@nodot@") == 0) {
             has_nodot_token = TRUE;
             nodot_index = j;
+            continue;
+        }
+
+        if (_wcsicmp(pattern, L"@ip@") == 0) {
+            has_ip_token = TRUE;
+            ip_index = j;
+            continue;
+        }
+
+        if (_wcsicmp(pattern, L"@pip@") == 0) {
+            has_pip_token = TRUE;
+            pip_index = j;
+            continue;
+        }
+
+        if (_wcsicmp(pattern, L"@lrdns@") == 0) {
+            has_lrdns_token = TRUE;
+            lrdns_index = j;
             continue;
         }
 
@@ -2119,6 +2276,55 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
         }
     }
     
+    // If @pip@/@ip@ is present and the query is an IP literal, prefer it over wildcard matches.
+    if (is_private_ip_literal && has_pip_token) {
+        // Cleanup patterns
+        PATTERN* pat = (PATTERN*)List_Head(&temp_list);
+        while (pat) {
+            PATTERN* next = (PATTERN*)List_Next(pat);
+            Pattern_Free(pat);
+            pat = next;
+        }
+
+        DNS_LogDebugExclusionMatch(domain, L"@pip@");
+        if (pModeOut && pip_index < excl->count) {
+            *pModeOut = (DNS_EXCLUDE_RESOLVE_MODE)excl->modes[pip_index];
+        }
+        return TRUE;
+    }
+
+    if (is_ip_literal && has_ip_token) {
+        // Cleanup patterns
+        PATTERN* pat = (PATTERN*)List_Head(&temp_list);
+        while (pat) {
+            PATTERN* next = (PATTERN*)List_Next(pat);
+            Pattern_Free(pat);
+            pat = next;
+        }
+
+        DNS_LogDebugExclusionMatch(domain, L"@ip@");
+        if (pModeOut && ip_index < excl->count) {
+            *pModeOut = (DNS_EXCLUDE_RESOLVE_MODE)excl->modes[ip_index];
+        }
+        return TRUE;
+    }
+
+    if (is_local_reverse && has_lrdns_token) {
+        // Cleanup patterns
+        PATTERN* pat = (PATTERN*)List_Head(&temp_list);
+        while (pat) {
+            PATTERN* next = (PATTERN*)List_Next(pat);
+            Pattern_Free(pat);
+            pat = next;
+        }
+
+        DNS_LogDebugExclusionMatch(domain, L"@lrdns@");
+        if (pModeOut && lrdns_index < excl->count) {
+            *pModeOut = (DNS_EXCLUDE_RESOLVE_MODE)excl->modes[lrdns_index];
+        }
+        return TRUE;
+    }
+
     // Match domain against pattern list
     size_t domain_len = wcslen(domain);
     WCHAR* domain_copy = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
@@ -3285,19 +3491,19 @@ _FX int WSA_WSALookupServiceNextW(
                 lpqsResults->lpBlob->pBlobData);
 
             if (!lpqsResults->lpBlob->pBlobData || lpqsResults->lpBlob->cbSize < sizeof(HOSTENT)) {
-                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (null or too small)");
+                WCHAR guidBuf[37] = L"";
+                if (hostentClassId) {
+                    WSA_FormatGUID(hostentClassId, guidBuf, sizeof(guidBuf) / sizeof(guidBuf[0]));
+                }
+                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (null or too small) guid=%s", 
+                    guidBuf[0] ? guidBuf : L"null");
             } else if (!hostentClassId) {
                 DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (no service class id)");
             } else if (!WSA_IsHostentClass(hostentClassId)) {
-                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (non-hostent class Data1=0x%08lX)",
-                    hostentClassId ? hostentClassId->Data1 : 0);
-                if (hostentClassId) {
-                    DNS_DEBUG_LOG(L"  HOSTENT: Non-hostent GUID=%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX",
-                        hostentClassId->Data1, hostentClassId->Data2, hostentClassId->Data3,
-                        hostentClassId->Data4[0], hostentClassId->Data4[1], hostentClassId->Data4[2],
-                        hostentClassId->Data4[3], hostentClassId->Data4[4], hostentClassId->Data4[5],
-                        hostentClassId->Data4[6], hostentClassId->Data4[7]);
-                }
+                WCHAR guidBuf[37] = L"";
+                WSA_FormatGUID(hostentClassId, guidBuf, sizeof(guidBuf) / sizeof(guidBuf[0]));
+                DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (non-hostent) Data1=0x%08lX GUID=%s",
+                    hostentClassId->Data1, guidBuf);
             } else {
                 HOSTENT* hp = (HOSTENT*)lpqsResults->lpBlob->pBlobData;
                 USHORT expected_af = (query_type == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
@@ -6476,6 +6682,415 @@ static BOOLEAN DNS_IsIPv4MappedIPv6Literal(const WCHAR* str)
 }
 
 //---------------------------------------------------------------------------
+// Private/local IP matching helpers (TemplateDnsRebindProtection defaults)
+//---------------------------------------------------------------------------
+
+#define DNS_PIP_RULE_MAX 64
+typedef struct _DNS_PIP_RULE {
+    USHORT af;
+    UCHAR  prefix_len;
+    IP_ADDRESS ip;
+} DNS_PIP_RULE;
+
+static DNS_PIP_RULE DNS_PipRules[DNS_PIP_RULE_MAX];
+static ULONG DNS_PipRuleCount = 0;
+static BOOLEAN DNS_PipRulesLoaded = FALSE;
+
+static WCHAR* DNS_FindCharOutsideBrackets(WCHAR* s, WCHAR ch)
+{
+    int depth = 0;
+    for (WCHAR* p = s; p && *p; ++p) {
+        if (*p == L'[')
+            depth++;
+        else if (*p == L']' && depth > 0)
+            depth--;
+        else if (depth == 0 && *p == ch)
+            return p;
+    }
+    return NULL;
+}
+
+static WCHAR* DNS_TrimInPlace(WCHAR* s)
+{
+    if (!s)
+        return s;
+
+    while (*s == L' ' || *s == L'\t' || *s == L'\r' || *s == L'\n')
+        ++s;
+
+    size_t len = wcslen(s);
+    while (len > 0) {
+        WCHAR c = s[len - 1];
+        if (c != L' ' && c != L'\t' && c != L'\r' && c != L'\n')
+            break;
+        s[len - 1] = 0;
+        --len;
+    }
+
+    return s;
+}
+
+static BOOLEAN DNS_ParseCidrPattern(const WCHAR* pattern, USHORT* af_out, UCHAR* prefix_out, IP_ADDRESS* ip_out)
+{
+    if (!pattern || !af_out || !prefix_out || !ip_out)
+        return FALSE;
+
+    WCHAR tmp[256];
+    size_t len = wcslen(pattern);
+    if (len >= ARRAYSIZE(tmp))
+        return FALSE;
+    wmemcpy(tmp, pattern, len + 1);
+
+    WCHAR* s = DNS_TrimInPlace(tmp);
+    if (!s || !*s)
+        return FALSE;
+
+    int prefix_val = -1;
+    WCHAR* slash = DNS_FindCharOutsideBrackets(s, L'/');
+    if (slash) {
+        *slash = L'\0';
+        WCHAR* pfx = DNS_TrimInPlace(slash + 1);
+        if (!pfx || !*pfx)
+            return FALSE;
+        prefix_val = _wtoi(pfx);
+    }
+
+    USHORT af = 0;
+    if (_inet_xton(s, (ULONG)wcslen(s), ip_out, &af) != 1)
+        return FALSE;
+
+    int max_prefix = (af == AF_INET) ? 32 : 128;
+    if (prefix_val < 0)
+        prefix_val = max_prefix;
+    if (prefix_val < 0 || prefix_val > max_prefix)
+        return FALSE;
+
+    *af_out = af;
+    *prefix_out = (UCHAR)prefix_val;
+    return TRUE;
+}
+
+static BOOLEAN DNS_IsV4MappedIp(const IP_ADDRESS* ip)
+{
+    if (!ip)
+        return FALSE;
+
+    for (int i = 0; i < 10; ++i) {
+        if (ip->Data[i] != 0)
+            return FALSE;
+    }
+    return (ip->Data[10] == 0xFF && ip->Data[11] == 0xFF);
+}
+
+static BOOLEAN DNS_MatchPrefixBits(const BYTE* a, const BYTE* b, int bits, int bytes)
+{
+    if (!a || !b || bits <= 0)
+        return FALSE;
+
+    int full = bits / 8;
+    int rem = bits % 8;
+    for (int i = 0; i < full && i < bytes; ++i) {
+        if (a[i] != b[i])
+            return FALSE;
+    }
+    if (rem > 0 && full < bytes) {
+        BYTE mask = (BYTE)(0xFF << (8 - rem));
+        if ((a[full] ^ b[full]) & mask)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+static void DNS_LoadPipRulesFromTemplate(void)
+{
+    if (DNS_PipRulesLoaded)
+        return;
+
+    DNS_PipRulesLoaded = TRUE;
+
+    static const WCHAR* kSettingNames[] = {
+        L"FilterDnsIP"
+    };
+
+    WCHAR conf_buf[256];
+    for (int setting_index = 0; setting_index < ARRAYSIZE(kSettingNames); ++setting_index) {
+        const WCHAR* setting_name = kSettingNames[setting_index];
+        for (ULONG index = 0; ; ++index) {
+            NTSTATUS status = SbieApi_QueryConf(L"TemplateDnsRebindProtection", setting_name,
+                                                index, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR));
+            if (!NT_SUCCESS(status))
+                break;
+
+            if (!conf_buf[0])
+                continue;
+
+            WCHAR tmp[256];
+            size_t len = wcslen(conf_buf);
+            if (len >= ARRAYSIZE(tmp))
+                continue;
+            wmemcpy(tmp, conf_buf, len + 1);
+
+            WCHAR* s = DNS_TrimInPlace(tmp);
+            WCHAR* semicolon = DNS_FindCharOutsideBrackets(s, L';');
+            if (semicolon)
+                *semicolon = 0;
+
+            USHORT af = 0;
+            UCHAR prefix = 0;
+            IP_ADDRESS ip = { 0 };
+            if (!DNS_ParseCidrPattern(s, &af, &prefix, &ip))
+                continue;
+
+            if (DNS_PipRuleCount >= DNS_PIP_RULE_MAX)
+                continue;
+
+            DNS_PipRules[DNS_PipRuleCount].af = af;
+            DNS_PipRules[DNS_PipRuleCount].prefix_len = prefix;
+            DNS_PipRules[DNS_PipRuleCount].ip = ip;
+            DNS_PipRuleCount++;
+        }
+    }
+}
+
+static BOOLEAN DNS_PipRulesMatchIp(const IP_ADDRESS* ip, USHORT af)
+{
+    if (!ip)
+        return FALSE;
+
+    DNS_LoadPipRulesFromTemplate();
+
+    const BYTE* ip_bytes = NULL;
+    int ip_bytes_len = 0;
+    BYTE v4_bytes[4] = { 0 };
+
+    if (af == AF_INET) {
+        ip_bytes = &ip->Data[12];
+        ip_bytes_len = 4;
+    } else if (af == AF_INET6 && DNS_IsV4MappedIp(ip)) {
+        v4_bytes[0] = ip->Data[12];
+        v4_bytes[1] = ip->Data[13];
+        v4_bytes[2] = ip->Data[14];
+        v4_bytes[3] = ip->Data[15];
+        ip_bytes = v4_bytes;
+        ip_bytes_len = 4;
+        af = AF_INET;
+    } else if (af == AF_INET6) {
+        ip_bytes = ip->Data;
+        ip_bytes_len = 16;
+    }
+
+    if (!ip_bytes)
+        return FALSE;
+
+    if (DNS_PipRuleCount > 0) {
+        for (ULONG i = 0; i < DNS_PipRuleCount; ++i) {
+            const DNS_PIP_RULE* rule = &DNS_PipRules[i];
+            if (rule->af != af)
+                continue;
+
+            const BYTE* rule_bytes = (af == AF_INET) ? &rule->ip.Data[12] : rule->ip.Data;
+            int max_bits = (af == AF_INET) ? 32 : 128;
+            if (rule->prefix_len > (UCHAR)max_bits)
+                continue;
+
+            if (DNS_MatchPrefixBits(ip_bytes, rule_bytes, (int)rule->prefix_len, ip_bytes_len))
+                return TRUE;
+        }
+
+        return FALSE;
+    }
+
+    if (af == AF_INET) {
+        const BYTE b0 = ip_bytes[0];
+        const BYTE b1 = ip_bytes[1];
+        if (b0 == 10 || b0 == 127)
+            return TRUE;
+        if (b0 == 172 && b1 >= 16 && b1 <= 31)
+            return TRUE;
+        if (b0 == 192 && b1 == 168)
+            return TRUE;
+        return FALSE;
+    }
+
+    if (af == AF_INET6) {
+        BOOLEAN is_loopback = TRUE;
+        for (int i = 0; i < 15; ++i) {
+            if (ip->Data[i] != 0) {
+                is_loopback = FALSE;
+                break;
+            }
+        }
+        if (is_loopback && ip->Data[15] == 1)
+            return TRUE;
+
+        if (ip->Data[0] == 0xFC || ip->Data[0] == 0xFD)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN DNS_IsPrivateIpLiteral(const WCHAR* domain)
+{
+    if (!domain || !*domain)
+        return FALSE;
+
+    USHORT af = 0;
+    IP_ADDRESS ip = { 0 };
+    if (_inet_xton(domain, (ULONG)wcslen(domain), &ip, &af) != 1)
+        return FALSE;
+
+    return DNS_PipRulesMatchIp(&ip, af);
+}
+
+static BOOLEAN DNS_ParseIpv4Arpa(const WCHAR* domain, IP_ADDRESS* ip_out)
+{
+    if (!domain || !ip_out)
+        return FALSE;
+
+    WCHAR tmp[256];
+    size_t len = wcslen(domain);
+    if (len >= ARRAYSIZE(tmp))
+        return FALSE;
+    wmemcpy(tmp, domain, len + 1);
+
+    // Strip trailing dot
+    if (len > 0 && tmp[len - 1] == L'.')
+        tmp[--len] = L'\0';
+
+    const WCHAR suffix[] = L".in-addr.arpa";
+    size_t suffix_len = ARRAYSIZE(suffix) - 1;
+    if (len <= suffix_len)
+        return FALSE;
+    if (_wcsicmp(tmp + len - suffix_len, suffix) != 0)
+        return FALSE;
+
+    tmp[len - suffix_len] = L'\0';
+
+    WCHAR* labels[4] = { 0 };
+    int count = 0;
+    WCHAR* p = tmp;
+    while (p && *p && count < 4) {
+        labels[count++] = p;
+        WCHAR* dot = wcschr(p, L'.');
+        if (!dot)
+            break;
+        if (count == 4)
+            return FALSE;
+        *dot = L'\0';
+        p = dot + 1;
+    }
+
+    if (count != 4)
+        return FALSE;
+
+    BYTE octets[4] = { 0 };
+    for (int i = 0; i < 4; ++i) {
+        WCHAR* s = labels[i];
+        if (!s || !*s)
+            return FALSE;
+        int val = 0;
+        for (const WCHAR* c = s; *c; ++c) {
+            if (*c < L'0' || *c > L'9')
+                return FALSE;
+            val = (val * 10) + (*c - L'0');
+            if (val > 255)
+                return FALSE;
+        }
+        octets[i] = (BYTE)val;
+    }
+
+    memset(ip_out, 0, sizeof(*ip_out));
+    ip_out->Data[12] = octets[3];
+    ip_out->Data[13] = octets[2];
+    ip_out->Data[14] = octets[1];
+    ip_out->Data[15] = octets[0];
+    return TRUE;
+}
+
+static BOOLEAN DNS_ParseIpv6Arpa(const WCHAR* domain, IP_ADDRESS* ip_out)
+{
+    if (!domain || !ip_out)
+        return FALSE;
+
+    WCHAR tmp[512];
+    size_t len = wcslen(domain);
+    if (len >= ARRAYSIZE(tmp))
+        return FALSE;
+    wmemcpy(tmp, domain, len + 1);
+
+    if (len > 0 && tmp[len - 1] == L'.')
+        tmp[--len] = L'\0';
+
+    const WCHAR suffix[] = L".ip6.arpa";
+    size_t suffix_len = ARRAYSIZE(suffix) - 1;
+    if (len <= suffix_len)
+        return FALSE;
+    if (_wcsicmp(tmp + len - suffix_len, suffix) != 0)
+        return FALSE;
+
+    tmp[len - suffix_len] = L'\0';
+
+    WCHAR* labels[32] = { 0 };
+    int count = 0;
+    WCHAR* p = tmp;
+    while (p && *p && count < 32) {
+        labels[count++] = p;
+        WCHAR* dot = wcschr(p, L'.');
+        if (!dot)
+            break;
+        if (count == 32)
+            return FALSE;
+        *dot = L'\0';
+        p = dot + 1;
+    }
+
+    if (count != 32)
+        return FALSE;
+
+    memset(ip_out, 0, sizeof(*ip_out));
+
+    for (int i = 0; i < 32; ++i) {
+        WCHAR* s = labels[i];
+        if (!s || wcslen(s) != 1)
+            return FALSE;
+        WCHAR ch = s[0];
+        int val = 0;
+        if (ch >= L'0' && ch <= L'9')
+            val = ch - L'0';
+        else if (ch >= L'a' && ch <= L'f')
+            val = 10 + (ch - L'a');
+        else if (ch >= L'A' && ch <= L'F')
+            val = 10 + (ch - L'A');
+        else
+            return FALSE;
+
+        int byte_index = 15 - (i / 2);
+        if ((i % 2) == 0)
+            ip_out->Data[byte_index] |= (BYTE)val;
+        else
+            ip_out->Data[byte_index] |= (BYTE)(val << 4);
+    }
+
+    return TRUE;
+}
+
+static BOOLEAN DNS_IsLocalReverseDnsName(const WCHAR* domain)
+{
+    if (!domain || !*domain)
+        return FALSE;
+
+    IP_ADDRESS ip = { 0 };
+    if (DNS_ParseIpv4Arpa(domain, &ip))
+        return DNS_PipRulesMatchIp(&ip, AF_INET);
+
+    if (DNS_ParseIpv6Arpa(domain, &ip))
+        return DNS_PipRulesMatchIp(&ip, AF_INET6);
+
+    return FALSE;
+}
+
+//---------------------------------------------------------------------------
 // DNS_TryDoHQuery
 //
 // Helper function to attempt EncDns query for passthrough domains
@@ -6498,7 +7113,9 @@ static BOOLEAN DNS_TryDoHQuery(
     }
 
     if (!DNS_IsIPAddress(domain) && !DNS_IsValidDnsName(domain)) {
-        DNS_DEBUG_LOG(L"[EncDns] Invalid hostname, skipping query: %s", domain);
+        if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
+            DNS_DEBUG_LOG(L"[EncDns] Invalid hostname, skipping query: %s", domain);
+        }
         return FALSE;
     }
 

@@ -292,6 +292,7 @@ void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQ
 
 // Exclusion initialization logging (avoid dependency on internal struct)
 void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value);
+void DNS_LogExclusionInitDefault(const WCHAR* label, const WCHAR* value);
 
 // Configuration/initialization logging (replaces direct SbieApi_MonitorPutMsg calls)
 void DNS_LogConfigNoMatchingFilter(const WCHAR* domain);
