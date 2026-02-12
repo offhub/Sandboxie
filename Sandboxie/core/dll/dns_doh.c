@@ -1484,6 +1484,14 @@ static BOOLEAN DoH_EnsureSession(void)
                     }
                     
                     __sys_WinHttpSetOption(g_hWinHttpSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &secureProtocols, sizeof(secureProtocols));
+
+                    // Raise per-server connection caps to reduce queueing under burst traffic.
+                    // HTTP/2 multiplexes effectively, but these caps help on fallback paths too.
+                    {
+                        DWORD maxConns = DOH_MAX_CONCURRENT_QUERIES;
+                        __sys_WinHttpSetOption(g_hWinHttpSession, WINHTTP_OPTION_MAX_CONNS_PER_SERVER, &maxConns, sizeof(maxConns));
+                        __sys_WinHttpSetOption(g_hWinHttpSession, WINHTTP_OPTION_MAX_CONNS_PER_1_0_SERVER, &maxConns, sizeof(maxConns));
+                    }
                 }
 
                 // Windows 10 1903+ (build 18362): Disable WinHTTP's secure protocol fallback.
@@ -2380,11 +2388,17 @@ static BOOLEAN DoH_BuildDnsQuery(
     p += nameLen;
 
     // Add QTYPE (2 bytes)
-    *(USHORT*)p = _htons(qtype);
+    {
+        USHORT qtype_net = _htons(qtype);
+        memcpy(p, &qtype_net, sizeof(qtype_net));
+    }
     p += 2;
 
     // Add QCLASS (2 bytes) - always IN (Internet)
-    *(USHORT*)p = _htons(1);  // QCLASS_IN = 1
+    {
+        USHORT qclass_net = _htons(1);  // QCLASS_IN = 1
+        memcpy(p, &qclass_net, sizeof(qclass_net));
+    }
     p += 2;
 
     if (include_edns) {
@@ -2392,13 +2406,25 @@ static BOOLEAN DoH_BuildDnsQuery(
         UINT32 ext_flags = do_flag ? DNS_EDNS_FLAG_DO : 0;
 
         *p++ = 0;                          // ROOT name for OPT
-        *(USHORT*)p = _htons(41);          // TYPE = OPT
+        {
+            USHORT opt_type_net = _htons(41);          // TYPE = OPT
+            memcpy(p, &opt_type_net, sizeof(opt_type_net));
+        }
         p += 2;
-        *(USHORT*)p = _htons(udp_payload); // UDP payload size
+        {
+            USHORT udp_payload_net = _htons(udp_payload); // UDP payload size
+            memcpy(p, &udp_payload_net, sizeof(udp_payload_net));
+        }
         p += 2;
-        *(UINT32*)p = _htonl(ext_flags);   // EDNS version 0, flags
+        {
+            UINT32 ext_flags_net = _htonl(ext_flags);   // EDNS version 0, flags
+            memcpy(p, &ext_flags_net, sizeof(ext_flags_net));
+        }
         p += 4;
-        *(USHORT*)p = _htons(0);           // RDLEN = 0 (no options)
+        {
+            USHORT rdlen_net = _htons(0);           // RDLEN = 0 (no options)
+            memcpy(p, &rdlen_net, sizeof(rdlen_net));
+        }
         p += 2;
     }
 
@@ -2521,6 +2547,7 @@ static int DoH_DecodeDnsName(
 static void EncDns_CacheStore(const WCHAR* domain, USHORT qtype, const DOH_RESULT* pResult, BOOLEAN is_failure, BOOLEAN is_bind_failure)
 {
     ULONGLONG now;
+    ULONGLONG ttl_ms;
     int i;
     int oldest_idx = 0;
     ULONGLONG oldest_expiry = (ULONGLONG)-1;
@@ -2564,7 +2591,10 @@ static void EncDns_CacheStore(const WCHAR* domain, USHORT qtype, const DOH_RESUL
     wcsncpy(g_DohCache[oldest_idx].domain, domain, 255);
     g_DohCache[oldest_idx].domain[255] = L'\0';
     g_DohCache[oldest_idx].qtype = qtype;
-    g_DohCache[oldest_idx].expiry = now + (pResult->TTL * 1000);
+    ttl_ms = (ULONGLONG)pResult->TTL * 1000ULL;
+    if (ttl_ms > (ULONGLONG)604800000ULL) // 7 days safety cap
+        ttl_ms = (ULONGLONG)604800000ULL;
+    g_DohCache[oldest_idx].expiry = now + ttl_ms;
     memcpy(&g_DohCache[oldest_idx].result, pResult, sizeof(DOH_RESULT));
     g_DohCache[oldest_idx].is_failure = is_failure;
     g_DohCache[oldest_idx].is_bind_failure = is_bind_failure;
@@ -3412,9 +3442,15 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                 *ptr++ = 0;  // End of domain name
                 
                 // QTYPE and QCLASS
-                *(USHORT*)ptr = _htons(qtype);
+                {
+                    USHORT qtype_net = _htons(qtype);
+                    memcpy(ptr, &qtype_net, sizeof(qtype_net));
+                }
                 ptr += 2;
-                *(USHORT*)ptr = _htons(1);  // IN class
+                {
+                    USHORT qclass_net = _htons(1);  // IN class
+                    memcpy(ptr, &qclass_net, sizeof(qclass_net));
+                }
                 ptr += 2;
                 
                 // Answer section
@@ -3424,25 +3460,40 @@ static BOOLEAN EncDns_TryProtocol(DOH_SERVER* server, ENCRYPTED_DNS_MODE mode,
                     *ptr++ = 0x0C;  // Points to offset 12 (after header)
                     
                     // Type
-                    *(USHORT*)ptr = _htons(doqResult.Answers[i].Type == AF_INET ? 1 : 28);
+                    {
+                        USHORT type_net = _htons(doqResult.Answers[i].Type == AF_INET ? 1 : 28);
+                        memcpy(ptr, &type_net, sizeof(type_net));
+                    }
                     ptr += 2;
                     
                     // Class (IN)
-                    *(USHORT*)ptr = _htons(1);
+                    {
+                        USHORT class_net = _htons(1);
+                        memcpy(ptr, &class_net, sizeof(class_net));
+                    }
                     ptr += 2;
                     
                     // TTL
-                    *(DWORD*)ptr = _htonl(doqResult.TTL);
+                    {
+                        DWORD ttl_net = _htonl(doqResult.TTL);
+                        memcpy(ptr, &ttl_net, sizeof(ttl_net));
+                    }
                     ptr += 4;
                     
                     // RDLENGTH and RDATA
                     if (doqResult.Answers[i].Type == AF_INET) {
-                        *(USHORT*)ptr = _htons(4);
+                        {
+                            USHORT rdlength_net = _htons(4);
+                            memcpy(ptr, &rdlength_net, sizeof(rdlength_net));
+                        }
                         ptr += 2;
                         memcpy(ptr, &doqResult.Answers[i].IP.Data32[3], 4);
                         ptr += 4;
                     } else {  // AF_INET6
-                        *(USHORT*)ptr = _htons(16);
+                        {
+                            USHORT rdlength_net = _htons(16);
+                            memcpy(ptr, &rdlength_net, sizeof(rdlength_net));
+                        }
                         ptr += 2;
                         memcpy(ptr, doqResult.Answers[i].IP.Data, 16);
                         ptr += 16;
@@ -3814,7 +3865,6 @@ static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, co
     ULONG ttl;
     int nameLen;
     BYTE* ip;
-    USHORT* ip6;
     BOOLEAN hasCname = FALSE;  // Track if we saw any CNAME records
 
     if (!response || responseLen < sizeof(DOH_DNS_HEADER) || !pResult)
@@ -3896,16 +3946,32 @@ static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, co
         if (offset + 10 > responseLen)
             return FALSE;
 
-        rtype = _ntohs(*(USHORT*)(response + offset));
+        {
+            USHORT tmp16;
+            memcpy(&tmp16, response + offset, sizeof(tmp16));
+            rtype = _ntohs(tmp16);
+        }
         offset += 2;
 
-        rclass = _ntohs(*(USHORT*)(response + offset));
+        {
+            USHORT tmp16;
+            memcpy(&tmp16, response + offset, sizeof(tmp16));
+            rclass = _ntohs(tmp16);
+        }
         offset += 2;
 
-        ttl = _ntohl(*(ULONG*)(response + offset));
+        {
+            ULONG tmp32;
+            memcpy(&tmp32, response + offset, sizeof(tmp32));
+            ttl = _ntohl(tmp32);
+        }
         offset += 4;
 
-        rdlength = _ntohs(*(USHORT*)(response + offset));
+        {
+            USHORT tmp16;
+            memcpy(&tmp16, response + offset, sizeof(tmp16));
+            rdlength = _ntohs(tmp16);
+        }
         offset += 2;
 
         // Check space for RDATA
@@ -3923,7 +3989,7 @@ static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, co
             // IPv4 address - store in Data32[3] (last 4 bytes) per codebase convention
             pResult->Answers[pResult->AnswerCount].Type = AF_INET;
             memset(&pResult->Answers[pResult->AnswerCount].IP, 0, sizeof(IP_ADDRESS));
-            pResult->Answers[pResult->AnswerCount].IP.Data32[3] = *(DWORD*)(response + offset);
+            memcpy(&pResult->Answers[pResult->AnswerCount].IP.Data32[3], response + offset, sizeof(DWORD));
             pResult->AnswerCount++;
             
             if (DNS_DebugFlag) {
@@ -3942,10 +4008,11 @@ static BOOLEAN EncDns_ParseDnsResponse(const BYTE* response, int responseLen, co
             
             if (DNS_DebugFlag) {
                 WCHAR msg[256];
-                ip6 = (USHORT*)(response + offset);
+                USHORT ip6_words[8];
+                memcpy(ip6_words, response + offset, sizeof(ip6_words));
                 Sbie_snwprintf(msg, 256, L"[EncDns] Parsed AAAA record: %04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x (TTL: %d)",
-                    _ntohs(ip6[0]), _ntohs(ip6[1]), _ntohs(ip6[2]), _ntohs(ip6[3]),
-                    _ntohs(ip6[4]), _ntohs(ip6[5]), _ntohs(ip6[6]), _ntohs(ip6[7]), ttl);
+                    _ntohs(ip6_words[0]), _ntohs(ip6_words[1]), _ntohs(ip6_words[2]), _ntohs(ip6_words[3]),
+                    _ntohs(ip6_words[4]), _ntohs(ip6_words[5]), _ntohs(ip6_words[6]), _ntohs(ip6_words[7]), ttl);
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
         }
@@ -4256,12 +4323,13 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, cons
             }
         }
 
-        // Timeout or cache miss - fall through to graceful failure
+        // Timeout or cache miss - fall through to graceful failure.
+        // Do not create a shared negative-cache entry here because another
+        // thread may still complete the in-flight request successfully.
         pResult->Success = TRUE;
         pResult->Status = 0;
         pResult->AnswerCount = 0;
         pResult->TTL = ENCRYPTED_DNS_FAILED_TTL;
-        EncDns_CacheStore(domain, qtype, pResult, TRUE, FALSE);
         return TRUE;
     }
 
@@ -4291,44 +4359,6 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, cons
             pResult->AnswerCount = 0;
             pResult->TTL = ENCRYPTED_DNS_FAILED_TTL;
             EncDns_CacheStore(domain, qtype, pResult, TRUE, FALSE);
-            if (pending) {
-                EncDns_CompletePendingQuery(pending);
-                EncDns_ReleaseWaiter(pending);
-            }
-            return TRUE;
-        }
-    }
-
-    // Check global counter for cross-thread re-entrancy (WinHTTP uses internal threads)
-    if (InterlockedCompareExchange(&g_DohActiveQueries, 0, 0) > 0) {
-        if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
-            WCHAR msg[512];
-            Sbie_snwprintf(msg, 512, L"[EncDns] Re-entrancy detected (global), waiting for active query: %s", domain);
-            SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
-        }
-        
-        // Wait up to 500ms for active query to complete (50ms x 10 attempts)
-        for (int i = 0; i < 10; i++) {
-            Sleep(50);
-            
-            // Check cache again - another thread may have completed the query
-            if (EncDns_CacheLookup(domain, qtype, pResult)) {
-                if (g_DohQuerySemaphore) ReleaseSemaphore(g_DohQuerySemaphore, 1, NULL);
-                if (pending) {
-                    EncDns_CompletePendingQuery(pending);
-                    EncDns_ReleaseWaiter(pending);
-                }
-                return TRUE;
-            }
-            
-            // Check if query finished
-            if (InterlockedCompareExchange(&g_DohActiveQueries, 0, 0) == 0)
-                break;
-        }
-        
-        // Check cache one final time after waiting
-        if (EncDns_CacheLookup(domain, qtype, pResult)) {
-            if (g_DohQuerySemaphore) ReleaseSemaphore(g_DohQuerySemaphore, 1, NULL);
             if (pending) {
                 EncDns_CompletePendingQuery(pending);
                 EncDns_ReleaseWaiter(pending);

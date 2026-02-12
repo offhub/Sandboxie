@@ -192,11 +192,11 @@ typedef enum _ENCRYPTED_DNS_ERROR_TYPE {
 #define ENCRYPTED_DNS_SERVER_FAIL_COOLDOWN    30000   // Server cooldown in ms (30 sec)
 
 // Connection pool
-#define ENCRYPTED_DNS_MAX_POOL_CONNECTIONS    16      // Max pooled connections
+#define ENCRYPTED_DNS_MAX_POOL_CONNECTIONS    32      // Max pooled connections
 
 // Pending queries
-#define ENCRYPTED_DNS_MAX_PENDING_QUERIES     48      // Max concurrent pending queries
-#define ENCRYPTED_DNS_MAX_CONCURRENT_QUERIES  16      // Semaphore limit
+#define ENCRYPTED_DNS_MAX_PENDING_QUERIES     96      // Max concurrent pending queries
+#define ENCRYPTED_DNS_MAX_CONCURRENT_QUERIES  32      // Semaphore limit
 
 // DNS response limits
 #define ENCRYPTED_DNS_MAX_ANSWERS             32      // Max IP addresses per response

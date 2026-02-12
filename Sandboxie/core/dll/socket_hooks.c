@@ -867,7 +867,9 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
     
     if (isTcp && data_len > 2) {
         // Check if first 2 bytes look like a length prefix (value close to remaining data)
-        USHORT length_prefix = _ntohs(*(USHORT*)data);
+        USHORT length_prefix_raw;
+        memcpy(&length_prefix_raw, data, sizeof(length_prefix_raw));
+        USHORT length_prefix = _ntohs(length_prefix_raw);
         if (length_prefix == (USHORT)(data_len - 2)) {
             dns_data = data + 2;
             dns_len = data_len - 2;
@@ -990,13 +992,17 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         if (offset + 10 > dns_len)
             break;
         
-        USHORT rr_type = _ntohs(*(USHORT*)(dns_data + offset));
+        USHORT rr_type_raw;
+        memcpy(&rr_type_raw, dns_data + offset, sizeof(rr_type_raw));
+        USHORT rr_type = _ntohs(rr_type_raw);
         offset += 2;
         // Skip CLASS
         offset += 2;
         // Skip TTL
         offset += 4;
-        USHORT rdlength = _ntohs(*(USHORT*)(dns_data + offset));
+        USHORT rdlength_raw;
+        memcpy(&rdlength_raw, dns_data + offset, sizeof(rdlength_raw));
+        USHORT rdlength = _ntohs(rdlength_raw);
         offset += 2;
         
         // Check if we have enough data for RDATA
@@ -1007,7 +1013,7 @@ static BOOLEAN Socket_ParseAndLogDnsResponse(
         if (rr_type == DNS_TYPE_A && rdlength == 4) {
             IP_ADDRESS ip;
             memset(&ip, 0, sizeof(ip));
-            ip.Data32[3] = *(DWORD*)(dns_data + offset);
+            memcpy(&ip.Data32[3], dns_data + offset, sizeof(DWORD));
             WSA_DumpIP(AF_INET, &ip, msg);
             ip_count++;
         } else if (rr_type == DNS_TYPE_AAAA && rdlength == 16) {
@@ -2108,7 +2114,9 @@ static BOOLEAN Socket_DetectTcpLengthPrefix(
     //    Note: We use 4096 as practical upper bound (EDNS0 common size per RFC 6891)
     // 4. QR bit is 0 (query, not response)
     
-    USHORT tcp_length = _ntohs(*(USHORT*)buf);
+    USHORT tcp_length_raw;
+    memcpy(&tcp_length_raw, buf, sizeof(tcp_length_raw));
+    USHORT tcp_length = _ntohs(tcp_length_raw);
     
     // Removed 512-byte limit that allowed filter bypass via EDNS0 padding
     // TCP DNS supports up to 65535 bytes, we accept up to 4096 (common EDNS0 size)
@@ -2733,7 +2741,9 @@ _FX int Socket_WSASendTo(
         
         if (dwBufferCount >= 2 && buffers[0].len == 2 && buffers[1].len >= sizeof(DNS_WIRE_HEADER)) {
             // Multiple buffers: [0]=length prefix, [1]=DNS payload
-            USHORT tcp_length = _ntohs(*(USHORT*)buffers[0].buf);
+            USHORT tcp_length_raw;
+            memcpy(&tcp_length_raw, buffers[0].buf, sizeof(tcp_length_raw));
+            USHORT tcp_length = _ntohs(tcp_length_raw);
             if (tcp_length == buffers[1].len) {
                 dns_payload = (const BYTE*)buffers[1].buf;
                 dns_payload_len = buffers[1].len;
@@ -3246,7 +3256,9 @@ _FX BOOLEAN Socket_ParseDnsQuery(
     }
 
     // DNS packets use network byte order (big-endian), convert to host byte order
-    USHORT queryType = _ntohs(*(USHORT*)(packet + offset));
+    USHORT queryType_raw;
+    memcpy(&queryType_raw, packet + offset, sizeof(queryType_raw));
+    USHORT queryType = _ntohs(queryType_raw);
     if (qtype) {
         *qtype = queryType;
     }
@@ -3642,7 +3654,9 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
         offset += 10;
         
         // Skip RDATA
-        USHORT rdlength = _ntohs(*(USHORT*)(query + offset - 2));
+        USHORT rdlength_raw;
+        memcpy(&rdlength_raw, query + offset - 2, sizeof(rdlength_raw));
+        USHORT rdlength = _ntohs(rdlength_raw);
         offset += rdlength;
     }
     
@@ -3653,7 +3667,9 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
         // Check for root label (single 0 byte) followed by TYPE=41
         if (offset + 3 <= query_len && query[offset] == 0) {  // root label
             offset++;
-            USHORT type = _ntohs(*(USHORT*)(query + offset));
+            USHORT type_raw;
+            memcpy(&type_raw, query + offset, sizeof(type_raw));
+            USHORT type = _ntohs(type_raw);
             offset += 2;
             
             if (type == DNS_TYPE_OPT) {
@@ -3664,11 +3680,15 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
                 if (offset + 8 > query_len)
                     return 0;
                     
-                USHORT udp_payload = *(USHORT*)(query + offset);
+                USHORT udp_payload;
+                memcpy(&udp_payload, query + offset, sizeof(udp_payload));
                 offset += 2;
-                DWORD extended_flags = *(DWORD*)(query + offset);
+                DWORD extended_flags;
+                memcpy(&extended_flags, query + offset, sizeof(extended_flags));
                 offset += 4;
-                USHORT rdlength = _ntohs(*(USHORT*)(query + offset));
+                USHORT rdlength_raw;
+                memcpy(&rdlength_raw, query + offset, sizeof(rdlength_raw));
+                USHORT rdlength = _ntohs(rdlength_raw);
                 offset += 2;
                 
                 // Check if we have space for the complete record (including rdata)
@@ -3679,13 +3699,16 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
                 // Copy the record to output buffer
                 int out_offset = 0;
                 edns_buffer[out_offset++] = 0;  // root label
-                *(USHORT*)(edns_buffer + out_offset) = _htons(DNS_TYPE_OPT);
+                {
+                    USHORT opt_type = _htons(DNS_TYPE_OPT);
+                    memcpy(edns_buffer + out_offset, &opt_type, sizeof(opt_type));
+                }
                 out_offset += 2;
-                *(USHORT*)(edns_buffer + out_offset) = udp_payload;  // Already in network byte order
+                memcpy(edns_buffer + out_offset, &udp_payload, sizeof(udp_payload));  // Already in network byte order
                 out_offset += 2;
-                *(DWORD*)(edns_buffer + out_offset) = extended_flags;  // Already in network byte order
+                memcpy(edns_buffer + out_offset, &extended_flags, sizeof(extended_flags));  // Already in network byte order
                 out_offset += 4;
-                *(USHORT*)(edns_buffer + out_offset) = *(USHORT*)(query + offset - 2);  // Already in network byte order
+                memcpy(edns_buffer + out_offset, query + offset - 2, sizeof(USHORT));  // Already in network byte order
                 out_offset += 2;
                 
                 // Copy rdata
@@ -3720,7 +3743,9 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
             offset += 10;
             
             // Skip RDATA
-            USHORT rdlength = _ntohs(*(USHORT*)(query + offset - 2));
+            USHORT rdlength_raw;
+            memcpy(&rdlength_raw, query + offset - 2, sizeof(rdlength_raw));
+            USHORT rdlength = _ntohs(rdlength_raw);
             offset += rdlength;
         }
     }
@@ -4573,7 +4598,9 @@ static void Socket_ApplyRebindProtection(SOCKET s, BYTE* buf, int* io_len)
         // may include a 2-byte length prefix ahead of the DNS payload.
         BOOLEAN has_length_prefix = FALSE;
         if (isTcp && *io_len > 2) {
-            USHORT length_prefix = _ntohs(*(USHORT*)buf);
+            USHORT length_prefix_raw;
+            memcpy(&length_prefix_raw, buf, sizeof(length_prefix_raw));
+            USHORT length_prefix = _ntohs(length_prefix_raw);
             has_length_prefix = (length_prefix == (USHORT)(*io_len - 2));
         }
 

@@ -622,6 +622,28 @@ typedef struct _WSA_LOOKUP {
 static HASH_MAP   WSA_LookupMap;
 static CRITICAL_SECTION WSA_LookupMap_CritSec;
 static BOOLEAN WSA_LookupMap_Initialized = FALSE;
+static volatile LONG WSA_LookupMap_InitState = 0; // 0=uninitialized, 1=initializing, 2=initialized
+
+static BOOLEAN WSA_EnsureLookupMapInitialized(void)
+{
+    LONG state = InterlockedCompareExchange(&WSA_LookupMap_InitState, 0, 0);
+    if (state == 2)
+        return TRUE;
+
+    if (InterlockedCompareExchange(&WSA_LookupMap_InitState, 1, 0) == 0) {
+        InitializeCriticalSection(&WSA_LookupMap_CritSec);
+        map_init(&WSA_LookupMap, Dll_Pool);
+        WSA_LookupMap_Initialized = TRUE;
+        InterlockedExchange(&WSA_LookupMap_InitState, 2);
+        return TRUE;
+    }
+
+    while ((state = InterlockedCompareExchange(&WSA_LookupMap_InitState, 0, 0)) == 1) {
+        Sleep(0);
+    }
+
+    return (InterlockedCompareExchange(&WSA_LookupMap_InitState, 0, 0) == 2) && WSA_LookupMap_Initialized;
+}
 
 // Re-entrancy detection counter for system's getaddrinfo (ANSI)
 // When system calls getaddrinfo (ANSI), it internally calls GetAddrInfoW
@@ -1926,11 +1948,7 @@ _FX void DNS_InitFilterRules(void)
     // Certificate will be checked at filtering time to determine if interception/blocking is allowed
     if (DNS_FilterList.count > 0) {
         DNS_FilterEnabled = TRUE;
-        if (!WSA_LookupMap_Initialized) {
-            InitializeCriticalSection(&WSA_LookupMap_CritSec);
-            map_init(&WSA_LookupMap, Dll_Pool);
-            WSA_LookupMap_Initialized = TRUE;
-        }
+        WSA_EnsureLookupMapInitialized();
         
         if (!has_valid_certificate) {
             // Warn that filtering is disabled (will only log, not intercept/block)
@@ -1950,11 +1968,7 @@ _FX void DNS_InitFilterRules(void)
             // This allows pure logging mode even without certificate or filter rules
             if (!DNS_FilterEnabled) {
                 DNS_FilterEnabled = TRUE;
-                if (!WSA_LookupMap_Initialized) {
-                    InitializeCriticalSection(&WSA_LookupMap_CritSec);
-                    map_init(&WSA_LookupMap, Dll_Pool);
-                    WSA_LookupMap_Initialized = TRUE;
-                }
+                WSA_EnsureLookupMapInitialized();
             }
         }
     }
@@ -1964,11 +1978,7 @@ _FX void DNS_InitFilterRules(void)
     if (EncryptedDns_IsEnabled()) {
         if (!DNS_FilterEnabled) {
             DNS_FilterEnabled = TRUE;
-            if (!WSA_LookupMap_Initialized) {
-                InitializeCriticalSection(&WSA_LookupMap_CritSec);
-                map_init(&WSA_LookupMap, Dll_Pool);
-                WSA_LookupMap_Initialized = TRUE;
-            }
+            WSA_EnsureLookupMapInitialized();
         }
     }
 }
@@ -2495,6 +2505,13 @@ _FX BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries)
     DNS_TYPE_FILTER* type_filter = NULL;
     DNS_ExtractFilterAux(aux, ppEntries, &type_filter);
 
+    // Certificate required for actual filtering (interception/blocking)
+    // Without certificate, logging already happened above, just pass through
+    extern BOOLEAN DNS_HasValidCertificate;
+    if (!DNS_HasValidCertificate) {
+        return FALSE;  // Pass through to real DNS (no interception without cert)
+    }
+
     // If no IP entries (block mode), block it
     if (!*ppEntries)
         return TRUE;  // Return TRUE to indicate filtered (blocked)
@@ -2502,13 +2519,6 @@ _FX BOOLEAN DNS_CheckFilter(const WCHAR* pszName, WORD wType, LIST** ppEntries)
     // Check type filter if specified
     if (type_filter && !DNS_IsTypeInFilterList(type_filter, wType))
         return FALSE;  // Type not in filter list, passthrough
-
-    // Certificate required for actual filtering (interception/blocking)
-    // Without certificate, logging already happened above, just pass through
-    extern BOOLEAN DNS_HasValidCertificate;
-    if (!DNS_HasValidCertificate) {
-        return FALSE;  // Pass through to real DNS (no interception without cert)
-    }
 
     return TRUE;
 }
@@ -6683,31 +6693,33 @@ static PATTERN* WSA_ValidateAndFindFilter(
 
 static BOOLEAN DNS_IsIPAddress(const WCHAR* str)
 {
-    if (!str || !*str) return FALSE;
+    BYTE parsed[16];
+    const WCHAR* s;
+    WCHAR tmp[128];
+    size_t len;
 
-    // Quick check for IPv4: must contain only digits and dots
-    BOOLEAN hasDigit = FALSE, hasDot = FALSE, hasColon = FALSE, hasHex = FALSE;
-    for (const WCHAR* p = str; *p; p++) {
-        if (*p >= L'0' && *p <= L'9') {
-            hasDigit = TRUE;
-        } else if (*p == L'.') {
-            hasDot = TRUE;
-        } else if (*p == L':') {
-            hasColon = TRUE;
-        } else if ((*p >= L'a' && *p <= L'f') || (*p >= L'A' && *p <= L'F')) {
-            hasHex = TRUE;
-        } else if (*p != L'[' && *p != L']') {
-            // Other characters mean it's likely a hostname
+    if (!str || !*str)
+        return FALSE;
+
+    s = str;
+    len = wcslen(str);
+
+    // Optional RFC 3986 bracketed IPv6 literal support: [2001:db8::1]
+    if (len >= 2 && str[0] == L'[' && str[len - 1] == L']') {
+        size_t inner_len = len - 2;
+        if (inner_len == 0 || inner_len >= ARRAYSIZE(tmp))
             return FALSE;
-        }
+        wmemcpy(tmp, str + 1, inner_len);
+        tmp[inner_len] = L'\0';
+        s = tmp;
     }
 
-    // IPv4: digits and dots (e.g., 1.1.1.1)
-    if (hasDigit && hasDot && !hasColon) return TRUE;
-    
-    // IPv6: colons and hex (e.g., 2001:db8::1 or [2001:db8::1])
-    if (hasColon) return TRUE;
-    
+    if (_inet_pton(AF_INET, s, parsed) == 1)
+        return TRUE;
+
+    if (_inet_pton(AF_INET6, s, parsed) == 1)
+        return TRUE;
+
     return FALSE;
 }
 

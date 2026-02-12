@@ -85,18 +85,28 @@ static DNS_SUPPRESS_ENTRY g_DnsSuppressCacheType[DNS_SUPPRESS_CACHE_SIZE_TYPE];
 static DNS_SUPPRESS_ENTRY g_DnsSuppressCacheTag[DNS_SUPPRESS_CACHE_SIZE_TAG];
 static CRITICAL_SECTION g_DnsSuppressLock;
 static BOOLEAN g_DnsSuppressInitialized = FALSE;
+static volatile LONG g_DnsSuppressInitState = 0; // 0=uninitialized, 1=initializing, 2=initialized
 static BOOLEAN g_SuppressDnsLogEnabled = TRUE;  // SuppressDnsLog setting (default: enabled)
 
 // Initialize suppression cache
 static void DNS_InitSuppressCache(void)
 {
-    if (g_DnsSuppressInitialized)
+    LONG state = InterlockedCompareExchange(&g_DnsSuppressInitState, 0, 0);
+    if (state == 2)
         return;
-    
-    InitializeCriticalSection(&g_DnsSuppressLock);
-    memset(g_DnsSuppressCacheType, 0, sizeof(g_DnsSuppressCacheType));
-    memset(g_DnsSuppressCacheTag, 0, sizeof(g_DnsSuppressCacheTag));
-    g_DnsSuppressInitialized = TRUE;
+
+    if (InterlockedCompareExchange(&g_DnsSuppressInitState, 1, 0) == 0) {
+        InitializeCriticalSection(&g_DnsSuppressLock);
+        memset(g_DnsSuppressCacheType, 0, sizeof(g_DnsSuppressCacheType));
+        memset(g_DnsSuppressCacheTag, 0, sizeof(g_DnsSuppressCacheTag));
+        g_DnsSuppressInitialized = TRUE;
+        InterlockedExchange(&g_DnsSuppressInitState, 2);
+        return;
+    }
+
+    while ((state = InterlockedCompareExchange(&g_DnsSuppressInitState, 0, 0)) == 1) {
+        Sleep(0);
+    }
 }
 
 // Query SuppressDnsLog effective state
@@ -156,8 +166,10 @@ static BOOLEAN DNS_ShouldSuppressLogEx(const WCHAR* domain, ULONG key, BOOLEAN k
     if (!domain || (!DNS_TraceFlag && !DNS_DebugFlag) || !g_SuppressDnsLogEnabled)
         return FALSE;
     
-    if (!g_DnsSuppressInitialized)
+    if (InterlockedCompareExchange(&g_DnsSuppressInitState, 0, 0) != 2)
         DNS_InitSuppressCache();
+    if (InterlockedCompareExchange(&g_DnsSuppressInitState, 0, 0) != 2)
+        return FALSE;
     
     ULONGLONG now = GetTickCount64();
     // Each cache has its own namespace, so we can keep the original key.
