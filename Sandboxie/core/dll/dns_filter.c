@@ -598,6 +598,7 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
 static PATTERN* DNS_FindPatternInFilterList(const WCHAR* domain, ULONG level);
 static BOOLEAN DNS_DomainMatchesFilter(const WCHAR* domain);
 static BOOLEAN DNS_LoadFilterEntries(void);
+static BOOLEAN DNS_ParseStrictIpLiteral(const WCHAR* str, IP_ADDRESS* ip_out, USHORT* af_out);
 static BOOLEAN DNS_IsIPAddress(const WCHAR* str);
 static BOOLEAN DNS_IsValidQueryName(const WCHAR* name);
 static BOOLEAN DNS_IsPrivateIpLiteral(const WCHAR* domain);
@@ -2098,6 +2099,7 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
 
     // Default EncDns behavior: single-label names are treated as sys:@nodot@ unless overridden.
     if (EncryptedDns_IsEnabled() && DNS_IsSingleLabelDomain(domain)) {
+        DNS_LogDebugExclusionMatch(domain, L"@nodot@ (default)");
         if (pModeOut)
             *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
         return TRUE;
@@ -2105,6 +2107,7 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
 
     // Default EncDns behavior: private/local IP literals are treated as sys:@pip@ unless overridden.
     if (EncryptedDns_IsEnabled() && DNS_IsPrivateIpLiteral(domain)) {
+        DNS_LogDebugExclusionMatch(domain, L"@pip@ (default)");
         if (pModeOut)
             *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
         return TRUE;
@@ -2112,6 +2115,7 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
 
     // Default EncDns behavior: IP literals are treated as sys:@ip@ unless overridden.
     if (EncryptedDns_IsEnabled() && DNS_IsIPAddress(domain)) {
+        DNS_LogDebugExclusionMatch(domain, L"@ip@ (default)");
         if (pModeOut)
             *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
         return TRUE;
@@ -2119,6 +2123,7 @@ static BOOLEAN DNS_IsExcludedEx(const WCHAR* domain, DNS_EXCLUDE_RESOLVE_MODE* p
 
     // Default EncDns behavior: local reverse DNS names are treated as sys:@lrdns@ unless overridden.
     if (EncryptedDns_IsEnabled() && DNS_IsLocalReverseDnsName(domain)) {
+        DNS_LogDebugExclusionMatch(domain, L"@lrdns@ (default)");
         if (pModeOut)
             *pModeOut = DNS_EXCLUDE_RESOLVE_SYS;
         return TRUE;
@@ -2366,8 +2371,8 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
     }
 
     // Match domain against pattern list
-    size_t domain_len = wcslen(domain);
-    WCHAR* domain_copy = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
+    size_t match_domain_len = wcslen(domain);
+    WCHAR* domain_copy = (WCHAR*)Dll_AllocTemp((match_domain_len + 4) * sizeof(WCHAR));
     if (!domain_copy) {
         // Cleanup patterns
         PATTERN* pat = (PATTERN*)List_Head(&temp_list);
@@ -2379,13 +2384,13 @@ static BOOLEAN DNS_ListMatchesDomain(const DNS_EXCLUSION_LIST* excl, const WCHAR
         return FALSE;
     }
     
-    wmemcpy(domain_copy, domain, domain_len);
-    domain_copy[domain_len] = L'\0';
+    wmemcpy(domain_copy, domain, match_domain_len);
+    domain_copy[match_domain_len] = L'\0';
     _wcslwr(domain_copy);  // DNS comparison is case-insensitive
 
     PATTERN* found = NULL;
     // Use DNS-specific matching that handles FQDN trailing dots properly
-    int match_result = DNS_DomainMatchPatternList(domain_copy, domain_len, &temp_list, &found);
+    int match_result = DNS_DomainMatchPatternList(domain_copy, match_domain_len, &temp_list, &found);
     
     Dll_Free(domain_copy);
     
@@ -6691,7 +6696,7 @@ static PATTERN* WSA_ValidateAndFindFilter(
 // Returns: TRUE if string is an IP address, FALSE if it's a hostname
 //---------------------------------------------------------------------------
 
-static BOOLEAN DNS_IsIPAddress(const WCHAR* str)
+static BOOLEAN DNS_ParseStrictIpLiteral(const WCHAR* str, IP_ADDRESS* ip_out, USHORT* af_out)
 {
     BYTE parsed[16];
     const WCHAR* s;
@@ -6712,15 +6717,102 @@ static BOOLEAN DNS_IsIPAddress(const WCHAR* str)
         wmemcpy(tmp, str + 1, inner_len);
         tmp[inner_len] = L'\0';
         s = tmp;
+        len = inner_len;
     }
 
-    if (_inet_pton(AF_INET, s, parsed) == 1)
-        return TRUE;
+    // Strict IPv4 literal check to avoid accepting suffixes like
+    // "1.0.2.10.in-addr.arpa" as an IP address.
+    {
+        int dots = 0;
+        int octets = 0;
+        const WCHAR* p = s;
+        BOOLEAN ipv4_chars_ok = TRUE;
 
-    if (_inet_pton(AF_INET6, s, parsed) == 1)
-        return TRUE;
+        for (; *p; ++p) {
+            if (*p == L'.') {
+                dots++;
+            } else if (*p < L'0' || *p > L'9') {
+                ipv4_chars_ok = FALSE;
+                break;
+            }
+        }
+
+        if (ipv4_chars_ok && dots == 3) {
+            int value = 0;
+            int digits = 0;
+            for (p = s; ; ++p) {
+                WCHAR ch = *p;
+                if (ch >= L'0' && ch <= L'9') {
+                    value = (value * 10) + (ch - L'0');
+                    digits++;
+                    if (digits > 3 || value > 255)
+                        break;
+                } else if (ch == L'.' || ch == L'\0') {
+                    if (digits == 0)
+                        break;
+                    octets++;
+                    if (ch == L'\0')
+                        break;
+                    value = 0;
+                    digits = 0;
+                } else {
+                    break;
+                }
+            }
+
+            if (octets == 4 && _inet_pton(AF_INET, s, parsed) == 1) {
+                if (ip_out) {
+                    memset(ip_out, 0, sizeof(*ip_out));
+                    ip_out->Data[12] = parsed[0];
+                    ip_out->Data[13] = parsed[1];
+                    ip_out->Data[14] = parsed[2];
+                    ip_out->Data[15] = parsed[3];
+                }
+                if (af_out)
+                    *af_out = AF_INET;
+                return TRUE;
+            }
+
+            return FALSE;
+        }
+    }
+
+    // Strict IPv6 literal check: must contain ':' and only IPv6 token chars.
+    // This blocks accidental matches on DNS names containing other letters.
+    {
+        BOOLEAN has_colon = FALSE;
+        const WCHAR* p = s;
+        for (; *p; ++p) {
+            WCHAR ch = *p;
+            if (ch == L':') {
+                has_colon = TRUE;
+                continue;
+            }
+            if (ch == L'.')
+                continue; // Allow IPv4-embedded tail (::ffff:1.2.3.4)
+            if ((ch >= L'0' && ch <= L'9') ||
+                (ch >= L'a' && ch <= L'f') ||
+                (ch >= L'A' && ch <= L'F')) {
+                continue;
+            }
+            return FALSE;
+        }
+
+        if (has_colon && _inet_pton(AF_INET6, s, parsed) == 1) {
+            if (ip_out)
+                memcpy(ip_out->Data, parsed, 16);
+            if (af_out)
+                *af_out = AF_INET6;
+            return TRUE;
+        }
+    }
 
     return FALSE;
+}
+
+static BOOLEAN DNS_IsIPAddress(const WCHAR* str)
+{
+    return DNS_ParseStrictIpLiteral(str, NULL, NULL);
 }
 
 //---------------------------------------------------------------------------
@@ -7028,10 +7120,68 @@ static BOOLEAN DNS_IsPrivateIpLiteral(const WCHAR* domain)
 
     USHORT af = 0;
     IP_ADDRESS ip = { 0 };
-    if (_inet_xton(domain, (ULONG)wcslen(domain), &ip, &af) != 1)
+    if (!DNS_ParseStrictIpLiteral(domain, &ip, &af))
         return FALSE;
 
     return DNS_PipRulesMatchIp(&ip, af);
+}
+
+static BOOLEAN DNS_IsStrictPrivateOrLoopbackIp(const IP_ADDRESS* ip, USHORT af)
+{
+    if (!ip)
+        return FALSE;
+
+    if (af == AF_INET) {
+        const BYTE b0 = ip->Data[12];
+        const BYTE b1 = ip->Data[13];
+        const BYTE b2 = ip->Data[14];
+        const BYTE b3 = ip->Data[15];
+
+        // RFC 1918 private, loopback, and local-use special IPv4 ranges.
+        // - 10/8, 172.16/12, 192.168/16, 127/8
+        // - 169.254/16 (link-local)
+        // - 0.0.0.0/32 (unspecified)
+        // - 255.255.255.255/32 (limited broadcast)
+        if (b0 == 10 || b0 == 127)
+            return TRUE;
+        if (b0 == 172 && b1 >= 16 && b1 <= 31)
+            return TRUE;
+        if (b0 == 192 && b1 == 168)
+            return TRUE;
+        if (b0 == 169 && b1 == 254)
+            return TRUE;
+        if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0)
+            return TRUE;
+        if (b0 == 255 && b1 == 255 && b2 == 255 && b3 == 255)
+            return TRUE;
+        return FALSE;
+    }
+
+    if (af == AF_INET6) {
+        BOOLEAN is_loopback = TRUE;
+        BOOLEAN is_unspecified = TRUE;
+        for (int i = 0; i < 15; ++i) {
+            if (ip->Data[i] != 0) {
+                is_loopback = FALSE;
+                is_unspecified = FALSE;
+                break;
+            }
+        }
+        if (is_unspecified && ip->Data[15] == 0)
+            return TRUE;
+        if (is_loopback && ip->Data[15] == 1)
+            return TRUE;
+
+        // fc00::/7 (ULA)
+        if (ip->Data[0] == 0xFC || ip->Data[0] == 0xFD)
+            return TRUE;
+
+        // fe80::/10 (link-local unicast)
+        if (ip->Data[0] == 0xFE && (ip->Data[1] & 0xC0) == 0x80)
+            return TRUE;
+    }
+
+    return FALSE;
 }
 
 static BOOLEAN DNS_ParseIpv4Arpa(const WCHAR* domain, IP_ADDRESS* ip_out)
@@ -7173,10 +7323,10 @@ static BOOLEAN DNS_IsLocalReverseDnsName(const WCHAR* domain)
 
     IP_ADDRESS ip = { 0 };
     if (DNS_ParseIpv4Arpa(domain, &ip))
-        return DNS_PipRulesMatchIp(&ip, AF_INET);
+        return DNS_IsStrictPrivateOrLoopbackIp(&ip, AF_INET);
 
     if (DNS_ParseIpv6Arpa(domain, &ip))
-        return DNS_PipRulesMatchIp(&ip, AF_INET6);
+        return DNS_IsStrictPrivateOrLoopbackIp(&ip, AF_INET6);
 
     return FALSE;
 }
