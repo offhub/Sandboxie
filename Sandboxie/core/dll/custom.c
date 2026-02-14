@@ -1199,7 +1199,7 @@ _FX BOOLEAN SbieDll_ExpandAndRunProgram(const WCHAR *Command)
 		
 		// fallback - not found keep the %something%
 		wmemcpy(ptr2, ptr, length);
-		ptr2 += len;
+		ptr2 += length;
 	}
 	wcscpy(ptr2, ptr1); // copy what's left
 
