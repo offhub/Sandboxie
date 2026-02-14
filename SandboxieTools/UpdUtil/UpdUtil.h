@@ -41,5 +41,8 @@
 #define ERROR_BAD_ADDON2	(-14)
 #define ERROR_DELETE		(-15)
 #define ERROR_GET_CERT		(-16)
+#define ERROR_DNS			(-17)	// DNS resolution failed
+#define ERROR_CONNECT		(-18)	// connection refused/blocked
+#define ERROR_NETWORK		(-19)	// general network failure
 
 

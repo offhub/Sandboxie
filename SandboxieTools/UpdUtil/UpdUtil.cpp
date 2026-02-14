@@ -26,6 +26,49 @@
 #include "../Common/json/JSON.h"
 #include "UpdUtil.h"
 
+// Helper function to convert web errors to application error codes and print appropriate messages
+int HandleWebError(const std::wstring& context = L"")
+{
+	DWORD webError = GetLastWebError();
+	DWORD winError = GetLastWebWinError();
+	
+	int ret;
+	const wchar_t* errorMsg;
+	
+	switch (webError)
+	{
+	case WEB_ERROR_DNS:
+		ret = ERROR_DNS;
+		errorMsg = L"DNS resolution failed";
+		break;
+	case WEB_ERROR_CONNECT:
+		ret = ERROR_CONNECT;
+		errorMsg = L"Connection refused or blocked";
+		break;
+	case WEB_ERROR_SEND:
+		ret = ERROR_NETWORK;
+		errorMsg = L"Failed to send request";
+		break;
+	case WEB_ERROR_RECEIVE:
+		ret = ERROR_NETWORK;
+		errorMsg = L"Failed to receive response";
+		break;
+	default:
+		ret = ERROR_NETWORK;
+		errorMsg = L"Network operation failed";
+		break;
+	}
+	
+	if (!context.empty())
+		std::wcerr << context << L": ";
+	std::wcerr << errorMsg;
+	if (winError != 0)
+		std::wcerr << L" (error code: " << winError << L")";
+	std::wcerr << std::endl;
+	
+	return ret;
+}
+
 bool GetDriverInfo(DWORD InfoClass, void* pBuffer, size_t Size);
 
 extern "C" {
@@ -608,11 +651,32 @@ int FindChanges(std::shared_ptr<SRelease> pNewFiles, std::wstring base_dir, std:
 
 BOOLEAN WebDownload(std::wstring url, PSTR* pData, ULONG* pDataLength)
 {
-	size_t pos = url.find_first_of(L'/', 8);
-	if (pos == std::wstring::npos)
+	// Initialize output parameters
+	if (pData != NULL)
+		*pData = NULL;
+	if (pDataLength != NULL)
+		*pDataLength = 0;
+
+	// Validate URL format - must start with https://
+	if (url.length() < 9 || _wcsnicmp(url.c_str(), L"https://", 8) != 0) {
+		std::wcerr << L"Invalid URL format: " << url << std::endl;
 		return FALSE;
+	}
+
+	size_t pos = url.find_first_of(L'/', 8);
+	if (pos == std::wstring::npos) {
+		std::wcerr << L"Invalid URL - no path found: " << url << std::endl;
+		return FALSE;
+	}
+	
 	std::wstring path = url.substr(pos);
 	std::wstring domain = url.substr(8, pos-8);
+	
+	// Validate domain is not empty
+	if (domain.empty()) {
+		std::wcerr << L"Invalid URL - empty domain: " << url << std::endl;
+		return FALSE;
+	}
 
 	return WebDownload(domain.c_str(), path.c_str(), pData, pDataLength);
 }
@@ -646,11 +710,30 @@ int DownloadUpdate(std::wstring temp_dir, std::shared_ptr<SFiles> pNewFiles)
 			}
 		}
 
+		// Validate URL before attempting download
+		if (I->second->Url.empty()) {
+			std::wcerr << L"\tDownloading: " << I->second->Path << L" ... FAILED (no URL)" << std::endl;
+			return ERROR_DOWNLOAD;
+		}
+
 		std::wcout << L"\tDownloading: " << I->second->Path << L" ...";
 
 		char* pData = NULL;
 		ULONG uDataLen = 0;
 		if (WebDownload(I->second->Url, &pData, &uDataLen)) {
+
+			// Validate that we received data
+			if (pData == NULL) {
+				std::wcout << L" FAILED (no data received)" << std::endl;
+				return HandleWebError(L"Download");
+			}
+
+			// Check for empty response
+			if (uDataLen == 0) {
+				free(pData);
+				std::wcout << L" FAILED (empty response)" << std::endl;
+				return ERROR_DOWNLOAD;
+			}
 
 			ULONG hashSize;
 			PVOID hash = NULL;
@@ -669,15 +752,18 @@ int DownloadUpdate(std::wstring temp_dir, std::shared_ptr<SFiles> pNewFiles)
 				MyWriteFile((wchar_t*)(temp_dir + L"\\" + I->second->Path).c_str(), pData, uDataLen);
 				I->second->State = SFile::ePending;
 			}
+			else {
+				free(pData);
+				std::wcout << L" FAILED (hash computation error)" << std::endl;
+				return ERROR_INTERNAL;
+			}
 
 			free(pData);
 			std::wcout << L" done" << std::endl;
 		}
 		else {
-
 			std::wcout << L" FAILED" << std::endl;
-
-			return ERROR_DOWNLOAD;
+			return HandleWebError(I->second->Path);
 		}
 	}
 
@@ -956,6 +1042,9 @@ int InstallAddon(std::shared_ptr<SAddon> pAddon, const std::wstring& temp_dir, c
 {
 	int ret = 0;
 
+	if (!pAddon)
+		return ERROR_BAD_ADDON;
+
 	if (!pAddon->Installer.empty() && FileExists((temp_dir + L"\\" + pAddon->Id + pAddon->Installer).c_str())) {
 
 		LPWCH environmentStrings = GetEnvironmentStrings();
@@ -1034,6 +1123,9 @@ int RemoveAddon(std::shared_ptr<SAddon> pAddon, const std::wstring& base_dir)
 {
 	int ret = 0;
 
+	if (!pAddon)
+		return ERROR_BAD_ADDON;
+
 	if (!pAddon->UninstallKey.empty())
 	{
 		std::wstring cmdLine = ReadRegistryStringValue(pAddon->UninstallKey, L"UninstallString");
@@ -1084,10 +1176,28 @@ int RemoveAddon(std::shared_ptr<SAddon> pAddon, const std::wstring& base_dir)
 
 int DownloadFile(std::wstring url, std::wstring file_path)
 {
+	// Validate URL
+	if (url.empty()) {
+		std::wcerr << L"Download failed: empty URL" << std::endl;
+		return ERROR_INVALID;
+	}
+
 	char* pData = NULL;
 	ULONG uDataLen = 0;
 
 	if (WebDownload(url, &pData, &uDataLen)) {
+
+		// Validate received data
+		if (pData == NULL) {
+			std::wcerr << L"Download failed: no data received" << std::endl;
+			return HandleWebError(L"Download");
+		}
+
+		if (uDataLen == 0) {
+			free(pData);
+			std::wcerr << L"Download failed: empty response" << std::endl;
+			return ERROR_DOWNLOAD;
+		}
 
 		MyWriteFile((wchar_t*)file_path.c_str(), pData, uDataLen);
 
@@ -1095,22 +1205,42 @@ int DownloadFile(std::wstring url, std::wstring file_path)
 		std::wcout << L" done" << std::endl;
 		return 0;
 	}
+	
 	std::wcout << L" FAILED" << std::endl;
-	return ERROR_DOWNLOAD;
+	return HandleWebError(url);
 }
 
 int PrintFile(std::wstring url)
 {
+	// Validate URL
+	if (url.empty()) {
+		std::wcerr << L"Print failed: empty URL" << std::endl;
+		return ERROR_INVALID;
+	}
+
 	char* pData = NULL;
 	ULONG uDataLen = 0;
 
 	if (WebDownload(url, &pData, &uDataLen)) {
 
+		// Validate received data
+		if (pData == NULL) {
+			std::wcerr << L"Print failed: no data received" << std::endl;
+			return HandleWebError(L"Print");
+		}
+
+		if (uDataLen == 0) {
+			free(pData);
+			std::wcerr << L"Print failed: empty response" << std::endl;
+			return ERROR_DOWNLOAD;
+		}
+
 		std::wcout << pData;
 		free(pData);
 		return 0;
 	}
-	return ERROR_DOWNLOAD;
+	
+	return HandleWebError(url);
 }
 
 
@@ -1373,6 +1503,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			std::wstring path = L"/update.php?software=" + software + params.str();
 			if (WebDownload(_T(UPDATE_DOMAIN), path.c_str(), &aJson, NULL) && aJson != NULL)
 			{
+				// Validate received data is not empty
+				if (aJson[0] == '\0') {
+					free(aJson);
+					std::wcerr << L"Failed to get update information: empty response" << std::endl;
+					return ERROR_GET;
+				}
+
 				JSONValue* jsonObject = JSON::Parse(aJson);
 				if (jsonObject) {
 					if (jsonObject->IsObject()) {
@@ -1399,12 +1536,23 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 					}
 					delete jsonObject;
 				}
+				else {
+					free(aJson);
+					std::wcerr << L"Failed to parse update information: invalid JSON" << std::endl;
+					return ERROR_GET;
+				}
 				free(aJson);
 
 				if (!bModify && !pFiles) {
 					std::wcout << L"No update found !!!" << std::endl;
 					return ERROR_GET;
 				}
+			}
+			else {
+				// WebDownload failed - provide detailed error information
+				if (aJson != NULL)
+					free(aJson);
+				return HandleWebError(L"Failed to download update information");
 			}
 
 			ret = 0;
@@ -1691,9 +1839,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 		char* aCert = NULL;
 		ULONG lCert = 0;
-		if (WebDownload(_T(UPDATE_DOMAIN), path.c_str(), &aCert, &lCert) && aCert != NULL && *aCert) 
+		if (WebDownload(_T(UPDATE_DOMAIN), path.c_str(), &aCert, &lCert)) 
 		{
-			if (aCert[0] == L'{') {
+			// Validate we received data
+			if (aCert == NULL) {
+				std::wcerr << L"Failed to get certificate: no data received" << std::endl;
+				return HandleWebError(L"Certificate download");
+			}
+
+			// Check for empty response
+			if (lCert == 0 || aCert[0] == '\0') {
+				free(aCert);
+				std::wcerr << L"Failed to get certificate: empty response" << std::endl;
+				return ERROR_GET_CERT;
+			}
+
+			if (aCert[0] == '{') {
 				JSONValue* jsonObject = JSON::Parse(aCert);
 				if (jsonObject) {
 					if (jsonObject->IsObject() && GetJSONBoolSafe(jsonObject->AsObject(), L"error"))
@@ -1705,21 +1866,43 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 					delete jsonObject;
 				}
 				free(aCert);
+				aCert = NULL; // Mark as consumed
 			}
 		}
 		else
 		{
-			std::wcout << L"FAILED to call get_cert.php" << std::endl;
-
-			ret = ERROR_GET_CERT;
+			// Provide detailed error information for network failures
+			DWORD webError = GetLastWebError();
+			
+			if (webError == WEB_ERROR_DNS) {
+				std::wcerr << L"Failed to get certificate: DNS resolution failed for " _T(UPDATE_DOMAIN) << std::endl;
+				ret = ERROR_DNS;
+			}
+			else if (webError == WEB_ERROR_CONNECT) {
+				std::wcerr << L"Failed to get certificate: connection refused or blocked" << std::endl;
+				ret = ERROR_CONNECT;
+			}
+			else {
+				std::wcerr << L"Failed to get certificate: network error (code: " << GetLastWebWinError() << L")" << std::endl;
+				ret = ERROR_GET_CERT;
+			}
+			
+			if (aCert != NULL)
+				free(aCert);
+			return ret;
 		}
 
 		if (ret == 0) 
 		{
+			if (aCert == NULL) {
+				// aCert was consumed as JSON error response
+				return ERROR_GET_CERT;
+			}
 			if (file_path.empty())
 				printf("== CERTIFICATE ==\r\n%s\r\n== END ==", aCert);
 			else if(!NT_SUCCESS(MyWriteFile((wchar_t*)file_path.c_str(), aCert, lCert)))
 				ret = ERROR_INTERNAL;
+			free(aCert);
 		}
 
 		return ret;
