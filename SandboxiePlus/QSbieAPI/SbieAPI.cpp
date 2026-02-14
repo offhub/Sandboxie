@@ -1171,8 +1171,13 @@ QString CSbieAPI__FormatNtStatus(long nsCode)
         hNtDll, nsCode >= 0 ? nsCode : RtlNtStatusToDosError(nsCode), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         (LPTSTR)&ret_str, 0, NULL);
 
-	QString qStr = dwRes > 0 ? QString::fromWCharArray(ret_str) : QString();
-    LocalFree(ret_str);
+	QString qStr;
+	if (dwRes > 0 && ret_str != NULL) {
+		qStr = QString::fromWCharArray(ret_str);
+	}
+	if (ret_str != NULL) {
+		LocalFree(ret_str);
+	}
 	return qStr;
 }
 
