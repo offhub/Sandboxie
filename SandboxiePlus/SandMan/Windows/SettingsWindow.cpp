@@ -553,6 +553,7 @@ CSettingsWindow::CSettingsWindow(QWidget* parent)
 	connect(ui.chkMinimize, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.chkSingleShow, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.chkTrayIcons, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
+	connect(ui.chkTrayOverlayIcons, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.chkTrayUseAlias, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.spnTrayAliasChars, SIGNAL(valueChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.chkTrayStatusTip, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
@@ -1428,6 +1429,7 @@ void CSettingsWindow::LoadSettings()
 	ui.cmbTrayBoxes->setCurrentIndex(theConf->GetInt("Options/SysTrayFilter", 0));
 	ui.chkCompactTray->setChecked(theConf->GetBool("Options/CompactTray", false));
 	ui.chkTrayIcons->setChecked(theConf->GetBool("Options/TrayIcons", true));
+	ui.chkTrayOverlayIcons->setChecked(theConf->GetBool("Options/TrayOverlayIcons", true));
 	ui.chkTrayUseAlias->setChecked(theConf->GetBool("Options/TrayUseAlias", true));
 	int iTrayAliasChars = theConf->GetInt("Options/TrayAliasMaxChars", 64);
 	if (iTrayAliasChars < 32 || iTrayAliasChars > 256)
@@ -2069,6 +2071,7 @@ void CSettingsWindow::SaveSettings()
 	theConf->SetValue("Options/SysTrayFilter", ui.cmbTrayBoxes->currentIndex());
 	theConf->SetValue("Options/CompactTray", ui.chkCompactTray->isChecked());
 	theConf->SetValue("Options/TrayIcons", ui.chkTrayIcons->isChecked());
+	theConf->SetValue("Options/TrayOverlayIcons", ui.chkTrayOverlayIcons->isChecked());
 	theConf->SetValue("Options/TrayUseAlias", ui.chkTrayUseAlias->isChecked());
 	theConf->SetValue("Options/TrayAliasMaxChars", ui.spnTrayAliasChars->value());
 	theConf->SetValue("Options/TrayStatusTip", (int)ui.chkTrayStatusTip->checkState());

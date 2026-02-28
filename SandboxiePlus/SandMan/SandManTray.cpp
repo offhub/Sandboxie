@@ -535,6 +535,21 @@ static QIcon CSandMan__GetCachedCustomIcon(const QString& boxName, const QString
 	return Icon;
 }
 
+static QIcon CSandMan__ApplyTrayBoxOverlay(QIcon Icon, CSandBoxPlus* pBoxEx)
+{
+	if (!theGUI || Icon.isNull())
+		return Icon;
+	if (pBoxEx->IsForceDisabled())
+		return theGUI->IconAddOverlay(Icon, ":/IconDFP");
+	if (pBoxEx->UseRamDisk())
+		return theGUI->IconAddOverlay(Icon, ":/Actions/RamDisk.png");
+	if (pBoxEx->UseImageFile())
+		return theGUI->IconAddOverlay(Icon, pBoxEx->GetMountRoot().isEmpty() ? ":/Actions/LockClosed.png" : ":/Actions/LockOpen.png");
+	if (pBoxEx->IsAutoDelete())
+		return theGUI->IconAddOverlay(Icon, ":/Boxes/AutoDel");
+	return Icon;
+}
+
 QAction* CSandMan__MakeBoxEntry(QMenu* pMenu, CSandBoxPlus* pBoxEx, QFileIconProvider& IconProvider, int iNoIcons, bool ColorIcons)
 {
 	static QMenu* pEmptyMenu = new QMenu();
@@ -562,6 +577,8 @@ QAction* CSandMan__MakeBoxEntry(QMenu* pMenu, CSandBoxPlus* pBoxEx, QFileIconPro
 			else
 				Icon = theGUI->GetBoxIcon(pBoxEx->GetType(), pBoxEx->GetActiveProcessCount() != 0);
 		}
+		if (theConf ? theConf->GetBool("Options/TrayOverlayIcons", true) : true)
+			Icon = CSandMan__ApplyTrayBoxOverlay(Icon, pBoxEx);
 		pBoxAction->setIcon(Icon);
 	}
 	pBoxAction->setData("box:" + pBoxEx->GetName());
@@ -802,6 +819,8 @@ void CSandMan::OnSysTray(QSystemTrayIcon::ActivationReason Reason)
 						else
 							Icon = theGUI->GetBoxIcon(pBoxEx->GetType(), pBox->GetActiveProcessCount() != 0);
 					}
+					if (theConf->GetBool("Options/TrayOverlayIcons", true))
+						Icon = CSandMan__ApplyTrayBoxOverlay(Icon, pBoxEx.data());
 					pItem->setData(0, Qt::DecorationRole, Icon);
 					// Store both status and truncation tooltips; view logic picks one by mode/modifier
 					pItem->setToolTip(0, CSandMan__BuildBoxTooltip(pBoxEx.data()));
