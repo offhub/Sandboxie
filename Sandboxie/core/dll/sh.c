@@ -3606,8 +3606,32 @@ _FX HRESULT WINAPI SH32_IShellWindows_FindWindowSW(
         BOOLEAN valid_dispatch = SH32_IsUsableShellDispatch(*ppdispOut);
 
         if (valid_dispatch) {
-            SbieApi_MonitorPut2(MONITOR_COMCLASS | MONITOR_TRACE,
-                L"UseFakeShellDispatch[S1A]: desktop dispatch already usable", FALSE);
+            // Accept this only if the shell window is owned by a process that
+            // runs inside this sandbox.  When OpenClsid allows the real
+            // IShellWindows, FindWindowSW returns the HOST desktop dispatch
+            // (which also satisfies SH32_IsUsableShellDispatch), but it must
+            // not be used as the in-sandbox dispatch — fall through to S5.
+            BOOLEAN ownerInSandbox = FALSE;
+            if (phwnd && *phwnd) {
+                ULONG ownerPid = 0;
+                extern DWORD (*__sys_GetWindowThreadProcessId)(HWND hWnd, ULONG *ppid);
+                if (__sys_GetWindowThreadProcessId)
+                    __sys_GetWindowThreadProcessId((HWND)(LONG_PTR)*phwnd, &ownerPid);
+                if (ownerPid) {
+                    WCHAR sbxname[34];
+                    LONG st = SbieApi_QueryProcess(
+                        (HANDLE)(ULONG_PTR)ownerPid, sbxname, NULL, NULL, NULL);
+                    ownerInSandbox = NT_SUCCESS(st) && sbxname[0] != L'\0';
+                }
+            }
+            if (ownerInSandbox) {
+                SbieApi_MonitorPut2(MONITOR_COMCLASS | MONITOR_TRACE,
+                    L"UseFakeShellDispatch[S1A]: desktop dispatch already usable", FALSE);
+            } else {
+                valid_dispatch = FALSE;
+                SbieApi_MonitorPut2(MONITOR_COMCLASS | MONITOR_TRACE,
+                    L"UseFakeShellDispatch[S1A]: hwnd not in sandbox -> fallback", FALSE);
+            }
         }
 
         if (! valid_dispatch) {
