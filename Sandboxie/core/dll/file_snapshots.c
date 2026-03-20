@@ -38,7 +38,7 @@ typedef struct _FILE_SNAPSHOT {
 	ULONG					ScramKey;
 	//WCHAR					Name[BOXNAME_COUNT];
 	struct _FILE_SNAPSHOT*	Parent;
-	LIST					PathRoot;
+	PATH_LIST					PathRoot;
 } FILE_SNAPSHOT, *PFILE_SNAPSHOT;
 
 
@@ -560,13 +560,40 @@ _FX void File_InitSnapshots(void)
 		
 		if (File_Delete_v2) 
 		{
+			const WCHAR* datName = File_DeleteV3 ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+			const WCHAR* logName = File_DeleteV3 ? FILE_PATH_LOG_FILE_NAME_V3 : FILE_PATH_LOG_FILE_NAME;
+
 			WCHAR PathFile[MAX_PATH];
 			wcscpy(PathFile, File_Snapshot_Prefix);
 			wcscat(PathFile, Cur_Snapshot->ID);
 			wcscat(PathFile, L"\\");
-			wcscat(PathFile, FILE_PATH_FILE_NAME);
+			wcscat(PathFile, datName);
 
-			File_LoadPathTree_internal(&Cur_Snapshot->PathRoot, PathFile, File_TranslateDosToNtPath);
+			if (File_DeleteV3) {
+				// V3 .dat uses opcode format (same as .sbie), not legacy path|flags
+				ULONG64 dummy_size = 0, dummy_date = 0;
+				if (File_GetAttributes_internal(PathFile, &dummy_size, &dummy_date, NULL) && dummy_size != 0) {
+					ULONG applied_lines = 0;
+					ULONG64 replay_offset = 0;
+					File_LoadPathJournal_internal(&Cur_Snapshot->PathRoot, PathFile, File_TranslateDosToNtPathForDatFile, &replay_offset, &applied_lines);
+				}
+			} else {
+				File_LoadPathTree_internal(&Cur_Snapshot->PathRoot, PathFile, File_TranslateDosToNtPathForDatFile);
+			}
+
+			WCHAR PathLog[MAX_PATH];
+			wcscpy(PathLog, File_Snapshot_Prefix);
+			wcscat(PathLog, Cur_Snapshot->ID);
+			wcscat(PathLog, L"\\");
+			wcscat(PathLog, logName);
+
+			ULONG64 PathsLogFileSize = 0;
+			ULONG64 PathsLogFileDate = 0;
+			if (File_GetAttributes_internal(PathLog, &PathsLogFileSize, &PathsLogFileDate, NULL) && PathsLogFileSize != 0) {
+				ULONG applied_lines = 0;
+				ULONG64 replay_offset = 0;
+				File_LoadPathJournal_internal(&Cur_Snapshot->PathRoot, PathLog, File_TranslateDosToNtPathForDatFile, &replay_offset, &applied_lines);
+			}
 		}
 
 		//WCHAR SnapshotName[BOXNAME_COUNT] = { 0 };

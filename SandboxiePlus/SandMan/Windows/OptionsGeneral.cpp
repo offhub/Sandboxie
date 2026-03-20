@@ -196,16 +196,43 @@ void COptionsWindow::CreateGeneral()
 
 	ui.cmbVersion->addItem(tr("Version 1"));
 	ui.cmbVersion->addItem(tr("Version 2"));
+	ui.cmbVersion->addItem(tr("Version 3"));
+	ui.cmbVersion->setItemData(0, tr("Legacy Delete V1 tracking. Recommended only for compatibility fallback."), Qt::ToolTipRole);
+	ui.cmbVersion->setItemData(1, tr("Delete V2 tracking with .dat file only, no journal."), Qt::ToolTipRole);
+	ui.cmbVersion->setItemData(2, tr("Delete V3: new file format with journal and full escaping. Requires empty box."), Qt::ToolTipRole);
+	connect(ui.btnDeleteV3Options, &QPushButton::clicked, this, &COptionsWindow::OnDeleteV3AdvancedSettings);
+	QWidget::setTabOrder(ui.cmbVersion, ui.btnDeleteV3Options);
 
 	auto pBoxEx = m_pBox.objectCast<CSandBoxPlus>();
 	bool bEmpty = pBoxEx ? pBoxEx->IsEmpty() : true;
-	ui.lblWhenEmpty->setVisible(!bEmpty);
-	ui.lblScheme->setEnabled(bEmpty);
-	ui.cmbVersion->setEnabled(bEmpty);
+	bool bUseFileDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV2", false);
+	bool bUseRegDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV2", false);
+	bool bUseDeleteV2 = m_pBox->GetBool("UseFileDeleteV2", bUseFileDeleteV2Global) && m_pBox->GetBool("UseRegDeleteV2", bUseRegDeleteV2Global);
+	bool bUseFileDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV3", false);
+	bool bUseRegDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV3", false);
+	bool bUseDeleteV3 = m_pBox->GetBool("UseFileDeleteV3", bUseFileDeleteV3Global) && m_pBox->GetBool("UseRegDeleteV3", bUseRegDeleteV3Global);
+	bool bCanSwitchDeleteVersion = bEmpty || bUseDeleteV2 || bUseDeleteV3;
+
+	ui.lblWhenEmpty->setVisible(!bCanSwitchDeleteVersion);
+	ui.lblScheme->setEnabled(bCanSwitchDeleteVersion);
+	ui.cmbVersion->setEnabled(bCanSwitchDeleteVersion);
+	ui.cmbVersion->setToolTip(tr("Version 2/3 variants can be switched on non-empty boxes when Delete V2 or V3 is enabled."));
+	if (!bEmpty && (bUseDeleteV2 || bUseDeleteV3)) {
+		if (QStandardItemModel* pVersionModel = qobject_cast<QStandardItemModel*>(ui.cmbVersion->model())) {
+			if (QStandardItem* pLegacyItem = pVersionModel->item(0))
+				pLegacyItem->setEnabled(false);
+			// V3 requires empty box to switch to
+			if (!bEmpty && !bUseDeleteV3) {
+				if (QStandardItem* pV3Item = pVersionModel->item(2))
+					pV3Item->setEnabled(false);
+			}
+		}
+	}
 	ui.chkSeparateUserFolders->setEnabled(bEmpty);
 	ui.chkUseVolumeSerialNumbers->setEnabled(bEmpty);
 
 	connect(ui.cmbVersion, SIGNAL(currentIndexChanged(int)), this, SLOT(OnGeneralChanged()));
+	connect(ui.cmbVersion, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { UpdateDeleteV3AdvancedButton(); });
 	connect(ui.chkSeparateUserFolders, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
 	connect(ui.chkUseVolumeSerialNumbers, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
 
@@ -372,15 +399,28 @@ void COptionsWindow::LoadGeneral()
 
 	bool bUseFileDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV2", false);
 	bool bUseRegDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV2", false);
-	if (m_pBox->GetBool("UseFileDeleteV2", bUseFileDeleteV2Global) && m_pBox->GetBool("UseRegDeleteV2", bUseRegDeleteV2Global))
+	bool bUseFileDeleteV2 = m_pBox->GetBool("UseFileDeleteV2", bUseFileDeleteV2Global);
+	bool bUseRegDeleteV2 = m_pBox->GetBool("UseRegDeleteV2", bUseRegDeleteV2Global);
+	bool bUseFileDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV3", false);
+	bool bUseRegDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV3", false);
+	bool bUseFileDeleteV3 = m_pBox->GetBool("UseFileDeleteV3", bUseFileDeleteV3Global);
+	bool bUseRegDeleteV3 = m_pBox->GetBool("UseRegDeleteV3", bUseRegDeleteV3Global);
+
+	ui.cmbVersion->setEditable(false);
+	if (bUseFileDeleteV3 && bUseRegDeleteV3) {
+		ui.cmbVersion->setCurrentIndex(2);
+	}
+	else if (bUseFileDeleteV2 && bUseRegDeleteV2) {
 		ui.cmbVersion->setCurrentIndex(1);
-	else if (!m_pBox->GetBool("UseFileDeleteV2", bUseFileDeleteV2Global) && !m_pBox->GetBool("UseRegDeleteV2", bUseRegDeleteV2Global))
+	}
+	else if (!bUseFileDeleteV2 && !bUseRegDeleteV2)
 		ui.cmbVersion->setCurrentIndex(0);
 	else {
 		ui.cmbVersion->setEditable(true);
 		ui.cmbVersion->lineEdit()->setReadOnly(true);
 		ui.cmbVersion->setCurrentText(tr("Indeterminate"));
 	}
+	UpdateDeleteV3AdvancedButton();
 
 	ReadGlobalCheck(ui.chkSeparateUserFolders, "SeparateUserFolders", theAPI->GetGlobalSettings()->GetBool("SeparateUserFolders", true));
 	ReadGlobalCheck(ui.chkUseVolumeSerialNumbers, "UseVolumeSerialNumbers", theAPI->GetGlobalSettings()->GetBool("UseVolumeSerialNumbers", false));
@@ -525,24 +565,32 @@ void COptionsWindow::SaveGeneral()
 
 	if (ui.cmbVersion->isEnabled()) 
 	{
-		if (ui.cmbVersion->currentIndex() == 1) // V2
+		auto setBoolWithGlobalDefault = [this](const QString& Name, bool Value) {
+			bool bGlobal = theAPI->GetGlobalSettings()->GetBool(Name, false);
+			if (Value != bGlobal)
+				m_pBox->SetBool(Name, Value);
+			else
+				m_pBox->DelValue(Name);
+		};
+
+		if (ui.cmbVersion->currentIndex() == 2) // V3
 		{
-			m_pBox->SetBool("UseFileDeleteV2", true);
-			m_pBox->SetBool("UseRegDeleteV2", true);
+			setBoolWithGlobalDefault("UseFileDeleteV3", true);
+			setBoolWithGlobalDefault("UseRegDeleteV3", true);
+		}
+		else if (ui.cmbVersion->currentIndex() == 1) // V2
+		{
+			setBoolWithGlobalDefault("UseFileDeleteV2", true);
+			setBoolWithGlobalDefault("UseRegDeleteV2", true);
+			setBoolWithGlobalDefault("UseFileDeleteV3", false);
+			setBoolWithGlobalDefault("UseRegDeleteV3", false);
 		}
 		else if (ui.cmbVersion->currentIndex() == 0) // V1
 		{
-			bool bUseFileDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV2", false);
-			if(bUseFileDeleteV2Global)
-				m_pBox->SetBool("UseFileDeleteV2", false);
-			else
-				m_pBox->DelValue("UseFileDeleteV2");
-
-			bool bUseRegDeleteV2Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV2", false);
-			if(bUseRegDeleteV2Global)
-				m_pBox->SetBool("UseRegDeleteV2", false);
-			else
-				m_pBox->DelValue("UseRegDeleteV2");
+			setBoolWithGlobalDefault("UseFileDeleteV2", false);
+			setBoolWithGlobalDefault("UseRegDeleteV2", false);
+			setBoolWithGlobalDefault("UseFileDeleteV3", false);
+			setBoolWithGlobalDefault("UseRegDeleteV3", false);
 		}
 
 		WriteGlobalCheck(ui.chkSeparateUserFolders, "SeparateUserFolders", true);
@@ -551,6 +599,8 @@ void COptionsWindow::SaveGeneral()
 		WriteAdvancedCheck(ui.chkRamBox, "UseRamDisk", "y", "");
 		WriteAdvancedCheck(ui.chkEncrypt, "UseFileImage", "y", "");
 	}
+
+	SaveDeleteV3AdvancedSettings();
 
 	int iLimit = ui.chkCopyLimit->isChecked() ? ui.txtCopyLimit->text().toInt() : -1;
 	if(iLimit != 80 * 1024)

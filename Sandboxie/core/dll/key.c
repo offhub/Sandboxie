@@ -2721,9 +2721,48 @@ _FX NTSTATUS Key_NtDeleteValueKey(
             InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
             Key_CreatePath(&objattrs, NULL);
 
-            Key_MarkDeletedEx_v2(TruePath, ValueName->Buffer);
+            ULONG value_name_len = ValueName ? (ULONG)(ValueName->Length / sizeof(WCHAR)) : 0;
+            WCHAR* value_name_z = Dll_GetTlsNameBuffer(TlsData, MISC_NAME_BUFFER,
+                (value_name_len + 1) * sizeof(WCHAR));
+            if (value_name_z) {
+                if (value_name_len && ValueName && ValueName->Buffer)
+                    wmemcpy(value_name_z, ValueName->Buffer, value_name_len);
+                value_name_z[value_name_len] = L'\0';
+            }
+
+            NTSTATUS mark_status = value_name_z
+                ? Key_MarkDeletedEx_v2(TruePath, value_name_z)
+                : STATUS_INSUFFICIENT_RESOURCES;
+            Key_UpdateMergeByHandle(TlsData, KeyHandle, FALSE);
 
             status = __sys_NtDeleteValueKey(KeyHandle, ValueName);
+
+            if (status == STATUS_ACCESS_DENIED) {
+                // Mirror Key_NtSetValueKey behavior: some handles can resolve to a
+                // readonly true-key context even though logical delete-v2 bookkeeping
+                // already succeeded. Re-open with explicit set-value rights and retry.
+                OBJECT_ATTRIBUTES del_objattrs;
+                UNICODE_STRING del_objname;
+                HANDLE del_handle;
+
+                RtlInitUnicodeString(&del_objname, L"");
+                InitializeObjectAttributes(&del_objattrs, &del_objname, OBJ_CASE_INSENSITIVE, KeyHandle, NULL);
+
+                if (NT_SUCCESS(NtOpenKey(&del_handle, KEY_SET_VALUE, &del_objattrs))) {
+                    status = __sys_NtDeleteValueKey(del_handle, ValueName);
+                    NtClose(del_handle);
+                }
+            }
+
+            // In delete-v2 mode, logical deletion is authoritative.  During value
+            // rename flows (set new, delete old), the old value may be absent from
+            // the current physical hive even though we successfully recorded the
+            // virtual deletion marker, so native delete can return NOT_FOUND.
+            // Treat that as success to avoid false "Error renaming value" popups.
+            if (NT_SUCCESS(mark_status)
+                && (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND)) {
+                status = STATUS_SUCCESS;
+            }
 
         } else {
 
@@ -4628,6 +4667,9 @@ _FX NTSTATUS Key_NtRenameKey(
             NtClose(handle);
         }
     }
+
+    if (!NT_SUCCESS(status))
+        goto finish;
 
     //
     // check if the true path exists and if so mark path deleted

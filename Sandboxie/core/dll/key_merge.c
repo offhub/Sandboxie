@@ -37,7 +37,7 @@ typedef struct _KEY_MERGE {
 
     BOOLEAN subkeys_merged;
     LARGE_INTEGER last_write_time;
-    ULONGLONG last_paths_version;
+    ULONG last_paths_version;
     LIST subkeys;
 
     ULONG last_index;
@@ -87,7 +87,8 @@ static NTSTATUS Key_Merge(
 
 static NTSTATUS Key_OpenForMerge(
     HANDLE KeyHandle, const WCHAR *TruePath, const WCHAR *CopyPath,
-    KEY_MERGE **out_TrueMerge, HANDLE *out_CopyHandle);
+    KEY_MERGE **out_TrueMerge, HANDLE *out_CopyHandle,
+    BOOLEAN HasDeletedChildren);
 
 static BOOLEAN Key_ShouldNotMerge(
     const WCHAR *TruePath, const WCHAR *CopyPath);
@@ -147,6 +148,7 @@ _FX NTSTATUS Key_Merge(
     KEY_MERGE *merge;
     KEY_MERGE *TrueMerge;
     HANDLE CopyHandle;
+    BOOLEAN has_deleted_children = FALSE;
 
     //
     // if we have information cached for this handle, return it
@@ -235,6 +237,8 @@ _FX NTSTATUS Key_Merge(
 
         List_Insert_Before(&Key_Handles, NULL, merge);
         Handle_RegisterHandler(merge->handle, Key_NtClose, NULL, FALSE);
+    } else {
+        merge->ticks = ticks_now;
     }
 
     //
@@ -242,7 +246,10 @@ _FX NTSTATUS Key_Merge(
     // or CopyPath exist, but not both, so return special status
     //
 
-    if(!Key_Delete_v2 || !Key_HasDeleted_v2(TruePath))
+    if (Key_Delete_v2)
+        has_deleted_children = Key_HasDeleted_v2(TruePath);
+
+    if(!Key_Delete_v2 || !has_deleted_children)
     if (merge->cant_merge) {
 
         LeaveCriticalSection(&Key_Handles_CritSec);
@@ -258,7 +265,8 @@ _FX NTSTATUS Key_Merge(
             (want_values  && (! merge->values_merged)))
     {
         status = Key_OpenForMerge(
-            KeyHandle, TruePath, CopyPath, &TrueMerge, &CopyHandle);
+            KeyHandle, TruePath, CopyPath, &TrueMerge, &CopyHandle,
+            has_deleted_children);
 
         if (! NT_SUCCESS(status)) {
 
@@ -316,7 +324,8 @@ _FX NTSTATUS Key_Merge(
 
 _FX NTSTATUS Key_OpenForMerge(
     HANDLE KeyHandle, const WCHAR *TruePath, const WCHAR *CopyPath,
-    KEY_MERGE **out_TrueMerge, HANDLE *out_CopyHandle)
+    KEY_MERGE **out_TrueMerge, HANDLE *out_CopyHandle,
+    BOOLEAN HasDeletedChildren)
 {
     NTSTATUS status;
     OBJECT_ATTRIBUTES objattrs;
@@ -393,7 +402,7 @@ _FX NTSTATUS Key_OpenForMerge(
         // if we couldn't find a copy key, indicate there is nothing to merge
         //
 
-        if (Key_Delete_v2 && Key_HasDeleted_v2(TruePath))
+        if (Key_Delete_v2 && HasDeletedChildren)
             status = STATUS_SUCCESS;
         else
             status = STATUS_BAD_INITIAL_PC;
@@ -631,7 +640,7 @@ _FX NTSTATUS Key_MergeCache(
 
         KEY_MERGE *next = List_Next(merge);
 
-        if (ticks_now - merge->ticks <= 30 * 1000) {
+        if (ticks_now - merge->ticks >= 30 * 1000) {
 
             //
             // we hit a merge that hasn't been in use for 30 seconds,
@@ -662,6 +671,7 @@ _FX NTSTATUS Key_MergeCache(
     //
 
     if (merge) {
+        merge->ticks = ticks_now;
 
         if (LastWriteTime->QuadPart == merge->last_write_time.QuadPart && Key_PathsVersion == merge->last_paths_version) {
             *out_TrueMerge = merge;
@@ -681,6 +691,7 @@ _FX NTSTATUS Key_MergeCache(
 
         merge->name_len = TruePath_len;
         memcpy(merge->name, TruePath, TruePath_len + sizeof(WCHAR));
+        merge->ticks = ticks_now;
 
         List_Insert_After(&Key_MergeCacheList, NULL, merge);
     }
@@ -1005,11 +1016,16 @@ _FX NTSTATUS Key_MergeCacheValues(KEY_MERGE *merge, HANDLE TrueHandle)
         // find where to insert it
         //
 
-        value2 = List_Head(&merge->values);
-        while (value2) {
-            if (_wcsicmp(value2->name, value->name) > 0)
-                break;
-            value2 = List_Next(value2);
+        value2 = List_Tail(&merge->values);
+        if (value2 && _wcsicmp(value2->name, value->name) < 0)
+            value2 = NULL;
+        else {
+            value2 = List_Head(&merge->values);
+            while (value2) {
+                if (_wcsicmp(value2->name, value->name) > 0)
+                    break;
+                value2 = List_Next(value2);
+            }
         }
         if (value2)
             List_Insert_Before(&merge->values, value2, value);
@@ -1038,7 +1054,10 @@ _FX NTSTATUS Key_MergeSubkeys(
     KEY_NODE_INFORMATION *info;
     ULONG index;
     KEY_MERGE_SUBKEY *subkey, *subkey2;
+    KEY_MERGE_SUBKEY *cursor;
     BOOLEAN subkey_deleted = FALSE;
+    WCHAR *prev_copy_name = NULL;
+    BOOLEAN copy_monotonic = TRUE;
 
     //
     // get the latest of the two LastWriteTime fields
@@ -1094,6 +1113,11 @@ TrueHandleFinish:
     // are inserted in sorted alphabetical order
     //
 
+    cursor = NULL;
+    if (Key_Delete_v2)
+        cursor = List_Head(&merge->subkeys);
+    copy_monotonic = TRUE;
+    prev_copy_name = NULL;
     index = 0;
 
     while (1) {
@@ -1143,12 +1167,23 @@ TrueHandleFinish:
         else
             subkey_deleted = FALSE;
 
+        // The API does not guarantee enumeration order. Use cursor fast-path
+        // only while copy entries are observed in non-decreasing order.
+        if (Key_Delete_v2 && copy_monotonic && prev_copy_name
+                && _wcsicmp(subkey->name, prev_copy_name) < 0) {
+            copy_monotonic = FALSE;
+            cursor = NULL;
+        }
+
         //
         // find where we would insert the new subkey.  if we find
         // the same name already in the merge, check for delete mark
         //
 
-        subkey2 = List_Head(&merge->subkeys);
+        if (Key_Delete_v2 && copy_monotonic)
+            subkey2 = cursor;
+        else
+            subkey2 = List_Head(&merge->subkeys);
         while (subkey2) {
             int cmp = _wcsicmp(subkey2->name, subkey->name);
             if (cmp > 0)
@@ -1181,6 +1216,16 @@ TrueHandleFinish:
                 List_Insert_After(&merge->subkeys, NULL, subkey);
         }
 
+        if (Key_Delete_v2 && copy_monotonic)
+            cursor = subkey2;
+        // subkey may be NULL (cmp==0 match: freed and nulled). subkey2 holds the same
+        // name in that case (it was the matching true entry, not removed in Delete_v2 mode).
+        if (Key_Delete_v2) {
+            if (subkey)
+                prev_copy_name = subkey->name;
+            else if (subkey2)
+                prev_copy_name = subkey2->name;
+        }
         ++index;
     }
 
@@ -1210,7 +1255,10 @@ _FX NTSTATUS Key_MergeValues(
     KEY_VALUE_FULL_INFORMATION *info;
     ULONG index;
     KEY_MERGE_VALUE *value, *value2;
+    KEY_MERGE_VALUE *cursor;
     BOOLEAN value_deleted = FALSE;
+    WCHAR *prev_copy_name = NULL;
+    BOOLEAN copy_monotonic = TRUE;
 
     info_len = 128;         // at least sizeof(KEY_VALUE_FULL_INFORMATION)
     info = Dll_Alloc(info_len);
@@ -1255,6 +1303,13 @@ TrueHandleFinish:
     // are inserted in sorted alphabetical order
     //
 
+    // In Delete_v2 mode, keep scan position only while copy enumeration
+    // appears monotonic; fall back to full scan if order breaks.
+    cursor = NULL;
+    if (Key_Delete_v2)
+        cursor = List_Head(&merge->values);
+    copy_monotonic = TRUE;
+    prev_copy_name = NULL;
     index = 0;
 
     while (1) {
@@ -1308,6 +1363,14 @@ TrueHandleFinish:
         else
             value_deleted = FALSE;
 
+        // The API does not guarantee enumeration order. Use cursor fast-path
+        // only while copy entries are observed in non-decreasing order.
+        if (Key_Delete_v2 && copy_monotonic && prev_copy_name
+                && _wcsicmp(value->name, prev_copy_name) < 0) {
+            copy_monotonic = FALSE;
+            cursor = NULL;
+        }
+
         //
         // find where we would insert the new value.  if we find
         // the same name already in the merge, then copy value must
@@ -1315,7 +1378,10 @@ TrueHandleFinish:
         // in which case delete true value without adding copy value
         //
 
-        value2 = List_Head(&merge->values);
+        if (Key_Delete_v2 && copy_monotonic)
+            value2 = cursor;
+        else
+            value2 = List_Head(&merge->values);
         while (value2) {
             int cmp = _wcsicmp(value2->name, value->name);
             if (cmp > 0)
@@ -1324,13 +1390,19 @@ TrueHandleFinish:
             if (cmp == 0) {
                 if (! value_deleted) {
                     // if not delete mark, add copy value after true value
+                    // Save name pointer before nulling value; the node persists in the list.
+                    if (Key_Delete_v2)
+                        prev_copy_name = value->name;
                     List_Insert_After(&merge->values, value2, value);
                     value = NULL;
                 }
                 // remove and delete true value
-                List_Remove(&merge->values, value2);
-                Dll_Free(value2);
-                value2 = NULL;
+                {
+                    KEY_MERGE_VALUE *value2_next = List_Next(value2);
+                    List_Remove(&merge->values, value2);
+                    Dll_Free(value2);
+                    value2 = value2_next;
+                }
                 break;
             }
 
@@ -1346,6 +1418,12 @@ TrueHandleFinish:
                 List_Insert_After(&merge->values, NULL, value);
         }
 
+        if (Key_Delete_v2 && copy_monotonic)
+            cursor = value2;  // advance: NULL (append zone) or first true value >= next copy
+        // value may be NULL (cmp==0 match: inserted into list, then nulled).
+        // In that case prev_copy_name was already saved inside the cmp==0 block above.
+        if (Key_Delete_v2 && value)
+            prev_copy_name = value->name;
         ++index;
     }
 
@@ -1639,17 +1717,24 @@ _FX void Key_UpdateMergeByPath(const WCHAR *TruePath, BOOLEAN Removed, BOOLEAN A
         return;
 
     if (Key_Delete_v2) {
-        WCHAR* backslash = wcsrchr(TruePath, L'\\');
+        const WCHAR* backslash = wcsrchr(TruePath, L'\\');
         if (backslash) {
-            *backslash = L'\0';
-            WCHAR* name = backslash + 1;
-            if (Removed) {
-                Key_RemoveSubkeyFromParentMerge(&Key_Handles, TruePath, name);
-                Key_RemoveSubkeyFromParentMerge(&Key_MergeCacheList, TruePath, name);
+            ULONG parent_len = (ULONG)(backslash - TruePath);
+            WCHAR* parent = Dll_Alloc((parent_len + 1) * sizeof(WCHAR));
+            if (parent) {
+                wmemcpy(parent, TruePath, parent_len);
+                parent[parent_len] = L'\0';
+                {
+                    const WCHAR* name = backslash + 1;
+                    if (Removed) {
+                        Key_RemoveSubkeyFromParentMerge(&Key_Handles, parent, name);
+                        Key_RemoveSubkeyFromParentMerge(&Key_MergeCacheList, parent, name);
+                    }
+                    if (Added)
+                        Key_AddSubkeyToParentMerge(&Key_Handles, parent, name);
+                }
+                Dll_Free(parent);
             }
-            if (Added)
-                Key_AddSubkeyToParentMerge(&Key_Handles, TruePath, name);
-            *backslash = L'\\';
         }
     }
 

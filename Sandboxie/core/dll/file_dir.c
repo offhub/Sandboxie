@@ -481,13 +481,11 @@ _FX NTSTATUS File_Merge(
                 //
 
                 break;
-
-            } else {
-
-                Handle_UnRegisterHandler(merge->handle, File_NtCloseDir, NULL);
-                List_Remove(&File_DirHandles, merge);
-                File_MergeFree(merge);
             }
+
+            Handle_UnRegisterHandler(merge->handle, File_NtCloseDir, NULL);
+            List_Remove(&File_DirHandles, merge);
+            File_MergeFree(merge);
         }
 
         merge = next;

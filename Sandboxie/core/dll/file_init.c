@@ -106,6 +106,9 @@ static WCHAR *File_AllocAndInitEnvironment_2(
 static void File_AdjustDrives(
     ULONG path_drive_index, BOOLEAN subst, const WCHAR *path);
 
+static ULONG File_QueryConfUlong(
+    const WCHAR* Setting, ULONG DefaultValue, ULONG MinValue, ULONG MaxValue);
+
 
 //---------------------------------------------------------------------------
 // Variables
@@ -150,14 +153,70 @@ _FX BOOLEAN File_Init(void)
     if (! File_InitDrives(0xFFFFFFFF))
         return FALSE;
 
-    File_Delete_v2 = SbieApi_QueryConfBool(NULL, L"UseFileDeleteV2", FALSE);
-    if (File_Delete_v2)
-        File_InitDelete_v2();
-
     // this is here as it requirers file stuff to be set up
     extern BOOLEAN Key_Delete_v2;
     BOOLEAN Key_InitDelete_v2();
+    VOID File_SetDeleteV3RefreshInterval(ULONG IntervalMs);
+    VOID Key_SetDeleteV3RefreshInterval(ULONG IntervalMs);
+    VOID File_SetDeleteV3(BOOLEAN Enabled);
+    VOID Key_SetDeleteV3(BOOLEAN Enabled);
+    VOID File_SetDeleteV3JournalMaxSizeKB(ULONG MaxSizeKB);
+    VOID Key_SetDeleteV3JournalMaxSizeKB(ULONG MaxSizeKB);
+    VOID File_SetDeleteV3JournalMaxLines(ULONG MaxLines);
+    VOID Key_SetDeleteV3JournalMaxLines(ULONG MaxLines);
+    VOID File_SetDeleteV3JournalKeepOpenMs(ULONG KeepOpenMs);
+    VOID Key_SetDeleteV3JournalKeepOpenMs(ULONG KeepOpenMs);
+    VOID File_SetDeleteV3CompactionBusyWritesPerSec(ULONG WritesPerSec);
+    VOID File_SetDeleteV3CompactionBusyHoldMs(ULONG HoldMs);
+    VOID Key_SetDeleteV3CompactionBusyWritesPerSec(ULONG WritesPerSec);
+    VOID Key_SetDeleteV3CompactionBusyHoldMs(ULONG HoldMs);
+
+    File_Delete_v2 = SbieApi_QueryConfBool(NULL, L"UseFileDeleteV2", FALSE);
     Key_Delete_v2 = SbieApi_QueryConfBool(NULL, L"UseRegDeleteV2", FALSE);
+
+    // V3 mode: delete_v2 + journal + new format combined.
+    if (SbieApi_QueryConfBool(NULL, L"UseFileDeleteV3", FALSE)) {
+        File_Delete_v2 = TRUE;
+        File_SetDeleteV3(TRUE);
+    }
+    if (SbieApi_QueryConfBool(NULL, L"UseRegDeleteV3", FALSE)) {
+        Key_Delete_v2 = TRUE;
+        Key_SetDeleteV3(TRUE);
+    }
+
+    // Debounce refresh checks for delete-v3 state files to reduce hot-path IO during heavy bursts.
+    File_SetDeleteV3RefreshInterval(
+        File_QueryConfUlong(L"FileDeleteV3RefreshDebounceMs", 50, 0, 5000));
+    Key_SetDeleteV3RefreshInterval(
+        File_QueryConfUlong(L"RegDeleteV3RefreshDebounceMs", 50, 0, 5000));
+
+    File_SetDeleteV3JournalMaxSizeKB(
+        File_QueryConfUlong(L"FileDeleteV3JournalMaxSizeKB", 1024, 0, 512 * 1024)); // max = 512 MB (matches 64-bit hard cap)
+    Key_SetDeleteV3JournalMaxSizeKB(
+        File_QueryConfUlong(L"RegDeleteV3JournalMaxSizeKB", 1024, 0, 512 * 1024)); // max = 512 MB (matches 64-bit hard cap)
+    File_SetDeleteV3JournalMaxLines(
+        File_QueryConfUlong(L"FileDeleteV3JournalMaxLines", 10000, 0, 100000000));
+    Key_SetDeleteV3JournalMaxLines(
+        File_QueryConfUlong(L"RegDeleteV3JournalMaxLines", 10000, 0, 100000000));
+    File_SetDeleteV3JournalKeepOpenMs(
+        File_QueryConfUlong(L"FileDeleteV3JournalKeepOpenMs", 0, 0, 60000));
+    Key_SetDeleteV3JournalKeepOpenMs(
+        File_QueryConfUlong(L"RegDeleteV3JournalKeepOpenMs", 0, 0, 60000));
+
+    // High-IO burst-defer: skip compaction while writes/sec exceeds threshold for the hold period.
+    // Both default to 200.  Set WritesPerSec to 0 to disable.
+    File_SetDeleteV3CompactionBusyWritesPerSec(
+        File_QueryConfUlong(L"FileDeleteV3CompactionBusyWritesPerSec", 200, 0, 1000000));
+    File_SetDeleteV3CompactionBusyHoldMs(
+        File_QueryConfUlong(L"FileDeleteV3CompactionBusyHoldMs", 60000, 0, 300000));
+    Key_SetDeleteV3CompactionBusyWritesPerSec(
+        File_QueryConfUlong(L"RegDeleteV3CompactionBusyWritesPerSec", 200, 0, 1000000));
+    Key_SetDeleteV3CompactionBusyHoldMs(
+        File_QueryConfUlong(L"RegDeleteV3CompactionBusyHoldMs", 60000, 0, 300000));
+
+    if (File_Delete_v2)
+        File_InitDelete_v2();
+
     if (Key_Delete_v2)
         Key_InitDelete_v2();
 
@@ -317,6 +376,31 @@ _FX BOOLEAN File_Init(void)
 _FX BOOLEAN File_IsBlockedNetParam(const WCHAR *BoxName)
 {
     return SbieApi_QueryConfBool(BoxName, L"BlockNetParam", TRUE);
+}
+
+
+//---------------------------------------------------------------------------
+// File_QueryConfUlong
+//---------------------------------------------------------------------------
+
+
+_FX ULONG File_QueryConfUlong(
+    const WCHAR* Setting, ULONG DefaultValue, ULONG MinValue, ULONG MaxValue)
+{
+    WCHAR value_str[32];
+    value_str[0] = L'\0';
+
+    if (SbieApi_QueryConfAsIs(NULL, Setting, 0, value_str, sizeof(value_str)) != STATUS_SUCCESS)
+        return DefaultValue;
+    if (value_str[0] == L'\0' || value_str[0] == L'-')
+        return DefaultValue;
+
+    ULONG value = (ULONG)_wtoi(value_str);
+    if (value < MinValue)
+        value = MinValue;
+    if (value > MaxValue)
+        value = MaxValue;
+    return value;
 }
 
 
