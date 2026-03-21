@@ -4,6 +4,7 @@
 #include <wrl/implements.h>
 #include <wrl/client.h>
 #include <shobjidl_core.h>
+#include <propkey.h>
 #include <wil\resource.h>
 #include <string>
 #include <vector>
@@ -13,6 +14,54 @@
 using namespace Microsoft::WRL;
 
 std::wstring g_path;
+constexpr wchar_t g_CloudPlaceholderToolTip[] =
+    L"Online-only cloud files must be downloaded locally before they can be run sandboxed.";
+
+bool TryGetItemFileAttributes(_In_ IShellItem* shellItem, _Out_ DWORD* fileAttributes)
+{
+    if (!shellItem || !fileAttributes)
+        return false;
+
+    ComPtr<IShellItem2> shellItem2;
+    if (FAILED(shellItem->QueryInterface(IID_PPV_ARGS(&shellItem2))))
+        return false;
+
+    DWORD value = 0;
+    if (FAILED(shellItem2->GetUInt32(PKEY_FileAttributes, &value)))
+        return false;
+
+    *fileAttributes = value;
+    return true;
+}
+
+bool IsCloudPlaceholderAttributes(DWORD fileAttributes)
+{
+    return (fileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0 ||
+        (fileAttributes & FILE_ATTRIBUTE_OFFLINE) != 0;
+}
+
+bool SelectionContainsCloudPlaceholder(_In_opt_ IShellItemArray* selection)
+{
+    if (!selection)
+        return false;
+
+    DWORD fileCount = 0;
+    if (FAILED(selection->GetCount(&fileCount)))
+        return false;
+
+    for (DWORD i = 0; i < fileCount; ++i)
+    {
+        ComPtr<IShellItem> shellItem;
+        if (FAILED(selection->GetItemAt(i, &shellItem)) || !shellItem)
+            continue;
+
+        DWORD fileAttributes = 0;
+        if (TryGetItemFileAttributes(shellItem.Get(), &fileAttributes) && IsCloudPlaceholderAttributes(fileAttributes))
+            return true;
+    }
+
+    return false;
+}
 
 
 LONG GetDWORDRegKey(HKEY hKey, const std::wstring& strValueName, DWORD& nValue)
@@ -86,7 +135,10 @@ class TestExplorerCommandBase : public RuntimeClass<RuntimeClassFlags<ClassicCom
 public:
     virtual const wchar_t* Title() = 0;
     virtual const EXPCMDFLAGS Flags() { return ECF_DEFAULT; }
-    virtual const EXPCMDSTATE State(_In_opt_ IShellItemArray* selection) { return ECS_ENABLED; }
+    virtual const EXPCMDSTATE State(_In_opt_ IShellItemArray* selection)
+    {
+        return SelectionContainsCloudPlaceholder(selection) ? ECS_DISABLED : ECS_ENABLED;
+    }
 
     // IExplorerCommand
     IFACEMETHODIMP GetTitle(_In_opt_ IShellItemArray* items, _Outptr_result_nullonfailure_ PWSTR* name)
@@ -105,7 +157,18 @@ public:
         *icon = iconPath.release();
         return S_OK;
     }
-    IFACEMETHODIMP GetToolTip(_In_opt_ IShellItemArray*, _Outptr_result_nullonfailure_ PWSTR* infoTip) { *infoTip = nullptr; return E_NOTIMPL; }
+    IFACEMETHODIMP GetToolTip(_In_opt_ IShellItemArray* selection, _Outptr_result_nullonfailure_ PWSTR* infoTip)
+    {
+        *infoTip = nullptr;
+
+        if (!SelectionContainsCloudPlaceholder(selection))
+            return E_NOTIMPL;
+
+        auto toolTip = wil::make_cotaskmem_string_nothrow(g_CloudPlaceholderToolTip);
+        RETURN_IF_NULL_ALLOC(toolTip);
+        *infoTip = toolTip.release();
+        return S_OK;
+    }
     IFACEMETHODIMP GetCanonicalName(_Out_ GUID* guidCommandName) { *guidCommandName = GUID_NULL;  return S_OK; }
     IFACEMETHODIMP GetState(_In_opt_ IShellItemArray* selection, _In_ BOOL okToBeSlow, _Out_ EXPCMDSTATE* cmdState)
     {
@@ -143,17 +206,20 @@ public:
 
         MessageBox(parent, title.str().c_str(), L"TestCommand", MB_OK);*/
 
-
         if (selection)
         {
+            if (SelectionContainsCloudPlaceholder(selection))
+                return S_OK;
+
             DWORD fileCount = 0;
             RETURN_IF_FAILED(selection->GetCount(&fileCount));
             for (DWORD i = 0; i < fileCount; i++)
             {
-                IShellItem* shellItem = nullptr;
-                selection->GetItemAt(i, &shellItem);
-                LPWSTR itemName = nullptr;
-                shellItem->GetDisplayName(SIGDN_FILESYSPATH, &itemName);
+                ComPtr<IShellItem> shellItem;
+                RETURN_IF_FAILED(selection->GetItemAt(i, &shellItem));
+
+                wil::unique_cotaskmem_string itemName;
+                RETURN_IF_FAILED(shellItem->GetDisplayName(SIGDN_FILESYSPATH, &itemName));
                 if (itemName)
                 {
                     std::wstring file = g_path + L"\\SandMan.exe";
@@ -162,13 +228,13 @@ public:
                     if(GetCommand() == eExplore)
                         params += L" C:\\WINDOWS\\explorer.exe";
                     params += L" \"";
-                    params += itemName;
+                    params += itemName.get();
                     params += L"\"";
 
                     // Since the program is run from rundll32.exe, the working directory needs to be set to the program's one.
                     // Otherwise, the rundll32.exe's one will be used (usually "C:\Windows\System32").
                     std::vector<wchar_t> drive(_MAX_DRIVE), dir(_MAX_DIR);
-                    _wsplitpath_s(itemName, drive.data(), drive.size(), dir.data(), dir.size(), nullptr, 0, nullptr, 0);
+                    _wsplitpath_s(itemName.get(), drive.data(), drive.size(), dir.data(), dir.size(), nullptr, 0, nullptr, 0);
                     std::wstring currentDirectory(drive.data());
                     currentDirectory += dir.data();
 
@@ -180,8 +246,6 @@ public:
                     shExecInfo.lpDirectory = currentDirectory.c_str();
                     shExecInfo.nShow = SW_NORMAL;
                     ShellExecuteEx(&shExecInfo);
-
-                    CoTaskMemFree(itemName);
                 }
             }
         }

@@ -22,6 +22,7 @@
 #include "Helpers/IniHighlighter.h"
 #include "../MiscHelpers/Common/CheckableMessageBox.h"
 #include <QFileIconProvider>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSet>
 
@@ -107,6 +108,95 @@ static void CUpdateMonitorComboFallbackLabel(QComboBox* pCombo, int fallbackInde
 		bool isFallback = markFallback && i == fallbackIndex;
 		pCombo->setItemText(i, CBuildMonitorOptionLabel(baseLabel, isDefault, isFallback));
 	}
+}
+
+static bool CRunShellExtPackageCommand(const QString& exportName, int waitMs)
+{
+	QProcess proc;
+	proc.start("rundll32.exe", QStringList() << QString("SbieShellExt.dll,%1").arg(exportName));
+	if (!proc.waitForStarted(5000))
+		return false;
+	if (!proc.waitForFinished(waitMs))
+		return false;
+	return proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0;
+}
+
+static QStringList CQuerySbieShellExtModuleHolders()
+{
+	QProcess proc;
+	proc.start("tasklist.exe", QStringList() << "/M" << "SbieShellExt.dll");
+	if (!proc.waitForStarted(5000) || !proc.waitForFinished(5000))
+		return QStringList();
+
+	QString output = QString::fromLocal8Bit(proc.readAllStandardOutput());
+	QStringList lines = output.split(QRegularExpression("[\\r\\n]+"), Qt::SkipEmptyParts);
+	QSet<QString> holders;
+
+	for (const QString& line : lines) {
+		QString trimmed = line.trimmed();
+		if (trimmed.isEmpty() || trimmed.startsWith("Image Name", Qt::CaseInsensitive) || trimmed.startsWith("=", Qt::CaseInsensitive) || trimmed.startsWith("INFO:", Qt::CaseInsensitive))
+			continue;
+
+		QString simplified = trimmed.simplified();
+		QStringList columns = simplified.split(' ', Qt::SkipEmptyParts);
+		if (columns.isEmpty())
+			continue;
+
+		QString imageName = columns.first();
+		if (imageName.endsWith(".exe", Qt::CaseInsensitive))
+			holders.insert(imageName);
+	}
+
+	QStringList result = holders.values();
+	result.sort();
+	return result;
+}
+
+static bool CRunShellExtPackageCommandWithRecovery(const QString& exportName, const QString& actionText, int waitMs)
+{
+	if (CRunShellExtPackageCommand(exportName, waitMs))
+		return true;
+
+	QStringList holders = CQuerySbieShellExtModuleHolders();
+	QString holderText = holders.isEmpty() ? QObject::tr("(not available)") : holders.join(", ");
+	bool hasDllHost = holders.contains("dllhost.exe", Qt::CaseInsensitive);
+	bool hasRunDll = holders.contains("rundll32.exe", Qt::CaseInsensitive);
+	bool canOfferTerminate = hasDllHost || hasRunDll;
+
+	if (canOfferTerminate) {
+		QMessageBox::StandardButton answer = QMessageBox::question(nullptr,
+			QObject::tr("Sandboxie Plus"),
+			QObject::tr("%1 did not finish in time.\n\n"
+			   "Processes currently holding SbieShellExt.dll:\n%2\n\n"
+			   "Terminate only rundll32.exe/dllhost.exe holders and retry?")
+				.arg(actionText)
+				.arg(holderText),
+			QMessageBox::Yes | QMessageBox::No,
+			QMessageBox::Yes);
+
+		if (answer == QMessageBox::Yes) {
+			QProcess::execute("taskkill.exe", QStringList() << "/IM" << "dllhost.exe" << "/FI" << "MODULES eq SbieShellExt.dll" << "/F");
+			QProcess::execute("taskkill.exe", QStringList() << "/IM" << "rundll32.exe" << "/FI" << "MODULES eq SbieShellExt.dll" << "/F");
+
+			if (CRunShellExtPackageCommand(exportName, waitMs))
+				return true;
+
+			QMessageBox::warning(nullptr,
+				QObject::tr("Sandboxie Plus"),
+				QObject::tr("%1 still failed. Please close the listed holder processes or sign out and try again.")
+					.arg(actionText));
+		}
+	} else {
+		QMessageBox::warning(nullptr,
+			QObject::tr("Sandboxie Plus"),
+			QObject::tr("%1 did not finish in time.\n\n"
+			   "Processes currently holding SbieShellExt.dll:\n%2\n\n"
+			   "Sandboxie will not terminate these processes automatically. Please close them manually and try again.")
+				.arg(actionText)
+				.arg(holderText));
+	}
+
+	return false;
 }
 
 
@@ -1297,14 +1387,13 @@ void CSettingsWindow::AddContextMenu(bool bAlwaysClassic)
 	QSettings CurrentVersion("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", QSettings::NativeFormat);
 	if (CurrentVersion.value("CurrentBuild").toInt() >= 22000 && !bAlwaysClassic) // Windows 11
 	{
+		constexpr int kWaitMs = 15000;
 		QSettings MyReg("HKEY_CURRENT_USER\\SOFTWARE\\Xanasoft\\Sandboxie-Plus\\SbieShellExt\\Lang", QSettings::NativeFormat);
 		MyReg.setValue("Open Sandboxed", CSettingsWindow::tr("Run &Sandboxed"));
 		MyReg.setValue("Explore Sandboxed", CSettingsWindow::tr("Run &Sandboxed"));
 		
 		QDir::setCurrent(QCoreApplication::applicationDirPath());
-		QProcess Proc;
-		Proc.execute("rundll32.exe", QStringList() << "SbieShellExt.dll,RegisterPackage");
-		Proc.waitForFinished();
+		CRunShellExtPackageCommandWithRecovery("RegisterPackage", CSettingsWindow::tr("Adding shell integration"), kWaitMs);
 		return;
 	}
 
@@ -1318,10 +1407,10 @@ void CSettingsWindow::RemoveContextMenu()
 	QSettings CurrentVersion("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", QSettings::NativeFormat);
 	if (CurrentVersion.value("CurrentBuild").toInt() >= 22000) // Windows 11
 	{
+		constexpr int kWaitMs = 15000;
 		QDir::setCurrent(QCoreApplication::applicationDirPath());
-		QProcess Proc;
-		Proc.execute("rundll32.exe", QStringList() << "SbieShellExt.dll,RemovePackage");
-		Proc.waitForFinished();
+
+		CRunShellExtPackageCommandWithRecovery("RemovePackage", CSettingsWindow::tr("Removing shell integration"), kWaitMs);
 	}
 
 	CSbieUtils::RemoveContextMenu();

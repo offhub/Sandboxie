@@ -176,19 +176,39 @@ int wmain(int argc, wchar_t* argv[])
         return UnregisterSparsePackage(sparsePackageName);
     }*/
 
-    HMODULE ext = LoadLibraryW(L"SbieShellExt.dll");
+    if (argc < 2 || argv[1] == nullptr)
+        return ERROR_INVALID_PARAMETER;
 
+    wchar_t modulePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, modulePath, MAX_PATH))
+        return static_cast<int>(GetLastError());
+
+    wchar_t* ptr = wcsrchr(modulePath, L'\\');
+    if (!ptr)
+        return ERROR_BAD_PATHNAME;
+    *ptr = L'\0';
+
+    std::wstring dllPath = modulePath;
+    dllPath += L"\\SbieShellExt.dll";
+
+    HMODULE ext = LoadLibraryW(dllPath.c_str());
+    if (!ext)
+        return static_cast<int>(GetLastError());
+
+    int result = ERROR_INVALID_PARAMETER;
     typedef int (*FUNC)();
+
     if (wcsicmp(argv[1], L"-install") == 0)
     {
         FUNC func = (FUNC)GetProcAddress(ext, "RegisterPackage");
-        func();
+        result = func ? func() : ERROR_PROC_NOT_FOUND;
     }
     else if (wcsicmp(argv[1], L"-uninstall") == 0)
     {
         FUNC func = (FUNC)GetProcAddress(ext, "RemovePackage");
-        func();
+        result = func ? func() : ERROR_PROC_NOT_FOUND;
     }
 
-    return 0;
+    FreeLibrary(ext);
+    return result;
 }
