@@ -957,18 +957,23 @@ static QUIC_STATUS QUIC_API DoQ_StreamCallback(
 
     case QUIC_STREAM_EVENT_RECEIVE:
         // Copy received data to response buffer
+        // Snapshot available space once before the loop to avoid
+        // TOCTOU if ResponseOffset were modified concurrently (defense-in-depth)
+        UINT32 currentOffset = ctx->ResponseOffset;
         for (UINT32 i = 0; i < Event->RECEIVE.BufferCount; i++) {
             const QUIC_BUFFER* buf = &Event->RECEIVE.Buffers[i];
+            UINT32 remaining = (UINT32)sizeof(ctx->ResponseBuffer) - currentOffset;
             UINT32 copyLen = buf->Length;
-            if (ctx->ResponseOffset + copyLen > sizeof(ctx->ResponseBuffer)) {
-                copyLen = sizeof(ctx->ResponseBuffer) - ctx->ResponseOffset;
+            if (copyLen > remaining) {
+                copyLen = remaining;
                 ctx->Truncated = TRUE;  // Response exceeded buffer capacity
             }
             if (copyLen > 0) {
-                memcpy(ctx->ResponseBuffer + ctx->ResponseOffset, buf->Buffer, copyLen);
-                ctx->ResponseOffset += copyLen;
+                memcpy(ctx->ResponseBuffer + currentOffset, buf->Buffer, copyLen);
+                currentOffset += copyLen;
             }
         }
+        ctx->ResponseOffset = currentOffset;
 
         if (DNS_DebugFlag) {
             WCHAR msg[256];
@@ -1324,7 +1329,10 @@ static DOQ_CONNECTION* DoQ_GetOrCreateConnection(const DOQ_SERVER* server)
 static void DoQ_ReleaseConnection(DOQ_CONNECTION* conn)
 {
     if (conn) {
-        InterlockedDecrement(&conn->RefCount);
+        // Guard against underflow: only decrement if RefCount > 0
+        LONG oldRef = InterlockedCompareExchange(&conn->RefCount, 0, 0);
+        if (oldRef > 0)
+            InterlockedDecrement(&conn->RefCount);
     }
 }
 
@@ -1451,7 +1459,7 @@ static BOOLEAN DoQ_ParseResponse(const BYTE* response, UINT32 length, ENCRYPTED_
         USHORT prefixLen = ((USHORT)response[0] << 8) | response[1];
         if ((UINT32)(prefixLen + 2) <= length) {
             rawResponse = response + 2;
-            rawLength = length - 2;
+            rawLength = (UINT32)prefixLen;  // Use declared prefix length, not remainder
         }
     }
 

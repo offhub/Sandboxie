@@ -719,6 +719,9 @@ static int Socket_EncodeDnsNameAscii(const WCHAR* name, BYTE* out, int out_size)
         }
     }
 
+    // RFC 1035 Section 3.1: total encoded name must be ≤ 255 bytes (including null terminator)
+    if (offset + 1 > 255)
+        return -1;
     if (offset + 1 > out_size)
         return -1;
     out[offset++] = 0;
@@ -1497,14 +1500,21 @@ static void Socket_ParseFilterRawDnsPorts(const WCHAR* port_str)
         if (!*p)
             break;
 
-        // Parse port number
+        // Parse port number (with overflow guard for USHORT range 0-65535)
         USHORT port = 0;
+        BOOLEAN overflow = FALSE;
         while (*p >= L'0' && *p <= L'9') {
-            port = port * 10 + (USHORT)(*p - L'0');
+            USHORT digit = (USHORT)(*p - L'0');
+            if (port > 6553 || (port == 6553 && digit > 5)) {
+                overflow = TRUE;
+                p++;
+                continue;  // consume remaining digits
+            }
+            port = port * 10 + digit;
             p++;
         }
 
-        if (port > 0 && port <= 65535) {
+        if (port > 0 && port <= 65535 && !overflow) {
             // Check for duplicates
             BOOLEAN dup = FALSE;
             for (int i = 0; i < DNS_CustomPortCount; i++) {
@@ -3379,15 +3389,19 @@ _FX int Socket_DecodeDnsName(
 //
 // Simple glob-style wildcard matcher: '*' matches any sequence, '?' matches one char
 // Returns TRUE if str matches pattern, FALSE otherwise
+// Uses depth limit to prevent exponential backtracking on adversarial patterns (e.g. "*a*a*a*b")
 //---------------------------------------------------------------------------
-static BOOLEAN Pattern_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
+#define PATTERN_MATCH_MAX_DEPTH 1000
+
+static BOOLEAN Pattern_MatchWildcardEx(const WCHAR* pattern, const WCHAR* str, int depth) {
+    if (depth > PATTERN_MATCH_MAX_DEPTH) return FALSE;  // recursion safety limit
     if (!pattern || !str) return FALSE;
     while (*pattern) {
         if (*pattern == L'*') {
             pattern++;
             if (!*pattern) return TRUE; // Trailing * matches all
             while (*str) {
-                if (Pattern_MatchWildcard(pattern, str)) return TRUE;
+                if (Pattern_MatchWildcardEx(pattern, str, depth + 1)) return TRUE;
                 str++;
             }
             return FALSE;
@@ -3400,6 +3414,10 @@ static BOOLEAN Pattern_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
         }
     }
     return *str == 0;
+}
+
+static BOOLEAN Pattern_MatchWildcard(const WCHAR* pattern, const WCHAR* str) {
+    return Pattern_MatchWildcardEx(pattern, str, 0);
 }
 
 //---------------------------------------------------------------------------
@@ -3657,6 +3675,8 @@ _FX int Socket_ExtractEdnsRecord(const BYTE* query, int query_len, BYTE* edns_bu
         USHORT rdlength_raw;
         memcpy(&rdlength_raw, query + offset - 2, sizeof(rdlength_raw));
         USHORT rdlength = _ntohs(rdlength_raw);
+        if (offset + rdlength > query_len) // bounds check: RDATA must fit within packet
+            return 0;
         offset += rdlength;
     }
     

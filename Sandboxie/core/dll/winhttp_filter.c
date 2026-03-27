@@ -167,6 +167,13 @@ static HINTERNET WINAPI WinHttp_WinHttpConnect(
     {
         size_t domain_len = wcslen(pswzServerName);
 
+        // Reject domains exceeding the DNS maximum length (253 characters)
+        // to prevent unbounded allocation from unreasonably long inputs
+        if (domain_len > 253) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return NULL;
+        }
+
         // Guard against integer overflow in allocation size calculation
         if (domain_len > ((size_t)-1 / sizeof(WCHAR)) - 4) {
             SetLastError(ERROR_INVALID_PARAMETER);

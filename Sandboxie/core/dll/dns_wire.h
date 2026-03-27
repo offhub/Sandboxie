@@ -301,8 +301,17 @@ typedef struct _DNS_OPT_RECORD {
 #define DNS_IS_COMPRESSION_PTR(byte)  (((byte) & DNS_COMPRESSION_MASK) == DNS_COMPRESSION_MASK)
 
 // Get offset from compression pointer (2 bytes)
+// SAFETY: Caller must ensure ptr[0] and ptr[1] are within the DNS packet bounds
+// before invoking this macro. Use DNS_GetCompressionOffsetSafe() for bounds-checked access.
 #define DNS_GET_COMPRESSION_OFFSET(ptr) \
     ((((USHORT)(ptr)[0] & 0x3F) << 8) | (USHORT)(ptr)[1])
+
+// Bounds-checked variant: returns offset or -1 if out of bounds
+static __inline int DNS_GetCompressionOffsetSafe(const BYTE* dns_data, int dns_len, int offset)
+{
+    if (offset + 1 >= dns_len) return -1;
+    return (int)DNS_GET_COMPRESSION_OFFSET(dns_data + offset);
+}
 
 //---------------------------------------------------------------------------
 // Common Response Flag Combinations

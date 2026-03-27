@@ -441,7 +441,8 @@ typedef struct _REBIND_IP_RULE {
 
 // Indicates whether DnsRebindProtection has any enabled patterns.
 // Used to suppress FilterDnsIP-related logging when protection is disabled.
-static BOOLEAN DNS_Rebind_ProtectionEnabled = FALSE;
+// volatile: read from multiple threads without holding a lock
+static volatile BOOLEAN DNS_Rebind_ProtectionEnabled = FALSE;
 static LONG DNS_Rebind_Initialized = 0;
 
 //---------------------------------------------------------------------------
@@ -841,21 +842,34 @@ static BOOLEAN DNS_Rebind_IsBytesInRangeInclusive(const BYTE* value, const BYTE*
     return TRUE;
 }
 
-static void DNS_Rebind_GetV4Candidates(const IP_ADDRESS* pIP, BYTE out1[4], BYTE out2[4])
+static void DNS_Rebind_GetV4Candidates(const IP_ADDRESS* pIP, BYTE out1[4])
 {
-    // IPv4 addresses are stored in bytes 12-15 of IP_ADDRESS.Data
-    // Both candidates should be identical - just extract directly from bytes
+    // Correctly extract the embedded IPv4 from all IPv6 transition types
     const BYTE* addr = (const BYTE*)pIP->Data;
+
+    // Teredo (2001:0000::/32): client IPv4 is in last 4 bytes, XOR'd with 0xFF
+    if (addr[0] == 0x20 && addr[1] == 0x01 && addr[2] == 0x00 && addr[3] == 0x00) {
+        out1[0] = addr[12] ^ 0xFF;
+        out1[1] = addr[13] ^ 0xFF;
+        out1[2] = addr[14] ^ 0xFF;
+        out1[3] = addr[15] ^ 0xFF;
+        return;
+    }
+
+    // 6to4 (2002::/16): IPv4 is in bytes 2-5
+    if (addr[0] == 0x20 && addr[1] == 0x02) {
+        out1[0] = addr[2];
+        out1[1] = addr[3];
+        out1[2] = addr[4];
+        out1[3] = addr[5];
+        return;
+    }
+
+    // IPv4-mapped/compatible: IPv4 is in bytes 12-15
     out1[0] = addr[12];
     out1[1] = addr[13];
     out1[2] = addr[14];
     out1[3] = addr[15];
-
-    // out2 is identical to out1 (no byte order conversion needed)
-    out2[0] = addr[12];
-    out2[1] = addr[13];
-    out2[2] = addr[14];
-    out2[3] = addr[15];
 }
 
 static BOOLEAN DNS_Rebind_IsV4Like(const IP_ADDRESS* pIP)
@@ -863,6 +877,15 @@ static BOOLEAN DNS_Rebind_IsV4Like(const IP_ADDRESS* pIP)
     if (!pIP)
         return FALSE;
     const BYTE* a = (const BYTE*)pIP->Data;
+
+    // Detect all IPv6 transition mechanisms that embed IPv4 addresses
+    // Teredo tunneling (2001:0000::/32) — RFC 4380
+    if (a[0] == 0x20 && a[1] == 0x01 && a[2] == 0x00 && a[3] == 0x00)
+        return TRUE;
+    // 6to4 tunneling (2002::/16) — RFC 3056
+    if (a[0] == 0x20 && a[1] == 0x02)
+        return TRUE;
+
     for (int i = 0; i < 10; ++i) {
         if (a[i] != 0)
             return FALSE;
@@ -928,24 +951,16 @@ static BOOLEAN DNS_Rebind_IpRuleMatches(const REBIND_IP_RULE* rule, const WCHAR*
     if (rule->af == AF_INET) {
         if (!DNS_Rebind_IsV4LikeWithHint(pIP, af_hint))
             return FALSE;
-        BYTE cand1[4], cand2[4];
-        DNS_Rebind_GetV4Candidates(pIP, cand1, cand2);
+        BYTE cand[4];
+        DNS_Rebind_GetV4Candidates(pIP, cand);
         if (rule->is_range) {
             const BYTE* start4 = &rule->ip.Data[12];
             const BYTE* end4 = &rule->ip_end.Data[12];
-            if (DNS_Rebind_IsBytesInRangeInclusive(cand1, start4, end4, 4))
-                return TRUE;
-            if (DNS_Rebind_IsBytesInRangeInclusive(cand2, start4, end4, 4))
-                return TRUE;
-            return FALSE;
+            return DNS_Rebind_IsBytesInRangeInclusive(cand, start4, end4, 4);
         } else {
             const BYTE* rule4 = &rule->ip.Data[12];
             int bits = (int)rule->prefix_len;
-            if (DNS_Rebind_MatchPrefixBits(cand1, rule4, bits, 4))
-                return TRUE;
-            if (DNS_Rebind_MatchPrefixBits(cand2, rule4, bits, 4))
-                return TRUE;
-            return FALSE;
+            return DNS_Rebind_MatchPrefixBits(cand, rule4, bits, 4);
         }
     }
 
@@ -1303,7 +1318,9 @@ static int DNS_Rebind_SpecificityScore(const WCHAR* pattern)
     // Prefer longer, more literal patterns. Penalize wildcards heavily so:
     //   "exact.domain" outranks "*.domain" outranks "*".
     // Ties are resolved by "last matching rule wins" in the caller.
-    return (literal_count * 16) - (wildcard_count * 64) + (int)wcslen(pattern);
+    // Clamp to 0 to prevent negative scores from inverting rule priority
+    int score = (literal_count * 16) - (wildcard_count * 64) + (int)wcslen(pattern);
+    return (score > 0) ? score : 0;
 }
 
 _FX BOOLEAN DNS_Rebind_IsEnabledForDomain(const WCHAR* domain)
@@ -1748,10 +1765,12 @@ static BOOLEAN DNS_Rebind_SkipDnsName(const BYTE* dns_data, int dns_len, int* pO
             return TRUE;
         }
         if (DNS_IS_COMPRESSION_PTR(label_len)) {
-            // Compression pointer is two bytes.
+            // Compression pointer is two bytes - ensure both bytes are within bounds
+            if (offset + 2 > dns_len)
+                return FALSE;
             offset += 2;
             *pOffset = offset;
-            return (offset <= dns_len);
+            return TRUE;
         }
         offset += 1 + label_len;
     }

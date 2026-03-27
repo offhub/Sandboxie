@@ -262,14 +262,14 @@ static QUIC_STATUS QUIC_API MsQuic_MsQuicOpenVersion(
     // Allocate new entry
     Entry = MsQuic_AllocTableEntry();
     if (!Entry) {
-        // No space, return original
-        *QuicApi = OriginalTable;
+        // No space - fail the API open to prevent unfiltered QUIC traffic.
+        // Returning the original unhooked table would bypass DNS filtering.
         LeaveCriticalSection(&MsQuic_TableLock);
         
         if (DNS_DebugFlag) {
-            SbieApi_MonitorPutMsg(MONITOR_DNS, L"[MsQuic] Warning: Table tracking limit reached");
+            SbieApi_MonitorPutMsg(MONITOR_DNS, L"[MsQuic] Warning: Table tracking limit reached, blocking MsQuicOpenVersion");
         }
-        return Status;
+        return QUIC_STATUS_OUT_OF_MEMORY;
     }
 
     // Allocate and copy the API table

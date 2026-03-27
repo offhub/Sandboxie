@@ -585,7 +585,7 @@ typedef struct _DNS_EXCLUSION_LIST {
 } DNS_EXCLUSION_LIST;
 static DNS_EXCLUSION_LIST DNS_ExclusionLists[MAX_DNS_FILTER_EX];
 static ULONG DNS_ExclusionListCount = 0;
-static BOOLEAN DNS_ExclusionsLoaded = FALSE;
+static volatile LONG DNS_ExclusionsLoaded = 0;
 static BOOLEAN DNS_DebugOptionsLoaded = FALSE;
 static BOOLEAN DNS_DebugExclusionLogs = FALSE;
 static BOOLEAN DNS_DefaultExclusionLogged = FALSE;
@@ -878,16 +878,13 @@ static inline uintptr_t GET_REL_FROM_PTR(void* p) {
     return (uintptr_t)(p);
 }
 
-// Debug buffer bounds checking (only in debug builds)
-#ifdef _DNSDEBUG
+// Buffer bounds checking for HOSTENT blob construction (Always-on,
+// not just debug builds, to prevent out-of-bounds writes from malformed data)
 #define CHECK_BUFFER_SPACE(ptr, size, end) \
     do { if ((BYTE*)(ptr) + (size) > (BYTE*)(end)) { \
         SetLastError(WSAEFAULT); \
         return FALSE; \
     } } while(0)
-#else
-#define CHECK_BUFFER_SPACE(ptr, size, end) ((void)0)
-#endif
 
 //---------------------------------------------------------------------------
 // WSA_FillResponseStructure
@@ -985,8 +982,9 @@ _FX BOOLEAN WSA_FillResponseStructure(
         return FALSE;
     }
 
-    // Defensive: ensure ipCount fits in DWORD before casting (extremely large rule lists)
-    if (ipCount > 0xFFFFFFFFUL) {
+    // Defensive: ensure ipCount is reasonable and won't cause overflow in size calculations
+    // On 32-bit, SIZE_T is 32-bit so ipCount * sizeof(CSADDR_INFO) could overflow for huge counts
+    if (ipCount > 0xFFFFFFFFUL || ipCount > (SIZE_T)0xFFFFFFFF / sizeof(CSADDR_INFO)) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
@@ -1040,10 +1038,8 @@ _FX BOOLEAN WSA_FillResponseStructure(
 
     BYTE* currentPtr = (BYTE*)lpqsResults + sizeof(WSAQUERYSETW);
     
-#ifdef _DNSDEBUG
-    // Debug: set buffer end for bounds checking
+    // Buffer end for CHECK_BUFFER_SPACE bounds checking
     BYTE* bufferEnd = (BYTE*)lpqsResults + *lpdwBufferLength;
-#endif
 
     // Copy ServiceInstanceName (wide string)
     CHECK_BUFFER_SPACE(currentPtr, domainNameLen, bufferEnd);
@@ -1439,10 +1435,9 @@ static void DNS_LoadExclusionRules(void)
 {
     DNS_EnsureDebugOptionsLoaded();
 
-    if (DNS_ExclusionsLoaded)
+    // Thread-safe one-shot initialization via CAS
+    if (InterlockedCompareExchange(&DNS_ExclusionsLoaded, 1, 0) != 0)
         return;
-
-    DNS_ExclusionsLoaded = TRUE;
 
     for (ULONG index = 0; ; ++index) {
         WCHAR ex_buf[256];

@@ -180,16 +180,20 @@ _FX ULONG EncryptedDns_GetBackoffMs(ULONG failCount)
 
 _FX BOOLEAN EncryptedDns_Init(HMODULE hWinHttp, HMODULE hMsQuic)
 {
+    BOOLEAN anySuccess = FALSE;
+
     // Always initialize DoH (initializes connection pool even if WinHTTP not loaded yet)
     // WinHTTP functions are loaded lazily in DoH_LoadBackends on first query
-    DoH_Init(hWinHttp);
+    if (DoH_Init(hWinHttp))
+        anySuccess = TRUE;
     
     // Initialize DoQ if MsQuic is available
     if (hMsQuic) {
-        DoQ_Init(hMsQuic);
+        if (DoQ_Init(hMsQuic))
+            anySuccess = TRUE;
     }
     
-    return TRUE;
+    return anySuccess;
 }
 
 _FX void EncryptedDns_Cleanup(void)

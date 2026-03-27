@@ -130,8 +130,18 @@ static void DNS_InitSuppressCache(void)
         return;
     }
 
+    // Wait for initializing thread to finish, with bounded spin and
+    // exponential backoff to reduce CPU waste
+    int spinCount = 0;
+    DWORD sleepMs = 0;
     while ((state = InterlockedCompareExchange(&g_DnsSuppressInitState, 0, 0)) == 1) {
-        Sleep(0);
+        if (++spinCount > 10000) {
+            // Initializing thread stalled; give up waiting to avoid deadlock
+            break;
+        }
+        Sleep(sleepMs);
+        if (sleepMs < 16)
+            sleepMs = (sleepMs == 0) ? 1 : sleepMs * 2;
     }
 }
 
@@ -143,13 +153,14 @@ BOOLEAN DNS_IsSuppressLogEnabled(void)
 
 // Improved string hash (FNV-1a variant with per-process salt)
 // More resistant to collision attacks than simple djb2
-static ULONG g_HashSalt = 0;
+static volatile LONG g_HashSalt = 0;
 static ULONG DNS_HashString(const WCHAR* str)
 {
-    // Initialize salt on first use (process-unique value)
+    // Initialize salt on first use (process-unique value) - thread-safe via CAS
     if (g_HashSalt == 0) {
-        g_HashSalt = (ULONG)GetCurrentProcessId() ^ (ULONG)GetTickCount();
-        if (g_HashSalt == 0) g_HashSalt = 0x811c9dc5;  // FNV offset basis
+        ULONG salt = (ULONG)GetCurrentProcessId() ^ (ULONG)GetTickCount();
+        if (salt == 0) salt = 0x811c9dc5;  // FNV offset basis
+        InterlockedCompareExchange(&g_HashSalt, (LONG)salt, 0);
     }
     
     // FNV-1a hash with salt
@@ -401,10 +412,20 @@ _FX void DNS_LogIntercepted(const WCHAR* prefix, const WCHAR* domain, WORD wType
         BOOLEAN is_any_query = (wType == 255);
         USHORT targetType = (wType == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
         
+        // Track actual buffer usage after each WSA_DumpIP call.
+        // WSA_DumpIP appends via wcschr(pStr, L'\0') so each call extends the string.
+        // IPv6 addresses with prefix can use ~55 WCHAR; check actual length after
+        // each append rather than relying on a fixed safety margin.
         IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries);
         while (entry) {
             if (is_any_query || entry->Type == targetType) {
+                size_t used = wcslen(msg);
+                // Reserve enough for the worst-case IPv6 " [xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]" (~42 chars) + NUL
+                if (used + 48 >= 1024)
+                    break;  // not enough room for another IP
                 WSA_DumpIP(entry->Type, &entry->IP, msg);
+                // Verify WSA_DumpIP didn't overflow (belt-and-suspenders)
+                msg[1023] = L'\0';
             }
             entry = (IP_ENTRY*)List_Next(entry);
         }

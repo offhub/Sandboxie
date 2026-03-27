@@ -622,6 +622,23 @@ static HINTERNET DoH_GetPooledConnection(const WCHAR* host, INTERNET_PORT port, 
     EnterCriticalSection(&g_DohConnPoolLock);
 
     if (created) {
+        // Check if another thread already created a connection for the same server key
+        // while we were outside the lock (TOCTOU race prevention)
+        for (ULONG i = 0; i < g_DohConnPoolCount; i++) {
+            if (_wcsicmp(g_DohConnPool[i].ServerKey, serverKey) == 0 && g_DohConnPool[i].InUse == 0) {
+                // Another thread created a matching connection; close ours and use theirs
+                g_DohConnPool[i].InUse = 1;
+                g_DohConnPool[i].LastUsed = GetTickCount64();
+                HINTERNET hExisting = g_DohConnPool[i].hConnect;
+                LeaveCriticalSection(&g_DohConnPoolLock);
+                if (__sys_WinHttpCloseHandle)
+                    __sys_WinHttpCloseHandle(hConnect);
+                if (pbIsPooled)
+                    *pbIsPooled = TRUE;
+                return hExisting;
+            }
+        }
+
         InterlockedIncrement(&g_DohConnPoolMisses);
         if (g_DohConnPoolCount < DOH_MAX_POOL_CONNECTIONS) {
             DOH_CONNECTION_POOL* pool = &g_DohConnPool[g_DohConnPoolCount++];
@@ -745,13 +762,20 @@ static void DoH_ReleasePooledConnection(HINTERNET hConnect, BOOLEAN shouldClose)
 // 4. Waiting threads wake up and read from cache
 //---------------------------------------------------------------------------
 
-// Find or create pending query entry for domain+type
-// Returns: Pointer to existing pending query (caller should wait on event)
-//          NULL if no pending query found (caller should create one and perform request)
-static DOH_PENDING_QUERY* EncDns_FindPendingQuery(const WCHAR* domain, USHORT qtype)
+// Find existing pending query or atomically create a new one.
+// This merged find-or-create prevents a TOCTOU race where two threads both
+// see no pending query and then both try to create one for the same domain.
+//
+// Returns: Pointer to pending query entry (existing or new)
+//          *pCreated set to TRUE if caller created (and must perform HTTP request)
+//          *pCreated set to FALSE if entry already existed (caller should wait)
+//          NULL if table full or not initialized
+static DOH_PENDING_QUERY* EncDns_FindOrCreatePendingQuery(const WCHAR* domain, USHORT qtype, BOOLEAN* pCreated)
 {
     if (!InterlockedCompareExchange(&g_DohPendingLockValid, 0, 0))
         return NULL;
+
+    *pCreated = FALSE;
 
     EnterCriticalSection(&g_DohPendingLock);
 
@@ -767,20 +791,7 @@ static DOH_PENDING_QUERY* EncDns_FindPendingQuery(const WCHAR* domain, USHORT qt
         }
     }
 
-    LeaveCriticalSection(&g_DohPendingLock);
-    return NULL;
-}
-
-// Create new pending query entry (caller will perform HTTP request)
-// Returns: Pointer to new pending query, or NULL if table full
-static DOH_PENDING_QUERY* EncDns_CreatePendingQuery(const WCHAR* domain, USHORT qtype)
-{
-    if (!InterlockedCompareExchange(&g_DohPendingLockValid, 0, 0))
-        return NULL;
-
-    EnterCriticalSection(&g_DohPendingLock);
-
-    // Find empty slot
+    // No existing entry — create one atomically (still holding lock)
     for (ULONG i = 0; i < DOH_MAX_PENDING_QUERIES; i++) {
         if (!g_DohPendingQueries[i].Valid) {
             // Create event for waiters (manual reset, initially unsignaled)
@@ -797,6 +808,7 @@ static DOH_PENDING_QUERY* EncDns_CreatePendingQuery(const WCHAR* domain, USHORT 
             g_DohPendingQueries[i].WaiterCount = 0;
             g_DohPendingQueries[i].Completed = 0;
             g_DohPendingQueries[i].Valid = TRUE;
+            *pCreated = TRUE;
 
             if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
                 WCHAR msg[512];
@@ -1989,7 +2001,8 @@ _FX BOOLEAN DoH_IsQueryActive(void)
     // Check both TLS flag and global counter
     if (EncDns_GetInQuery())
         return TRUE;
-    if (InterlockedCompareExchange(&g_DohActiveQueries, 0, 0) > 0)
+    // Use != 0 instead of > 0 to avoid issues if counter wraps to negative
+    if (InterlockedCompareExchange(&g_DohActiveQueries, 0, 0) != 0)
         return TRUE;
     return FALSE;
 }
@@ -2592,6 +2605,8 @@ static void EncDns_CacheStore(const WCHAR* domain, USHORT qtype, const DOH_RESUL
     g_DohCache[oldest_idx].domain[255] = L'\0';
     g_DohCache[oldest_idx].qtype = qtype;
     ttl_ms = (ULONGLONG)pResult->TTL * 1000ULL;
+    if (ttl_ms < 5000ULL)          // 5 second minimum to prevent cache bypass via TTL=0
+        ttl_ms = 5000ULL;
     if (ttl_ms > (ULONGLONG)604800000ULL) // 7 days safety cap
         ttl_ms = (ULONGLONG)604800000ULL;
     g_DohCache[oldest_idx].expiry = now + ttl_ms;
@@ -3255,6 +3270,28 @@ static BOOLEAN DoH_HttpRequest_WinHttp(DOH_SERVER* server, const WCHAR* domain, 
         ULONGLONG errorNow = GetTickCount64();
         EncryptedDns_HandleQueryError(DOH_ERROR_HTTP_STATUS, server, domain, errorNow);
         goto cleanup;
+    }
+
+    // Validate Content-Type is application/dns-message (RFC 8484 Section 6)
+    // Prevents parsing non-DNS responses (e.g. HTML error pages) as wire format
+    {
+        WCHAR ctBuf[128];
+        DWORD ctSize = sizeof(ctBuf);
+        if (__sys_WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_TYPE,
+                WINHTTP_HEADER_NAME_BY_INDEX, ctBuf, &ctSize, WINHTTP_NO_HEADER_INDEX)) {
+            // Accept if Content-Type starts with "application/dns-message"
+            if (_wcsnicmp(ctBuf, L"application/dns-message", 23) != 0) {
+                ULONGLONG errorNow = GetTickCount64();
+                EncryptedDns_HandleQueryError(DOH_ERROR_PARSE_FAILED, server, domain, errorNow);
+                if (DNS_DebugFlag) {
+                    WCHAR msg[256];
+                    Sbie_snwprintf(msg, 256, L"[DoH] Rejected: unexpected Content-Type for %s", domain);
+                    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+                }
+                goto cleanup;
+            }
+        }
+        // If header query fails, proceed anyway (some servers may omit it)
     }
 
     // Read binary DNS response
@@ -4297,12 +4334,13 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, cons
     }
 
     //
-    // Pending Query Coalescing:
-    // Check if another thread is already querying this domain+type.
-    // If so, wait for it instead of making a duplicate HTTP request.
+    // Pending Query Coalescing (H2 fix — atomic find-or-create):
+    // Atomically check if another thread is already querying this domain+type.
+    // If so, wait for it; otherwise create a new entry under the same lock
+    // to prevent TOCTOU races between find and create.
     //
-    pending = EncDns_FindPendingQuery(domain, qtype);
-    if (pending) {
+    pending = EncDns_FindOrCreatePendingQuery(domain, qtype, &isQuerier);
+    if (pending && !isQuerier) {
         // Another thread is already querying this domain - wait for it
         if (DNS_DebugFlag && !DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG)) {
             WCHAR msg[512];
@@ -4332,13 +4370,6 @@ _FX BOOLEAN DoH_Query(const WCHAR* domain, USHORT qtype, BOOLEAN dnssec_ok, cons
         pResult->TTL = ENCRYPTED_DNS_FAILED_TTL;
         return TRUE;
     }
-
-    //
-    // No pending query found - we'll be the querier.
-    // Create pending entry so other threads can wait on us.
-    //
-    pending = EncDns_CreatePendingQuery(domain, qtype);
-    isQuerier = TRUE;
 
     //
     // Semaphore: Limit concurrent DoH requests to prevent server hammering.

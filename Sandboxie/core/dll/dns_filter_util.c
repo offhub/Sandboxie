@@ -58,9 +58,11 @@ const WCHAR* DNS_GetTypeName(WORD wType)
         case DNS_TYPE_HTTPS: return L"HTTPS";
         case 255:            return L"ANY";
         default: {
-            static WCHAR buffers[4][32];
+            // Increased from 4 to 16 entries to reduce collision risk
+            // under concurrent access from multiple DNS query threads
+            static WCHAR buffers[16][32];
             static volatile LONG bufferIndex = 0;
-            LONG idx = InterlockedIncrement(&bufferIndex) & 3;
+            LONG idx = InterlockedIncrement(&bufferIndex) & 15;
             Sbie_snwprintf(buffers[idx], 32, L"TYPE%d", wType);
             return buffers[idx];
         }
@@ -417,7 +419,9 @@ int DNS_BuildSimpleQuery(
     if (!DNS_IsValidDnsName(domain))
         return 0;
 
-    char domainA[256];
+    // Use 1024-byte buffer for UTF-8 conversion — multi-byte sequences
+    // for internationalized domain names can expand beyond 256 bytes
+    char domainA[1024];
     int len = WideCharToMultiByte(CP_UTF8, 0, domain, -1, domainA, (int)sizeof(domainA), NULL, NULL);
     if (len <= 0 || len > 255)
         return 0;
@@ -500,7 +504,8 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
     PDNSAPI_DNS_RECORD pFirstRecord = NULL;
     PDNSAPI_DNS_RECORD pLastRecord = NULL;
 
-    if (pDohResult && pDohResult->HasCname && pDohResult->CnameOwner[0] != L'\0' && pDohResult->CnameTarget[0] != L'\0') {
+    if (pDohResult && pDohResult->HasCname && pDohResult->CnameOwner[0] != L'\0' && pDohResult->CnameTarget[0] != L'\0'
+        && DNS_IsValidDnsName(pDohResult->CnameTarget)) {  // Validate CnameTarget before use
         SIZE_T ownerNameLen = 0, targetNameLen = 0;
 
         if (CharSet == DnsCharSetUnicode) {
@@ -604,7 +609,14 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
     WCHAR filtered_msg[512];
     filtered_msg[0] = L'\0';
 
+    // Safety cap: limit synthesized records to prevent unbounded allocation from malformed input
+    int record_count = 0;
+    const int MAX_SYNTHESIZED_RECORDS = 4096;
+
     for (IP_ENTRY* entry = (IP_ENTRY*)List_Head(pEntries); entry; entry = (IP_ENTRY*)List_Next(entry)) {
+
+        if (record_count >= MAX_SYNTHESIZED_RECORDS)
+            break;
         if (!is_any_query && entry->Type != targetType) {
             if (!(wType == DNS_TYPE_AAAA && DNS_MapIpv4ToIpv6 && !has_ipv6 && entry->Type == AF_INET))
                 continue;
@@ -693,6 +705,7 @@ PDNSAPI_DNS_RECORD DNSAPI_BuildDnsRecordList(
             pLastRecord->pNext = pRecord;
             pLastRecord = pRecord;
         }
+        record_count++;
     }
 
     if (filtered_msg[0] && DNS_TraceFlag && !DNS_ShouldSuppressLogTagged(domainName, DNS_REBIND_LOG_TAG_FILTER)) {
