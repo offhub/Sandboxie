@@ -166,6 +166,119 @@ static P_CancelMibChangeNotify2 __sys_CancelMibChangeNotify2    = NULL;
 
 
 //---------------------------------------------------------------------------
+// GetAdaptersAddresses hook (DHCPv6 DUID / IAID spoofing)
+//---------------------------------------------------------------------------
+
+// Minimal layout-compatible stub for IP_ADAPTER_ADDRESSES_LH (Vista+).
+// The C compiler's natural alignment rules match the real SDK struct on
+// x86, x64, and ARM64 — no #include <iphlpapi.h> needed.
+
+typedef struct { PVOID lpSockaddr; INT iSockaddrLength; } MY_SOCKET_ADDRESS;
+
+#define MY_MAX_DHCPV6_DUID_LENGTH 130
+#define MY_MAX_ADAPTER_ADDR_LEN   8
+
+typedef struct _MY_IP_ADAPTER_ADDRESSES {
+    ULONGLONG  Alignment;               // 0: union{ULONGLONG; struct{ULONG Length; ULONG IfIndex;}}
+    struct _MY_IP_ADAPTER_ADDRESSES *Next;
+    PVOID      AdapterName;             // PCHAR  {GUID} string
+    PVOID      FirstUnicastAddress;
+    PVOID      FirstAnycastAddress;
+    PVOID      FirstMulticastAddress;
+    PVOID      FirstDnsServerAddress;
+    PVOID      DnsSuffix;
+    PVOID      Description;
+    PVOID      FriendlyName;
+    BYTE       PhysicalAddress[MY_MAX_ADAPTER_ADDR_LEN];
+    ULONG      PhysicalAddressLength;
+    ULONG      Flags;
+    ULONG      Mtu;
+    ULONG      IfType;
+    ULONG      OperStatus;
+    ULONG      Ipv6IfIndex;
+    ULONG      ZoneIndices[16];
+    PVOID      FirstPrefix;
+    ULONGLONG  TransmitLinkSpeed;
+    ULONGLONG  ReceiveLinkSpeed;
+    PVOID      FirstWinsServerAddress;
+    PVOID      FirstGatewayAddress;
+    ULONG      Ipv4Metric;
+    ULONG      Ipv6Metric;
+    ULONGLONG  Luid;                    // IF_LUID
+    MY_SOCKET_ADDRESS Dhcpv4Server;
+    ULONG      CompartmentId;
+    BYTE       NetworkGuid[16];         // GUID
+    ULONG      ConnectionType;
+    ULONG      TunnelType;
+    MY_SOCKET_ADDRESS Dhcpv6Server;     // compiler auto-aligns (8-byte on x64, 4-byte on x86)
+    BYTE       Dhcpv6ClientDuid[MY_MAX_DHCPV6_DUID_LENGTH]; // inline array, safe to overwrite
+    ULONG      Dhcpv6ClientDuidLength;  // compiler inserts 2-byte padding before this
+    ULONG      Dhcpv6Iaid;
+} MY_IP_ADAPTER_ADDRESSES, *PMY_IP_ADAPTER_ADDRESSES;
+
+// Compile-time layout validation for fields accessed by the DHCPv6 hook.
+// These catch divergence from the real SDK IP_ADAPTER_ADDRESSES_LH struct.
+#ifdef _WIN64
+C_ASSERT(sizeof(MY_SOCKET_ADDRESS) == 16);
+#else
+C_ASSERT(sizeof(MY_SOCKET_ADDRESS) == 8);
+#endif
+C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, PhysicalAddressLength) ==
+         FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, PhysicalAddress) + MY_MAX_ADAPTER_ADDR_LEN);
+C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Ipv6IfIndex) ==
+         FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, OperStatus) + sizeof(ULONG));
+C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6Iaid) ==
+         FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6ClientDuid) + MY_MAX_DHCPV6_DUID_LENGTH + 2 + sizeof(ULONG));
+
+typedef ULONG (WINAPI *P_GetAdaptersAddresses)(
+    ULONG                   Family,
+    ULONG                   Flags,
+    PVOID                   Reserved,
+    PMY_IP_ADAPTER_ADDRESSES AdapterAddresses,
+    PULONG                  SizePointer);
+
+static P_GetAdaptersAddresses __sys_GetAdaptersAddresses = NULL;
+
+static ULONG WINAPI IpHlp_GetAdaptersAddresses(
+    ULONG                   Family,
+    ULONG                   Flags,
+    PVOID                   Reserved,
+    PMY_IP_ADAPTER_ADDRESSES AdapterAddresses,
+    PULONG                  SizePointer)
+{
+    ULONG ret = __sys_GetAdaptersAddresses(Family, Flags, Reserved, AdapterAddresses, SizePointer);
+    if (ret == ERROR_SUCCESS && AdapterAddresses != NULL) {
+        PMY_IP_ADAPTER_ADDRESSES pAdapter = AdapterAddresses;
+        while (pAdapter != NULL) {
+            // Only spoof adapters that carry a full DUID-LLT (14 bytes minimum:
+            // type[2] + hw-type[2] + time[4] + MAC[6]) and a valid MAC.
+            // Shorter DUIDs (non-LLT formats) are left untouched to avoid
+            // writing a structurally invalid value into the DUID field.
+            if (pAdapter->Dhcpv6ClientDuidLength >= 14 && pAdapter->PhysicalAddressLength >= 6) {
+                BYTE  fakeDuid[14];
+                ULONG fakeIaid;
+                Custom_GetFakeDhcpv6(
+                    pAdapter->Ipv6IfIndex,
+                    pAdapter->PhysicalAddress, pAdapter->PhysicalAddressLength,
+                    pAdapter->Dhcpv6ClientDuid, pAdapter->Dhcpv6ClientDuidLength,
+                    fakeDuid, &fakeIaid);
+
+                // Replace the DUID with our stable 14-byte DUID-LLT.
+                // The inline buffer (Dhcpv6ClientDuid[130]) is always large enough.
+                memcpy(pAdapter->Dhcpv6ClientDuid, fakeDuid, 14);
+                pAdapter->Dhcpv6ClientDuidLength = 14;
+
+                if (pAdapter->Dhcpv6Iaid != 0)
+                    pAdapter->Dhcpv6Iaid = fakeIaid;
+            }
+            pAdapter = pAdapter->Next;
+        }
+    }
+    return ret;
+}
+
+
+//---------------------------------------------------------------------------
 // Variables
 //---------------------------------------------------------------------------
 
@@ -228,6 +341,13 @@ _FX BOOLEAN IpHlp_Init(HMODULE module)
     }
     if (CancelMibChangeNotify2) {
         SBIEDLL_HOOK(IpHlp_,CancelMibChangeNotify2);
+    }
+
+    if (Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE)) {
+        void *GetAdaptersAddresses = GetProcAddress(module, "GetAdaptersAddresses");
+        if (GetAdaptersAddresses) {
+            SBIEDLL_HOOK(IpHlp_, GetAdaptersAddresses);
+        }
     }
 
     return TRUE;

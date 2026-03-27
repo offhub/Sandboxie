@@ -3603,6 +3603,36 @@ _FX NTSTATUS Key_NtQueryValueKey(
             if (status != STATUS_BAD_INITIAL_PC)
                 __leave;
         }
+
+        // Buffer must outlive OriginalDuid pointer — keep in same scope.
+        BYTE duidInfoBuf[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 130] = { 0 };
+        const BYTE *OriginalDuid = NULL;
+        ULONG OriginalDuidLen = 0;
+        if (ValueNameLen1 == 10 && _wcsicmp(ValueNameBuf, L"Dhcpv6DUID") == 0) {
+            ULONG duidInfoLen = 0;
+            NTSTATUS duidStatus = __sys_NtQueryValueKey(
+                KeyHandle, ValueName,
+                KeyValuePartialInformation,
+                duidInfoBuf, sizeof(duidInfoBuf),
+                &duidInfoLen);
+            if (NT_SUCCESS(duidStatus)) {
+                KEY_VALUE_PARTIAL_INFORMATION *duidInfo =
+                    (KEY_VALUE_PARTIAL_INFORMATION *)duidInfoBuf;
+                if (duidInfo->Type == REG_BINARY && duidInfo->DataLength >= 14) {
+                    OriginalDuid = (const BYTE *)duidInfo->Data;
+                    OriginalDuidLen = duidInfo->DataLength;
+                }
+            }
+        }
+
+        // DHCPv6 DUID / IAID spoofing when HideNetworkAdapterMAC is active.
+        status = Custom_FakeDhcpv6RegValue(
+            TruePath, ValueNameBuf, ValueNameLen1,
+            OriginalDuid, OriginalDuidLen,
+            KeyValueInformation, Length, ResultLength);
+
+        if (status != STATUS_BAD_INITIAL_PC)
+            __leave;
     }
 
     //
