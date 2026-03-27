@@ -2357,8 +2357,8 @@ static BOOLEAN DoH_BuildDnsQuery(
     header = (DOH_DNS_HEADER*)buffer;
     memset(header, 0, sizeof(DOH_DNS_HEADER));
 
-    // Transaction ID (use random value)
-    header->TransactionID = (USHORT)(GetTickCount64() & 0xFFFF);
+    // Transaction ID (use random value from project PRNG, not monotonic timer)
+    header->TransactionID = (USHORT)Dll_rand();
 
     // Flags: Standard query with recursion desired
     // Preserve RD/CD bits if provided by the caller.

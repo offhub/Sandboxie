@@ -377,6 +377,8 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
 
     // Find the real ConnectionStart function
     // We need to search through all tables since we don't know which one this connection belongs to
+    // Note: The captured pointer targets code in msquic.dll which remains loaded even if
+    // MsQuicClose clears the table entry on another thread. The local copy stays valid.
     EnterCriticalSection(&MsQuic_TableLock);
     for (int i = 0; i < MSQUIC_MAX_API_TABLES; i++) {
         if (MsQuic_Tables[i].RealConnectionStart) {
@@ -399,8 +401,13 @@ static QUIC_STATUS QUIC_API MsQuic_ConnectionStart(
     // Convert server name to wide string first (needed for hostname checks)
     int len = MultiByteToWideChar(CP_UTF8, 0, ServerName, -1, ServerNameW, QUIC_MAX_SNI_LENGTH);
     if (len <= 0) {
-        // Conversion failed, allow connection
-        return RealConnectionStart(Connection, Configuration, Family, ServerName, ServerPort);
+        // Conversion failed - block connection to prevent filter bypass via malformed UTF-8
+        if (DNS_TraceFlag || DNS_DebugFlag) {
+            WCHAR msg[256];
+            Sbie_snwprintf(msg, 256, L"[MsQuic] Blocked: UTF-8 conversion failed for server name (error %d)", GetLastError());
+            SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_DENY, msg);
+        }
+        return QUIC_STATUS_INVALID_PARAMETER;
     }
     ServerNameW[QUIC_MAX_SNI_LENGTH] = L'\0';
 

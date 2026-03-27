@@ -376,6 +376,7 @@ typedef struct _DOQ_QUERY_CONTEXT {
     BOOLEAN Completed;
     BOOLEAN SendComplete;
     BOOLEAN RecvComplete;
+    BOOLEAN Truncated;              // Set if response exceeded buffer and was truncated
     
     // Result
     ENCRYPTED_DNS_RESULT* pResult;
@@ -481,8 +482,18 @@ _FX BOOLEAN DoQ_Init(HMODULE hMsQuic)
         }
         // Either already initialized (1) or initialization in progress (-1)
         // Wait briefly if in progress, then return current state
-        while (InterlockedCompareExchange(&g_DoqInitialized, 0, 0) == -1) {
-            Sleep(10);
+        // Timeout after ~5 seconds to prevent infinite loop if init thread hangs
+        {
+            int waitIterations = 0;
+            while (InterlockedCompareExchange(&g_DoqInitialized, 0, 0) == -1) {
+                if (++waitIterations > 500) {  // 500 * 10ms = 5 seconds
+                    if (DNS_DebugFlag) {
+                        SbieApi_MonitorPutMsg(MONITOR_DNS, L"[DoQ] Init wait timed out after 5 seconds");
+                    }
+                    return FALSE;
+                }
+                Sleep(10);
+            }
         }
         return InterlockedCompareExchange(&g_DoqInitialized, 0, 0) == 1;
     }
@@ -826,6 +837,23 @@ static QUIC_STATUS QUIC_API DoQ_ConnectionCallback(
                 SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
             }
         }
+        // Validate negotiated ALPN is "doq" per RFC 9250
+        if (Event->CONNECTED.NegotiatedAlpnLength != 3 ||
+            !Event->CONNECTED.NegotiatedAlpn ||
+            memcmp(Event->CONNECTED.NegotiatedAlpn, "doq", 3) != 0) {
+            if (DNS_TraceFlag || DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"[DoQ] ALPN mismatch on %s:%d (length=%u), rejecting connection",
+                    conn->Host, conn->Port, (UINT32)Event->CONNECTED.NegotiatedAlpnLength);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
+            conn->State = DOQ_STATE_ERROR;
+            conn->ConnectStatus = (QUIC_STATUS)0x80410007;  // QUIC_STATUS_ALPN_NEG_FAILURE
+            if (conn->ConnectEvent) {
+                SetEvent(conn->ConnectEvent);
+            }
+            break;
+        }
         conn->State = DOQ_STATE_CONNECTED;
         conn->ConnectStatus = QUIC_STATUS_SUCCESS;
         if (conn->ConnectEvent) {
@@ -934,6 +962,7 @@ static QUIC_STATUS QUIC_API DoQ_StreamCallback(
             UINT32 copyLen = buf->Length;
             if (ctx->ResponseOffset + copyLen > sizeof(ctx->ResponseBuffer)) {
                 copyLen = sizeof(ctx->ResponseBuffer) - ctx->ResponseOffset;
+                ctx->Truncated = TRUE;  // Response exceeded buffer capacity
             }
             if (copyLen > 0) {
                 memcpy(ctx->ResponseBuffer + ctx->ResponseOffset, buf->Buffer, copyLen);
@@ -1246,14 +1275,21 @@ static DOQ_CONNECTION* DoQ_GetOrCreateConnection(const DOQ_SERVER* server)
     }
     
     DWORD waitResult = WaitForSingleObject(conn->ConnectEvent, DOQ_CONNECT_TIMEOUT_MS);
-    if (waitResult != WAIT_OBJECT_0 || conn->State != DOQ_STATE_CONNECTED) {
+
+    // Read connection state under lock to prevent TOCTOU race with connection callback
+    DOQ_CONNECTION_STATE connState;
+    EnterCriticalSection(&g_DoqLock);
+    connState = conn->State;
+    LeaveCriticalSection(&g_DoqLock);
+
+    if (waitResult != WAIT_OBJECT_0 || connState != DOQ_STATE_CONNECTED) {
         if (DNS_TraceFlag || DNS_DebugFlag) {
             WCHAR msg[256];
             const WCHAR* waitResultStr = (waitResult == WAIT_OBJECT_0) ? L"SIGNALED" : 
                                         (waitResult == WAIT_TIMEOUT) ? L"TIMEOUT" : L"FAILED";
-            const WCHAR* stateStr = (conn->State == DOQ_STATE_CONNECTED) ? L"CONNECTED" :
-                                   (conn->State == DOQ_STATE_CONNECTING) ? L"CONNECTING" :
-                                   (conn->State == DOQ_STATE_ERROR) ? L"ERROR" : L"UNKNOWN";
+            const WCHAR* stateStr = (connState == DOQ_STATE_CONNECTED) ? L"CONNECTED" :
+                                   (connState == DOQ_STATE_CONNECTING) ? L"CONNECTING" :
+                                   (connState == DOQ_STATE_ERROR) ? L"ERROR" : L"UNKNOWN";
             Sbie_snwprintf(msg, 256, L"[DoQ] Connection to %s:%d failed - WaitResult: %s, State: %s, ConnectStatus: 0x%08X", 
                 server->Host, server->Port, waitResultStr, stateStr, conn->ConnectStatus);
             SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
@@ -1683,6 +1719,15 @@ _FX BOOLEAN DoQ_Query(
         }
         StreamShutdown(hStream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
     } else if (QUIC_SUCCEEDED(ctx.Status) && ctx.ResponseLength > 0) {
+        // Warn if response was truncated due to buffer overflow
+        if (ctx.Truncated) {
+            if (DNS_TraceFlag || DNS_DebugFlag) {
+                WCHAR msg[256];
+                Sbie_snwprintf(msg, 256, L"[DoQ] Response truncated for %s (type %d): buffer full at %u bytes",
+                    domain, qtype, ctx.ResponseOffset);
+                SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+            }
+        }
         // Parse response
         result = DoQ_ParseResponse(ctx.ResponseBuffer, ctx.ResponseLength, pResult);
         

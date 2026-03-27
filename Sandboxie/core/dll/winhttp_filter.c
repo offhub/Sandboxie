@@ -157,87 +157,105 @@ static HINTERNET WINAPI WinHttp_WinHttpConnect(
         return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
     }
 
+    // Block connections with NULL or empty server name to prevent filter bypass
+    if (!pswzServerName || pswzServerName[0] == L'\0') {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return NULL;
+    }
+
     // Validate domain against NetworkDnsFilter rules
-    if (pswzServerName && wcslen(pswzServerName) > 0) {
+    {
         size_t domain_len = wcslen(pswzServerName);
-        WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
-        if (domain_lwr) {
-            wmemcpy(domain_lwr, pswzServerName, domain_len);
-            domain_lwr[domain_len] = L'\0';
-            _wcslwr(domain_lwr);
-            
-            // Check exclusion first
-            if (DNS_IsExcluded(domain_lwr)) {
-                DNS_LogExclusion(domain_lwr);
-                Dll_Free(domain_lwr);
-                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
-            }
-            
-            // Exclude encrypted DNS server hostnames to prevent re-entrancy
-            // Encrypted DNS uses WinHTTP internally, so we must bypass server connections
-            if (EncryptedDns_IsServerHostname(domain_lwr)) {
-                if (DNS_TraceFlag || DNS_DebugFlag) {
-                    DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"EncDns server");
-                }
-                Dll_Free(domain_lwr);
-                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
-            }
-            
-            // If an encrypted DNS query is already active, bypass to prevent re-entrancy
-            // Encrypted DNS may trigger GetAddrInfoW which may trigger WinHttpConnect recursively
-            if (EncryptedDns_IsQueryActive()) {
-                if (DNS_TraceFlag || DNS_DebugFlag) {
-                    DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"EncDns query active");
-                }
-                Dll_Free(domain_lwr);
-                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
-            }
-            
-            PATTERN* found = NULL;
-            
-            // Use DNS-specific matching that handles FQDN trailing dots properly
-            if (DNS_DomainMatchPatternList(domain_lwr, domain_len, &DNS_FilterList, &found) > 0) {
-                // Domain matches NetworkDnsFilter
-                
-                // Check if certificate is valid for filtering
-                if (!DNS_HasValidCertificate) {
-                    DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"no certificate");
-                    Dll_Free(domain_lwr);
-                    return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
-                }
-                
-                // Get IP entries for this domain (if any)
-                PVOID* aux = Pattern_Aux(found);
-                LIST* pEntries = NULL;
-                DNS_TYPE_FILTER* type_filter = NULL;
-                
-                if (aux && *aux) {
-                    DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
-                }
-                
-                // If no IP entries, this is block mode - deny connection
-                if (!pEntries) {
-                    DNS_LogBlocked(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"Domain blocked (NXDOMAIN)");
-                    Dll_Free(domain_lwr);
-                    SetLastError(ERROR_HOST_UNREACHABLE);
-                    return NULL;
-                }
-                
-                // Has IP entries - redirect mode
-                // WinHTTP will perform DNS resolution internally via GetAddrInfoW
-                // Our existing GetAddrInfoW hook will intercept and return the filtered IPs
-                // Just allow the connection - the DNS hook handles the redirection
-                DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"allowing (DNS hooks will redirect)");
-                Dll_Free(domain_lwr);
-                // Let WinHTTP proceed - it will call GetAddrInfoW which our hooks will intercept
-                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
-            }
-            
-            // Domain not in filter - allow and log passthrough if tracing
-            DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"not filtered");
-            
-            Dll_Free(domain_lwr);
+
+        // Guard against integer overflow in allocation size calculation
+        if (domain_len > ((size_t)-1 / sizeof(WCHAR)) - 4) {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return NULL;
         }
+
+        WCHAR* domain_lwr = (WCHAR*)Dll_AllocTemp((domain_len + 4) * sizeof(WCHAR));
+
+        // Block connection if allocation fails to prevent filter bypass
+        if (!domain_lwr) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return NULL;
+        }
+
+        wmemcpy(domain_lwr, pswzServerName, domain_len);
+        domain_lwr[domain_len] = L'\0';
+        _wcslwr(domain_lwr);
+        
+        // Check exclusion first
+        if (DNS_IsExcluded(domain_lwr)) {
+            DNS_LogExclusion(domain_lwr);
+            Dll_Free(domain_lwr);
+            return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+        }
+        
+        // Exclude encrypted DNS server hostnames to prevent re-entrancy
+        // Encrypted DNS uses WinHTTP internally, so we must bypass server connections
+        if (EncryptedDns_IsServerHostname(domain_lwr)) {
+            if (DNS_TraceFlag || DNS_DebugFlag) {
+                DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"EncDns server");
+            }
+            Dll_Free(domain_lwr);
+            return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+        }
+        
+        // If an encrypted DNS query is already active, bypass to prevent re-entrancy
+        // Encrypted DNS may trigger GetAddrInfoW which may trigger WinHttpConnect recursively
+        if (EncryptedDns_IsQueryActive()) {
+            if (DNS_TraceFlag || DNS_DebugFlag) {
+                DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"EncDns query active");
+            }
+            Dll_Free(domain_lwr);
+            return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+        }
+        
+        PATTERN* found = NULL;
+        
+        // Use DNS-specific matching that handles FQDN trailing dots properly
+        if (DNS_DomainMatchPatternList(domain_lwr, domain_len, &DNS_FilterList, &found) > 0) {
+            // Domain matches NetworkDnsFilter
+            
+            // Check if certificate is valid for filtering
+            if (!DNS_HasValidCertificate) {
+                DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"no certificate");
+                Dll_Free(domain_lwr);
+                return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+            }
+            
+            // Get IP entries for this domain (if any)
+            PVOID* aux = Pattern_Aux(found);
+            LIST* pEntries = NULL;
+            DNS_TYPE_FILTER* type_filter = NULL;
+            
+            if (aux && *aux) {
+                DNS_ExtractFilterAux(aux, &pEntries, &type_filter);
+            }
+            
+            // If no IP entries, this is block mode - deny connection
+            if (!pEntries) {
+                DNS_LogBlocked(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"Domain blocked (NXDOMAIN)");
+                Dll_Free(domain_lwr);
+                SetLastError(ERROR_HOST_UNREACHABLE);
+                return NULL;
+            }
+            
+            // Has IP entries - redirect mode
+            // WinHTTP will perform DNS resolution internally via GetAddrInfoW
+            // Our existing GetAddrInfoW hook will intercept and return the filtered IPs
+            // Just allow the connection - the DNS hook handles the redirection
+            DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"allowing (DNS hooks will redirect)");
+            Dll_Free(domain_lwr);
+            // Let WinHTTP proceed - it will call GetAddrInfoW which our hooks will intercept
+            return __sys_WinHttpConnect(hSession, pswzServerName, nServerPort, dwReserved);
+        }
+        
+        // Domain not in filter - allow and log passthrough if tracing
+        DNS_LogPassthrough(L"[WinHTTP]", pswzServerName, DNS_TYPE_ANY, L"not filtered");
+        
+        Dll_Free(domain_lwr);
     }
 
     // Domain allowed or not blocked - call original function
