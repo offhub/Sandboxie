@@ -88,6 +88,32 @@ static BOOLEAN g_DnsSuppressInitialized = FALSE;
 static volatile LONG g_DnsSuppressInitState = 0; // 0=uninitialized, 1=initializing, 2=initialized
 static BOOLEAN g_SuppressDnsLogEnabled = TRUE;  // SuppressDnsLog setting (default: enabled)
 
+// HOSTENT BLOB relative pointer helpers
+static __forceinline UINT_PTR DNS_GetRelFromBlobPtr(const void* ptrField)
+{
+    return (UINT_PTR)ptrField;
+}
+
+static __forceinline void* DNS_GetBlobAbsPtr(void* base, UINT_PTR rel)
+{
+    return (void*)(((BYTE*)base) + rel);
+}
+
+static __forceinline void DNS_FormatGuidPlain(const GUID* guid, WCHAR* buffer, SIZE_T bufferSize)
+{
+    if (!guid || !buffer || bufferSize < 37) {
+        if (buffer && bufferSize > 0)
+            buffer[0] = L'\0';
+        return;
+    }
+
+    Sbie_snwprintf(buffer, bufferSize,
+        L"%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX",
+        guid->Data1, guid->Data2, guid->Data3,
+        guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
+        guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7]);
+}
+
 // Initialize suppression cache
 static void DNS_InitSuppressCache(void)
 {
@@ -329,7 +355,7 @@ BOOLEAN DNS_IsIPv4Mapped(const IP_ADDRESS* pIP)
 }
 
 //---------------------------------------------------------------------------
-// General logging functions
+// General DNS logging functions
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogSimple(const WCHAR* prefix, const WCHAR* domain, WORD wType, const WCHAR* suffix)
@@ -699,6 +725,63 @@ _FX void DNS_LogDnsRecordsWithReason(const WCHAR* prefix, const WCHAR* domain, W
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
+_FX void DNS_LogRebindFilteredIps(const WCHAR* domain, const WCHAR* filteredMsg)
+{
+    if (!DNS_TraceFlag || !domain || !filteredMsg || !filteredMsg[0])
+        return;
+
+    if (DNS_ShouldSuppressLogTagged(domain, DNS_REBIND_LOG_TAG_FILTER))
+        return;
+
+    WCHAR msg[768];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[DNS Rebind] Filtered IP(s) for domain %s%s", domain, filteredMsg);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogGetAddrInfoCanonnameOverride(const WCHAR* domain, const WCHAR* canonName)
+{
+    if (!DNS_TraceFlag || !domain || !canonName)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[GetAddrInfo] Canonname override: %s -> %s", domain, canonName);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogWSAFillResponseBufferTooSmall(DWORD haveSize, SIZE_T neededSize,
+                                              const WCHAR* domain, SIZE_T ipCount,
+                                              const GUID* serviceClassId)
+{
+    if (!DNS_TraceFlag || !DNS_DebugFlag)
+        return;
+
+    WCHAR guidBuf[37] = L"";
+    if (serviceClassId) {
+        DNS_FormatGuidPlain(serviceClassId, guidBuf, ARRAYSIZE(guidBuf));
+    }
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[DNS] WSA_FillResponseStructure WSAEFAULT: have=%lu need=%lu domain=%s ipCount=%lu guid=%s",
+        (ULONG)haveSize,
+        (ULONG)neededSize,
+        domain ? domain : L"",
+        (ULONG)ipCount,
+        guidBuf[0] ? guidBuf : L"null");
+    DNS_LogDebug(msg);
+}
+
+_FX void DNS_LogEncDnsInvalidHostname(const WCHAR* domain)
+{
+    if (!DNS_DebugFlag || !domain)
+        return;
+
+    if (DNS_ShouldSuppressLogTagged(domain, DNS_ENCDNS_LOG_TAG))
+        return;
+
+    DNS_DEBUG_LOG(L"[EncDns] Invalid hostname, skipping query: %s", domain);
+}
+
 //---------------------------------------------------------------------------
 // DnsQuery-specific logging
 //---------------------------------------------------------------------------
@@ -795,6 +878,311 @@ _FX void DNS_LogDnsQueryResult(const WCHAR* sourceTag, const WCHAR* domain, WORD
                                DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults)
 {
     DNS_LogDnsQueryResultWithReason(sourceTag, domain, wType, status, ppQueryResults, DNS_PASSTHROUGH_NONE);
+}
+
+_FX void DNS_LogDnsQueryWEncDnsResultWithReason(const WCHAR* domain, WORD wType,
+                                                ENCRYPTED_DNS_MODE protocolUsed,
+                                                DNS_STATUS status,
+                                                PDNSAPI_DNS_RECORD pRecords,
+                                                DNS_PASSTHROUGH_REASON reason)
+{
+    if (!domain)
+        return;
+
+    WCHAR sourceTag[64];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns(%s)",
+                       EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(sourceTag, ARRAYSIZE(sourceTag), L"DnsQuery_W EncDns");
+    }
+
+    PDNSAPI_DNS_RECORD pRecordsLocal = pRecords;
+    DNS_LogDnsQueryResultWithReason(sourceTag, domain, wType,
+                                    status, &pRecordsLocal, reason);
+}
+
+//---------------------------------------------------------------------------
+// Debug logs for DnsQuery_W EncDns execution path
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDnsQueryWEncDnsRawSummary(int rawResponseLen, BOOLEAN success, DNS_STATUS status,
+                                          BOOLEAN hasCname, const WCHAR* cnameTarget)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] DnsQuery_W: RawResponseLen=%d, Success=%d, Status=%d, HasCname=%d, CnameTarget=%s",
+        rawResponseLen, success, status, hasCname,
+        (cnameTarget && cnameTarget[0]) ? cnameTarget : L"(none)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryWEncDnsExtractResult(DNS_STATUS extractStatus, const void* pRecords)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] DnsQuery_W: extractStatus=%d, pRecords=%p",
+        extractStatus, pRecords);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryWEncDnsExtractNullRecords(WORD wType)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] DnsQuery_W: extractStatus=0 but pRecords=NULL (type %d may not be extracted)",
+        wType);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryWEncDnsExtractFailed(DNS_STATUS extractStatus)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] DnsQuery_W: extraction failed with status=%d",
+        extractStatus);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryWEncDnsCnameFallback(const WCHAR* cnameOwner, const WCHAR* cnameTarget)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] DnsQuery_W: Fallback - building CNAME record manually for %s -> %s",
+        (cnameOwner && cnameOwner[0]) ? cnameOwner : L"(none)",
+        (cnameTarget && cnameTarget[0]) ? cnameTarget : L"(none)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+//---------------------------------------------------------------------------
+// Debug logs for generic DnsQuery_* EncDns extraction paths (A/UTF8/W)
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDnsQueryEncDnsRawSummary(const WCHAR* apiName, int rawResponseLen, BOOLEAN success,
+                                         DNS_STATUS status, BOOLEAN hasCname, const WCHAR* cnameTarget)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    const WCHAR* tag = (apiName && apiName[0]) ? apiName : L"DnsQuery";
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] %s: RawResponseLen=%d, Success=%d, Status=%d, HasCname=%d, CnameTarget=%s",
+        tag, rawResponseLen, success, status, hasCname,
+        (cnameTarget && cnameTarget[0]) ? cnameTarget : L"(none)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryEncDnsExtractResult(const WCHAR* apiName, DNS_STATUS extractStatus, const void* pRecords)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    const WCHAR* tag = (apiName && apiName[0]) ? apiName : L"DnsQuery";
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[EncDns] %s: extractStatus=%d, pRecords=%p",
+        tag, extractStatus, pRecords);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryEncDnsExtractNullRecords(const WCHAR* apiName, WORD wType)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    const WCHAR* tag = (apiName && apiName[0]) ? apiName : L"DnsQuery";
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] %s: extractStatus=0 but pRecords=NULL (type %d may not be extracted)",
+        tag, wType);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryEncDnsExtractFailed(const WCHAR* apiName, DNS_STATUS extractStatus)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    const WCHAR* tag = (apiName && apiName[0]) ? apiName : L"DnsQuery";
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] %s: extraction failed with status=%d",
+        tag, extractStatus);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryEncDnsCnameFallback(const WCHAR* apiName, const WCHAR* cnameOwner, const WCHAR* cnameTarget)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    const WCHAR* tag = (apiName && apiName[0]) ? apiName : L"DnsQuery";
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] %s: Fallback - building CNAME record manually for %s -> %s",
+        tag,
+        (cnameOwner && cnameOwner[0]) ? cnameOwner : L"(none)",
+        (cnameTarget && cnameTarget[0]) ? cnameTarget : L"(none)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+//---------------------------------------------------------------------------
+// DnsQueryRaw EncDns result logging
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDnsQueryRawEncDnsBlocked(const WCHAR* domain, WORD wType,
+                                         ENCRYPTED_DNS_MODE protocolUsed,
+                                         const WCHAR* reason)
+{
+    if (!domain)
+        return;
+
+    WCHAR sourceTag[64];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns(%s)",
+                       EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns");
+    }
+    DNS_LogBlocked(sourceTag, domain, wType, reason ? reason : L"EncDns failed (no fallback)");
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsIntercepted(const WCHAR* domain, WORD wType,
+                                             ENCRYPTED_DNS_MODE protocolUsed,
+                                             LIST* pEntries)
+{
+    if (!domain)
+        return;
+
+    WCHAR sourceTag[64];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns(%s)",
+                       EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns");
+    }
+    DNS_LogIntercepted(sourceTag, domain, wType, pEntries, TRUE);
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsNoData(const WCHAR* domain, WORD wType,
+                                        ENCRYPTED_DNS_MODE protocolUsed,
+                                        const WCHAR* reason)
+{
+    if (!domain)
+        return;
+
+    WCHAR sourceTag[64];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns(%s)",
+                       EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(sourceTag, ARRAYSIZE(sourceTag), L"DnsQueryRaw EncDns");
+    }
+    DNS_LogInterceptedNoData(sourceTag, domain, wType, reason ? reason : L"NODATA");
+}
+
+//---------------------------------------------------------------------------
+// Debug logs for DnsQueryRaw EncDns execution path
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogDnsQueryRawEncDnsDisabled(void)
+{
+    if (!DNS_DebugFlag)
+        return;
+    SbieApi_MonitorPutMsg(MONITOR_DNS, L"DnsQueryRaw EncDns: Encrypted DNS not enabled");
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsReentrancySkipped(void)
+{
+    if (!DNS_DebugFlag)
+        return;
+    SbieApi_MonitorPutMsg(MONITOR_DNS, L"DnsQueryRaw EncDns: Re-entrancy detected, skipping");
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsMissingCallback(void)
+{
+    if (!DNS_DebugFlag)
+        return;
+    SbieApi_MonitorPutMsg(MONITOR_DNS, L"DnsQueryRaw EncDns: No callback provided, cannot intercept");
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsQueryPacketFailed(void)
+{
+    if (!DNS_DebugFlag)
+        return;
+    SbieApi_MonitorPutMsg(MONITOR_DNS, L"DnsQueryRaw EncDns: Failed to get query packet");
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsAttempt(const WCHAR* domain, WORD wType)
+{
+    if (!DNS_DebugFlag || !domain)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"DnsQueryRaw EncDns: Attempting query for %s (Type: %s)",
+        domain, DNS_GetTypeName(wType));
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsQueryResult(const WCHAR* domain, BOOLEAN doh_ok, ENCRYPTED_DNS_MODE protocolUsed)
+{
+    if (!DNS_DebugFlag || !domain)
+        return;
+
+    WCHAR msg[256];
+    if (doh_ok && protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(msg, ARRAYSIZE(msg),
+            L"DnsQueryRaw EncDns: EncryptedDns_Query returned TRUE for %s (used=%s)",
+            domain, EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        Sbie_snwprintf(msg, ARRAYSIZE(msg),
+            L"DnsQueryRaw EncDns: EncryptedDns_Query returned %s for %s",
+            doh_ok ? L"TRUE" : L"FALSE", domain);
+    }
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogDnsQueryRawEncDnsRawResponseUsed(const WCHAR* domain, WORD wType, int response_len)
+{
+    if (!DNS_DebugFlag || !domain)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"DnsQueryRaw EncDns: Using raw response for %s (Type: %s, len: %d)",
+        domain, DNS_GetTypeName(wType), response_len);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void DNS_LogEncDnsIpLiteralSynthesized(WORD qtype, const WCHAR* domain)
+{
+    if (!DNS_DebugFlag || !domain)
+        return;
+
+    if (qtype != DNS_TYPE_A && qtype != DNS_TYPE_AAAA)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[EncDns] IP address detected, synthesizing %s response: %s",
+        qtype == DNS_TYPE_A ? L"A" : L"AAAA", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
 _FX void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status)
@@ -904,6 +1292,69 @@ _FX void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* doma
     SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, msg);
 }
 
+_FX void DNS_LogQueryExPassthroughResult(const WCHAR* queryName, WORD queryType,
+                                         DWORD requestVersion, DNS_STATUS status,
+                                         PVOID asyncCtx, PDNS_QUERY_RESULT pQueryResults,
+                                         DNS_PASSTHROUGH_REASON passthroughReason)
+{
+    if (!DNS_TraceFlag || !queryName || !*queryName)
+        return;
+
+    WCHAR passPrefix[64];
+    wcscpy_s(passPrefix, ARRAYSIZE(passPrefix), L"DnsQueryEx Passthrough");
+
+    DNS_LogQueryExDebugStatus(status, asyncCtx, pQueryResults,
+        pQueryResults ? pQueryResults->pQueryRecords : NULL, requestVersion);
+
+    if (status == DNS_REQUEST_PENDING && asyncCtx) {
+        DNS_LogDnsQueryExStatus(passPrefix, queryName, queryType, status);
+    } else if (status == 0 && pQueryResults && pQueryResults->pQueryRecords) {
+        DNS_LogDnsRecordsWithReason(passPrefix, queryName,
+            queryType, (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords,
+            passthroughReason);
+    } else {
+        if (status != 0) {
+            DNS_LogDnsQueryExStatus(passPrefix, queryName, queryType, status);
+        } else {
+            DNS_LogSimple(passPrefix, queryName, queryType, L" - No records");
+        }
+    }
+}
+
+_FX void DNS_LogQueryExEncDnsSuccess(const WCHAR* queryName, WORD queryType,
+                                     ENCRYPTED_DNS_MODE protocolUsed,
+                                     PDNS_QUERY_RESULT pQueryResults)
+{
+    if (!DNS_TraceFlag || !queryName || !*queryName)
+        return;
+
+    WCHAR prefix[80];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s)", EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns");
+    }
+
+    DNS_LogDnsRecordsFromQueryResult(prefix, queryName,
+        queryType, 0, pQueryResults ? (PDNSAPI_DNS_RECORD)pQueryResults->pQueryRecords : NULL);
+}
+
+_FX void DNS_LogQueryExEncDnsFailure(const WCHAR* queryName, WORD queryType,
+                                     ENCRYPTED_DNS_MODE protocolUsed,
+                                     DNS_STATUS status)
+{
+    if (!DNS_TraceFlag || !queryName || !*queryName)
+        return;
+
+    WCHAR prefix[64];
+    if (protocolUsed != ENCRYPTED_DNS_MODE_AUTO) {
+        Sbie_snwprintf(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns(%s)", EncryptedDns_GetModeName(protocolUsed));
+    } else {
+        wcscpy_s(prefix, ARRAYSIZE(prefix), L"DnsQueryEx EncDns");
+    }
+    DNS_LogDnsQueryExStatus(prefix, queryName, queryType, status);
+}
+
 static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status)
 {
     switch (status) {
@@ -923,7 +1374,7 @@ static const WCHAR* DNS_GetStatusMessage(DNS_STATUS status)
 }
 
 //---------------------------------------------------------------------------
-// Raw socket logging
+// Raw socket DNS logging (used by socket_hooks.c)
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogRawSocketIntercepted(const WCHAR* protocol, const WCHAR* domain, WORD wType, 
@@ -1024,18 +1475,35 @@ _FX void DNS_LogRawSocketDebug(const WCHAR* protocol, const WCHAR* domain, WORD 
 }
 
 //---------------------------------------------------------------------------
-// WSALookupService logging
+// WSALookupService-specific logging
 //---------------------------------------------------------------------------
 
 _FX void WSA_FormatGuid(LPGUID lpGuid, WCHAR* buffer, SIZE_T bufferSize)
 {
-    if (!lpGuid || !buffer || bufferSize < 64)
+    if (!lpGuid || !buffer || bufferSize == 0)
         return;
-    
-    Sbie_snwprintf(buffer, bufferSize, L" (ClsId: %08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX)",
-        lpGuid->Data1, lpGuid->Data2, lpGuid->Data3,
-        lpGuid->Data4[0], lpGuid->Data4[1], lpGuid->Data4[2], lpGuid->Data4[3],
-        lpGuid->Data4[4], lpGuid->Data4[5], lpGuid->Data4[6], lpGuid->Data4[7]);
+
+    WCHAR plainGuid[37] = L"";
+    DNS_FormatGuidPlain(lpGuid, plainGuid, ARRAYSIZE(plainGuid));
+
+    if (!plainGuid[0]) {
+        buffer[0] = L'\0';
+        return;
+    }
+
+    // Long/decorated format used by existing WSA debug messages.
+    if (bufferSize >= 64) {
+        Sbie_snwprintf(buffer, bufferSize, L" (ClsId: %s)", plainGuid);
+        return;
+    }
+
+    // Fallback for tighter buffers: plain GUID without " (ClsId: ... )" wrapper.
+    if (bufferSize >= 37) {
+        Sbie_snwprintf(buffer, bufferSize, L"%s", plainGuid);
+        return;
+    }
+
+    buffer[0] = L'\0';
 }
 
 _FX BOOLEAN WSA_IsIPv6Query(LPGUID lpServiceClassId)
@@ -1385,6 +1853,45 @@ _FX void GAI_LogDebugEntryEx(const WCHAR* funcName, const WCHAR* domain, const W
     SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
 }
 
+_FX void GAI_LogDebugEncDnsPath(const WCHAR* funcName, const WCHAR* domain, int family)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[%s] Encrypted DNS path: domain=%s, family=%d",
+        funcName ? funcName : L"GetAddrInfo",
+        domain ? domain : L"(null)",
+        family);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void GAI_LogDebugNumericHostReject(const WCHAR* funcName, const WCHAR* domain)
+{
+    if (!DNS_DebugFlag)
+        return;
+
+    WCHAR msg[256];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[%s] AI_NUMERICHOST set for non-IP '%s' - returning error",
+        funcName ? funcName : L"GetAddrInfo",
+        domain ? domain : L"(null)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
+_FX void GAI_LogDebugResultDump(const void* pAddrInfoHead)
+{
+    if (!DNS_DebugFlag || !pAddrInfoHead)
+        return;
+
+    const ADDRINFOW* head = (const ADDRINFOW*)pAddrInfoHead;
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg),
+        L"[GetAddrInfo] Result dump: ai_flags=0x%08X, ai_family=%d, ai_socktype=%d, ai_protocol=%d, ai_canonname=%s",
+        head->ai_flags, head->ai_family, head->ai_socktype, head->ai_protocol,
+        head->ai_canonname ? head->ai_canonname : L"(NULL)");
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
 //---------------------------------------------------------------------------
 // Debug logging helpers
 //---------------------------------------------------------------------------
@@ -1462,6 +1969,20 @@ _FX void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void
     DNS_LogDebug(msg);
 }
 
+//---------------------------------------------------------------------------
+// Exclusion initialization logging (avoid dependency on internal struct)
+//---------------------------------------------------------------------------
+
+_FX void DNS_LogEncDnsAutoExcludedHostname(const WCHAR* domain)
+{
+    if (!DNS_TraceFlag || !domain)
+        return;
+
+    WCHAR msg[512];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"[EncDns] Auto-excluded encrypted DNS server hostname: %s", domain);
+    SbieApi_MonitorPutMsg(MONITOR_DNS, msg);
+}
+
 _FX void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value)
 {
     if (!value || !DNS_TraceFlag || !DNS_DebugFlag)
@@ -1490,7 +2011,7 @@ _FX void DNS_LogExclusionInitDefault(const WCHAR* label, const WCHAR* value)
 }
 
 //---------------------------------------------------------------------------
-// DnsQueryEx Debug Logging
+// DnsQueryEx debug logging helpers
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogQueryExInvalidVersion(DWORD version)
@@ -1527,7 +2048,7 @@ _FX void DNS_LogQueryExCorruptOptions(ULONG64 corruptOptions)
     if (!DNS_TraceFlag || !DNS_DebugFlag)
         return;
     WCHAR msg[512];
-    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: CORRUPT QueryOptions detected: 0x%I64X (looks like user-mode pointer, treating as 0)", corruptOptions);
+    Sbie_snwprintf(msg, 512, L"  DnsQueryEx: Suspicious QueryOptions pattern detected: 0x%I64X (applying safety sanitization)", corruptOptions);
     DNS_LogDebug(msg);
 }
 
@@ -1578,7 +2099,7 @@ _FX void DNS_LogQueryExDebugStatus(DNS_STATUS status, void* asyncCtx, void* pQue
 }
 
 //---------------------------------------------------------------------------
-// WSALookupService Debug Logging
+// WSALookupService debug logging
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogWSADebugResponse(const WCHAR* domain, DWORD nameSpace, BOOLEAN isIPv6, HANDLE handle,
@@ -1616,7 +2137,7 @@ _FX void DNS_LogWSADebugRequestEnd(HANDLE handle, BOOLEAN filtered)
 }
 
 //---------------------------------------------------------------------------
-// WSALookupService Passthrough Result Logging
+// WSALookupService passthrough result logging
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD queryType,
@@ -1707,8 +2228,102 @@ _FX void DNS_LogWSAPassthroughInvalidHostent(ADDRESS_FAMILY h_addrtype)
     DNS_LogDebug(msg);
 }
 
+_FX void DNS_LogWSAPassthroughOpenMessage(const WCHAR* message)
+{
+    if (!DNS_TraceFlag || !message)
+        return;
+
+    SbieApi_MonitorPutMsg(MONITOR_DNS | MONITOR_OPEN, message);
+}
+
+_FX void DNS_LogWSAPassthroughHostentBlob(const WCHAR* domain, DWORD nameSpace, WORD queryType,
+                                          const GUID* hostentClassId, LPBLOB lpBlob)
+{
+    if (!DNS_TraceFlag || !lpBlob || !(queryType == DNS_TYPE_A || queryType == DNS_TYPE_AAAA || queryType == 255))
+        return;
+
+    DNS_DEBUG_LOG(L"  HOSTENT: ns=%lu blob_size=%lu blob_ptr=%p",
+        (ULONG)nameSpace,
+        (ULONG)lpBlob->cbSize,
+        lpBlob->pBlobData);
+
+    if (!lpBlob->pBlobData || lpBlob->cbSize < sizeof(HOSTENT)) {
+        WCHAR guidBuf[37] = L"";
+        if (hostentClassId) {
+            DNS_FormatGuidPlain(hostentClassId, guidBuf, ARRAYSIZE(guidBuf));
+        }
+        DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (null or too small) guid=%s",
+            guidBuf[0] ? guidBuf : L"null");
+        return;
+    }
+
+    if (!hostentClassId) {
+        DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (no service class id)");
+        return;
+    }
+
+    static const GUID kSvcidInetHostaddrByName = SVCID_INET_HOSTADDRBYNAME;
+    static const GUID kSvcidInetHostaddrByInetString = SVCID_INET_HOSTADDRBYINETSTRING;
+
+    if (!IsEqualGUID(hostentClassId, &kSvcidInetHostaddrByName) &&
+        !IsEqualGUID(hostentClassId, &kSvcidInetHostaddrByInetString)) {
+        WCHAR guidBuf[37] = L"";
+        DNS_FormatGuidPlain(hostentClassId, guidBuf, ARRAYSIZE(guidBuf));
+        DNS_DEBUG_LOG(L"  HOSTENT: Skipping blob (non-hostent) Data1=0x%08lX GUID=%s",
+            hostentClassId->Data1, guidBuf);
+        return;
+    }
+
+    HOSTENT* hp = (HOSTENT*)lpBlob->pBlobData;
+    USHORT expected_af = (queryType == DNS_TYPE_AAAA) ? AF_INET6 : AF_INET;
+
+    DNS_LogWSAPassthroughHOSTENT(hp->h_addrtype, expected_af, (hp->h_addrtype == expected_af ? 1 : 0));
+
+    if (hp->h_addrtype != AF_INET6 && hp->h_addrtype != AF_INET) {
+        DNS_LogWSAPassthroughInvalidHostent(hp->h_addrtype);
+        return;
+    }
+
+    if (!hp->h_addr_list || (hp->h_addrtype != expected_af && queryType != 255))
+        return;
+
+    UINT_PTR addrListOffset = DNS_GetRelFromBlobPtr(hp->h_addr_list);
+    PCHAR* addrArray = (PCHAR*)DNS_GetBlobAbsPtr(hp, addrListOffset);
+
+    WCHAR msg[2048];
+    Sbie_snwprintf(msg, ARRAYSIZE(msg), L"WSALookupService Passthrough(SysDns) HOSTENT: %s",
+        domain ? domain : L"");
+
+    extern BOOLEAN DNS_MapIpv4ToIpv6;
+
+    for (PCHAR* Addr = addrArray; *Addr; Addr++) {
+        UINT_PTR ipOffset = DNS_GetRelFromBlobPtr(*Addr);
+        PCHAR ptr = (PCHAR)DNS_GetBlobAbsPtr(hp, ipOffset);
+
+        IP_ADDRESS ip;
+        memset(&ip, 0, sizeof(ip));
+        if (hp->h_addrtype == AF_INET6)
+            memcpy(ip.Data, ptr, 16);
+        else if (hp->h_addrtype == AF_INET)
+            ip.Data32[3] = *(DWORD*)ptr;
+
+        if (queryType == DNS_TYPE_AAAA && !DNS_MapIpv4ToIpv6) {
+            if (hp->h_addrtype == AF_INET) {
+                continue;
+            }
+            if (hp->h_addrtype == AF_INET6 && DNS_IsIPv4Mapped(&ip)) {
+                continue;
+            }
+        }
+
+        WSA_DumpIP(hp->h_addrtype, &ip, msg);
+    }
+
+    DNS_LogWSAPassthroughOpenMessage(msg);
+}
+
 //---------------------------------------------------------------------------
-// Configuration/initialization logging functions
+// Configuration/initialization logging (replaces direct SbieApi_MonitorPutMsg calls)
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogConfigNoMatchingFilter(const WCHAR* domain)
@@ -1795,7 +2410,7 @@ _FX void DNS_LogConfigFilterError(const WCHAR* domain)
 }
 
 //---------------------------------------------------------------------------
-// Internal debug logging functions
+// Internal debug logging
 //---------------------------------------------------------------------------
 
 _FX void DNS_LogDebugCleanupStaleHandle(ULONGLONG age)

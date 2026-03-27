@@ -23,6 +23,7 @@
 #include "dnsapi_defs.h"
 #include "dns_encrypted.h"
 #include "common/my_wsa.h"
+#include "wsa_defs.h"
 
 //---------------------------------------------------------------------------
 // DNS Logging Module
@@ -185,6 +186,20 @@ void DNS_LogDnsRecords(const WCHAR* prefix, const WCHAR* domain, WORD wType,
 void DNS_LogDnsRecordsWithReason(const WCHAR* prefix, const WCHAR* domain, WORD wType,
                                  PDNSAPI_DNS_RECORD pRecords, DNS_PASSTHROUGH_REASON reason);
 
+// DNS rebind trace helper
+void DNS_LogRebindFilteredIps(const WCHAR* domain, const WCHAR* filteredMsg);
+
+// GetAddrInfo trace helper
+void DNS_LogGetAddrInfoCanonnameOverride(const WCHAR* domain, const WCHAR* canonName);
+
+// WSA_FillResponseStructure debug helper
+void DNS_LogWSAFillResponseBufferTooSmall(DWORD haveSize, SIZE_T neededSize,
+                                          const WCHAR* domain, SIZE_T ipCount,
+                                          const GUID* serviceClassId);
+
+// EncDns debug helper
+void DNS_LogEncDnsInvalidHostname(const WCHAR* domain);
+
 //---------------------------------------------------------------------------
 // DnsQuery-specific logging
 //---------------------------------------------------------------------------
@@ -198,12 +213,74 @@ void DNS_LogDnsQueryResultWithReason(const WCHAR* sourceTag, const WCHAR* domain
                                      DNS_STATUS status, PDNSAPI_DNS_RECORD* ppQueryResults,
                                      DNS_PASSTHROUGH_REASON reason);
 
+// Log DnsQuery_W EncDns results with protocol-specific source tag
+void DNS_LogDnsQueryWEncDnsResultWithReason(const WCHAR* domain, WORD wType,
+                                            ENCRYPTED_DNS_MODE protocolUsed,
+                                            DNS_STATUS status,
+                                            PDNSAPI_DNS_RECORD pRecords,
+                                            DNS_PASSTHROUGH_REASON reason);
+
+// Debug logs for DnsQuery_W EncDns execution path
+void DNS_LogDnsQueryWEncDnsRawSummary(int rawResponseLen, BOOLEAN success, DNS_STATUS status,
+                                      BOOLEAN hasCname, const WCHAR* cnameTarget);
+void DNS_LogDnsQueryWEncDnsExtractResult(DNS_STATUS extractStatus, const void* pRecords);
+void DNS_LogDnsQueryWEncDnsExtractNullRecords(WORD wType);
+void DNS_LogDnsQueryWEncDnsExtractFailed(DNS_STATUS extractStatus);
+void DNS_LogDnsQueryWEncDnsCnameFallback(const WCHAR* cnameOwner, const WCHAR* cnameTarget);
+
+// Debug logs for generic DnsQuery_* EncDns extraction paths (A/UTF8/W)
+void DNS_LogDnsQueryEncDnsRawSummary(const WCHAR* apiName, int rawResponseLen, BOOLEAN success,
+                                     DNS_STATUS status, BOOLEAN hasCname, const WCHAR* cnameTarget);
+void DNS_LogDnsQueryEncDnsExtractResult(const WCHAR* apiName, DNS_STATUS extractStatus, const void* pRecords);
+void DNS_LogDnsQueryEncDnsExtractNullRecords(const WCHAR* apiName, WORD wType);
+void DNS_LogDnsQueryEncDnsExtractFailed(const WCHAR* apiName, DNS_STATUS extractStatus);
+void DNS_LogDnsQueryEncDnsCnameFallback(const WCHAR* apiName, const WCHAR* cnameOwner, const WCHAR* cnameTarget);
+
 // Log DnsQueryEx status (PENDING, error, no records)
 void DNS_LogDnsQueryExStatus(const WCHAR* prefix, const WCHAR* domain, WORD wType, DNS_STATUS status);
 
 // Log DNS_RECORD results with IP addresses (async callbacks)
 void DNS_LogDnsRecordsFromQueryResult(const WCHAR* prefix, const WCHAR* domain, WORD wType,
                                       DNS_STATUS status, PDNSAPI_DNS_RECORD pRecords);
+
+// Log DnsQueryEx passthrough outcome (sync/async, records/errors, with reason)
+void DNS_LogQueryExPassthroughResult(const WCHAR* queryName, WORD queryType,
+                                     DWORD requestVersion, DNS_STATUS status,
+                                     PVOID asyncCtx, PDNS_QUERY_RESULT pQueryResults,
+                                     DNS_PASSTHROUGH_REASON passthroughReason);
+
+// Log DnsQueryEx EncDns success path (builds source tag from protocol and logs records)
+void DNS_LogQueryExEncDnsSuccess(const WCHAR* queryName, WORD queryType,
+                                 ENCRYPTED_DNS_MODE protocolUsed,
+                                 PDNS_QUERY_RESULT pQueryResults);
+
+// Log DnsQueryEx EncDns error path (builds source tag from protocol and logs status)
+void DNS_LogQueryExEncDnsFailure(const WCHAR* queryName, WORD queryType,
+                                 ENCRYPTED_DNS_MODE protocolUsed,
+                                 DNS_STATUS status);
+
+// Log DnsQueryRaw EncDns blocked/intercepted/NODATA with protocol-specific source tag
+void DNS_LogDnsQueryRawEncDnsBlocked(const WCHAR* domain, WORD wType,
+                                     ENCRYPTED_DNS_MODE protocolUsed,
+                                     const WCHAR* reason);
+void DNS_LogDnsQueryRawEncDnsIntercepted(const WCHAR* domain, WORD wType,
+                                         ENCRYPTED_DNS_MODE protocolUsed,
+                                         LIST* pEntries);
+void DNS_LogDnsQueryRawEncDnsNoData(const WCHAR* domain, WORD wType,
+                                    ENCRYPTED_DNS_MODE protocolUsed,
+                                    const WCHAR* reason);
+
+// Debug logs for DnsQueryRaw EncDns execution path
+void DNS_LogDnsQueryRawEncDnsDisabled(void);
+void DNS_LogDnsQueryRawEncDnsReentrancySkipped(void);
+void DNS_LogDnsQueryRawEncDnsMissingCallback(void);
+void DNS_LogDnsQueryRawEncDnsQueryPacketFailed(void);
+void DNS_LogDnsQueryRawEncDnsAttempt(const WCHAR* domain, WORD wType);
+void DNS_LogDnsQueryRawEncDnsQueryResult(const WCHAR* domain, BOOLEAN doh_ok, ENCRYPTED_DNS_MODE protocolUsed);
+void DNS_LogDnsQueryRawEncDnsRawResponseUsed(const WCHAR* domain, WORD wType, int response_len);
+
+// Debug: Log EncDns IP-literal synthesis shortcut
+void DNS_LogEncDnsIpLiteralSynthesized(WORD qtype, const WCHAR* domain);
 
 //---------------------------------------------------------------------------
 // Raw socket DNS logging (used by socket_hooks.c)
@@ -275,6 +352,15 @@ void GAI_LogDebugEntry(const WCHAR* funcName, const WCHAR* domain, const WCHAR* 
 // pHints should point to an ADDRINFOW or compatible struct (first 4 int fields match ADDRINFOEXW).
 void GAI_LogDebugEntryEx(const WCHAR* funcName, const WCHAR* domain, const WCHAR* service, int family, const void* pHints);
 
+// Debug: Log when GetAddrInfo* routes to encrypted DNS path
+void GAI_LogDebugEncDnsPath(const WCHAR* funcName, const WCHAR* domain, int family);
+
+// Debug: Log AI_NUMERICHOST reject for non-IP input
+void GAI_LogDebugNumericHostReject(const WCHAR* funcName, const WCHAR* domain);
+
+// Debug: Dump synthesized GetAddrInfo result head fields
+void GAI_LogDebugResultDump(const void* pAddrInfoHead);
+
 //---------------------------------------------------------------------------
 // Debug logging helpers
 //---------------------------------------------------------------------------
@@ -297,6 +383,7 @@ void DNS_LogQueryExPointers(const WCHAR* funcName, void* pQueryRequest, void* pQ
 // Exclusion initialization logging (avoid dependency on internal struct)
 void DNS_LogExclusionInit(const WCHAR* image_name, const WCHAR* value);
 void DNS_LogExclusionInitDefault(const WCHAR* label, const WCHAR* value);
+void DNS_LogEncDnsAutoExcludedHostname(const WCHAR* domain);
 
 // Configuration/initialization logging (replaces direct SbieApi_MonitorPutMsg calls)
 void DNS_LogConfigNoMatchingFilter(const WCHAR* domain);
@@ -340,6 +427,10 @@ void DNS_LogWSAPassthroughResult(const WCHAR* domain, DWORD nameSpace, WORD quer
 void DNS_LogWSAPassthroughCSADDR(int index, ADDRESS_FAMILY got_af, ADDRESS_FAMILY expect_af, BOOLEAN match);
 void DNS_LogWSAPassthroughHOSTENT(ADDRESS_FAMILY h_addrtype, ADDRESS_FAMILY expect_af, BOOLEAN match);
 void DNS_LogWSAPassthroughInvalidHostent(ADDRESS_FAMILY h_addrtype);
+void DNS_LogWSAPassthroughOpenMessage(const WCHAR* message);
+
+void DNS_LogWSAPassthroughHostentBlob(const WCHAR* domain, DWORD nameSpace, WORD queryType,
+                                      const GUID* hostentClassId, LPBLOB lpBlob);
 
 #ifdef __cplusplus
 }

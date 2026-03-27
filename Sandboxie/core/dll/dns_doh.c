@@ -1746,7 +1746,7 @@ _FX BOOLEAN DoH_LoadConfig(void)
 
     EnterCriticalSection(&g_DohConfigLock);
 
-    // Read EncryptedDnsServer configuration only (SecureDnsServer no longer supported)
+    // Read EncryptedDnsServer configuration only for the current process
     // Iterate through all config lines
     for (ULONG index = 0; index < DOH_MAX_CONFIG_LINES; ++index) {
         NTSTATUS status = SbieApi_QueryConf(NULL, L"EncryptedDnsServer", index, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR));
