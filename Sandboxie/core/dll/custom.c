@@ -2030,6 +2030,8 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     ULONG        OutputLen,
     ULONG       *ResultLength)
 {
+    const ULONG kvpiHeaderLen = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
+
     // One-time config check.  InterlockedExchange provides a store barrier so
     // that 'enabled' is globally visible before 'inited' transitions to 1.
     static BOOL enabled = FALSE;
@@ -2078,6 +2080,9 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     if (!isDuid && !isIaid)
         return STATUS_BAD_INITIAL_PC;
 
+    if (!ResultLength)
+        return STATUS_INVALID_PARAMETER;
+
     Custom_Dhcpv6_EnsureInit();
 
     // KEY_VALUE_PARTIAL_INFORMATION header is 3 ULONGs (TitleIndex, Type, DataLength).
@@ -2086,7 +2091,15 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     if (isDuid) {
         // DUID-LLT: type(2) + hw-type(2) + time(4) + MAC(6) = 14 bytes.
         const ULONG duidLen = 14;
-        *ResultLength = sizeof(ULONG) * 3 + duidLen;
+        *ResultLength = kvpiHeaderLen + duidLen;
+
+        if (OutputLen < kvpiHeaderLen)
+            return STATUS_BUFFER_TOO_SMALL;
+
+        kvpi->TitleIndex = 0;
+        kvpi->Type       = REG_BINARY;
+        kvpi->DataLength = duidLen;
+
         if (OutputLen < *ResultLength)
             return STATUS_BUFFER_OVERFLOW;
 
@@ -2107,16 +2120,21 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
 
             Custom_DuidMacResolved = usedIndexedMac;
         }
-        kvpi->TitleIndex = 0;
-        kvpi->Type       = REG_BINARY;
-        kvpi->DataLength = duidLen;
         memcpy(kvpi->Data, Custom_FakeDuid, duidLen);
         LeaveCriticalSection(&Custom_Dhcpv6CritSec);
         return STATUS_SUCCESS;
 
     } else { // isIaid
 
-        *ResultLength = sizeof(ULONG) * 4; // header(12) + DWORD(4)
+        *ResultLength = kvpiHeaderLen + sizeof(DWORD);
+
+        if (OutputLen < kvpiHeaderLen)
+            return STATUS_BUFFER_TOO_SMALL;
+
+        kvpi->TitleIndex = 0;
+        kvpi->Type       = REG_DWORD;
+        kvpi->DataLength = sizeof(DWORD);
+
         if (OutputLen < *ResultLength)
             return STATUS_BUFFER_OVERFLOW;
 
@@ -2147,9 +2165,6 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
         }
         LeaveCriticalSection(&Custom_Dhcpv6CritSec);
 
-        kvpi->TitleIndex = 0;
-        kvpi->Type       = REG_DWORD;
-        kvpi->DataLength = sizeof(DWORD);
         *(DWORD *)kvpi->Data = iaid;
         return STATUS_SUCCESS;
     }
