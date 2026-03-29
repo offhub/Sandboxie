@@ -1416,6 +1416,7 @@ static HASH_MAP Custom_NicMac;
 static CRITICAL_SECTION Custom_NicMac_CritSec;
 static HASH_MAP Custom_NicIndexByOriginal; // original MAC key -> Sandboxie adapter index (DWORD)
 static HASH_MAP Custom_NicMacIsFixed;      // original MAC key -> BOOL (TRUE = from NetworkAdapterMAC config, FALSE = random)
+static volatile LONG Custom_NicMapsReady = 0; // 1 once Custom_NicMac_CritSec and all NIC maps are initialized
 
 // DHCPv6 DUID + IAID spoofing state (protected by Custom_Dhcpv6CritSec)
 static CRITICAL_SECTION Custom_Dhcpv6CritSec;
@@ -1424,7 +1425,7 @@ static volatile LONG     Custom_NicMapWarmup = 0; // 0:not started, 1:in progres
 static volatile LONG     Custom_NicMapWarmupTid = 0; // TID of thread driving warmup, used to detect re-entrant calls
 static BYTE              Custom_FakeDuid[14];  // DUID-LLT: 2+2+4+6
 static BOOL              Custom_FakeDuidReady;
-static BOOL              Custom_DuidMacResolved; // TRUE once DUID[8..13] resolved from NetworkAdapterMAC/global/random
+static volatile BOOL     Custom_DuidMacResolved; // TRUE once DUID[8..13] resolved from NetworkAdapterMAC/global/random
 static HASH_MAP          Custom_FakeIaid;      // per-interface GUID hash -> DWORD
 
 _FX BOOLEAN Nsi_Init(HMODULE module)
@@ -1435,6 +1436,11 @@ _FX BOOLEAN Nsi_Init(HMODULE module)
 		map_init(&Custom_NicMac, Dll_Pool);
         map_init(&Custom_NicIndexByOriginal, Dll_Pool);
         map_init(&Custom_NicMacIsFixed, Dll_Pool);
+        // Signal after all maps and the critical section are fully ready.
+        // Custom_SelectDuidMacFromOriginal and Custom_GetFakeDhcpv6 check this
+        // before acquiring Custom_NicMac_CritSec to avoid using an uninitialized
+        // CRITICAL_SECTION when called before nsi.dll has been loaded.
+        InterlockedExchange(&Custom_NicMapsReady, 1);
 
         P_NsiAllocateAndGetTable NsiAllocateAndGetTable = (P_NsiAllocateAndGetTable)
             Ldr_GetProcAddrNew(L"nsi.dll", L"NsiAllocateAndGetTable", "NsiAllocateAndGetTable");
@@ -1850,6 +1856,15 @@ static BOOL Custom_SelectDuidMacFromOriginal(
     if (!originalDuid || originalDuidLen < 14)
         return FALSE;
 
+    // Guard against calling into an uninitialized Custom_NicMac_CritSec.
+    // Nsi_Init sets Custom_NicMapsReady=1 only after all maps and the
+    // critical section are fully initialized.  If nsi.dll has not been
+    // loaded yet (e.g. early startup DUID registry query before iphlpapi
+    // is in memory), skip the indexed-MAC lookup and return FALSE so the
+    // caller can still fall back to the global NetworkAdapterMAC setting.
+    if (InterlockedCompareExchange(&Custom_NicMapsReady, 0, 0) == 0)
+        return FALSE;
+
     BYTE origDuidMac[8] = { 0 };
     memcpy(origDuidMac, originalDuid + 8, 6);
 
@@ -2052,7 +2067,11 @@ _FX void Custom_GetFakeDhcpv6(
             // Extract the original (pre-spoof) MAC from the adapter's reported DUID
             // and use it to look up the per-adapter isFixed flag in the NSI map.
             BOOL isFixedMac = FALSE;
-            if (originalDuid && originalDuidLen >= 14) {
+            // Only look up the isFixed flag when the NIC maps are initialized.
+            // Custom_GetFakeDhcpv6 is called from IpHlp_GetAdaptersAddresses which
+            // requires nsi.dll (so Nsi_Init will have run), but guard defensively.
+            if (originalDuid && originalDuidLen >= 14 &&
+                InterlockedCompareExchange(&Custom_NicMapsReady, 0, 0) != 0) {
                 BYTE origDuidMac[8] = { 0 };
                 memcpy(origDuidMac, originalDuid + 8, 6);
                 UINT_PTR origKey = Custom_MakeMacKey(origDuidMac, 6);
@@ -2157,7 +2176,10 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     } else {
         // Another thread is initializing (inited==1) or already done (inited==2).
         // Spin with an acquire read until initialization is complete.
-        while (InterlockedCompareExchange(&inited, 0, 0) < 2)
+        // Cap at 10000 iterations (same as Custom_Dhcpv6_EnsureInit) to avoid
+        // an infinite spin if the init thread stalls before reaching inited=2.
+        ULONG spins = 0;
+        while (InterlockedCompareExchange(&inited, 0, 0) < 2 && ++spins < 10000)
             Sleep(0);
     }
     if (!enabled)
