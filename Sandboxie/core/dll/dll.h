@@ -799,6 +799,26 @@ BOOLEAN NsiRpc_Init(HMODULE);
 
 BOOLEAN Nsi_Init(HMODULE);
 
+NTSTATUS Custom_FakeDhcpv6RegValue(
+    const WCHAR *TruePath,
+    const WCHAR *ValueName,
+    ULONG        ValueNameLen,
+    const BYTE  *OriginalDuid,
+    ULONG        OriginalDuidLen,
+    void        *OutputBuf,
+    ULONG        OutputLen,
+    ULONG       *ResultLength);
+
+void Custom_GetFakeDhcpv6(
+    ULONG ifIndex,
+    const BYTE *spoofedMac,
+    ULONG macLen,
+    const BYTE *originalDuid,
+    ULONG originalDuidLen,
+    const char *adapterGuid,
+    BYTE *duid14,
+    ULONG *iaid);
+
 BOOLEAN Ntmarta_Init(HMODULE);
 
 BOOLEAN Acscmonitor_Init(HMODULE);

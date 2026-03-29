@@ -1414,13 +1414,27 @@ extern POOL* Dll_Pool;
 
 static HASH_MAP Custom_NicMac;
 static CRITICAL_SECTION Custom_NicMac_CritSec;
+static HASH_MAP Custom_NicIndexByOriginal; // original MAC key -> Sandboxie adapter index (DWORD)
+static HASH_MAP Custom_NicMacIsFixed;      // original MAC key -> BOOL (TRUE = from NetworkAdapterMAC config, FALSE = random)
+
+// DHCPv6 DUID + IAID spoofing state (protected by Custom_Dhcpv6CritSec)
+static CRITICAL_SECTION Custom_Dhcpv6CritSec;
+static volatile LONG     Custom_Dhcpv6Inited = 0;
+static volatile LONG     Custom_NicMapWarmup = 0; // 0:not started, 1:in progress, 2:done
+static volatile LONG     Custom_NicMapWarmupTid = 0; // TID of thread driving warmup, used to detect re-entrant calls
+static BYTE              Custom_FakeDuid[14];  // DUID-LLT: 2+2+4+6
+static BOOL              Custom_FakeDuidReady;
+static BOOL              Custom_DuidMacResolved; // TRUE once DUID[8..13] resolved from NetworkAdapterMAC/global/random
+static HASH_MAP          Custom_FakeIaid;      // per-interface GUID hash -> DWORD
 
 _FX BOOLEAN Nsi_Init(HMODULE module)
 {
-    if (SbieApi_QueryConfBool(NULL, L"HideNetworkAdapterMAC", FALSE)) {
+    if (Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE)) {
 
         InitializeCriticalSection(&Custom_NicMac_CritSec);
 		map_init(&Custom_NicMac, Dll_Pool);
+        map_init(&Custom_NicIndexByOriginal, Dll_Pool);
+        map_init(&Custom_NicMacIsFixed, Dll_Pool);
 
         P_NsiAllocateAndGetTable NsiAllocateAndGetTable = (P_NsiAllocateAndGetTable)
             Ldr_GetProcAddrNew(L"nsi.dll", L"NsiAllocateAndGetTable", "NsiAllocateAndGetTable");
@@ -1660,6 +1674,628 @@ BOOL hex_string_to_uint8_array(const wchar_t* str, unsigned char* output_array, 
     return TRUE;
 }
 
+
+//---------------------------------------------------------------------------
+// DHCPv6 DUID / IAID Spoofing
+//
+// HideNetworkAdapterMAC=y activates stable per-sandbox DUID-LLT (14 bytes)
+// and deterministic per-interface IAID spoofing.
+//
+// Resolution priority for the MAC bytes embedded in the DUID (bytes 8..13):
+//   1. Indexed  NetworkAdapterMAC (NIC-index config group)  - per-adapter
+//   2. Global   NetworkAdapterMAC (image-name config group) - provisional
+//   3. Random   fallback (on first use)
+//
+// IAID computation:
+//   - Configured MAC (NetworkAdapterMAC is set): FNV-1a(MAC)
+//     -> same IAID for any sandbox with the same configured MAC.
+//   - Random MAC (no NetworkAdapterMAC): FNV-1a(BoxName + MAC)
+//     -> stable per sandbox, but different from any other sandbox with
+//       the same random MAC bytes.
+//
+// Lock ordering: Custom_Dhcpv6CritSec -> Custom_NicMac_CritSec (map read only;
+//   Custom_NicMac_CritSec is released before any blocking SbieDll IOCTL)
+//---------------------------------------------------------------------------
+
+// Forward declaration, defined after Custom_EnsureFakeDuidLocked.
+static void Custom_ApplySelectedDuidMacLocked(const BYTE *selectedMac);
+
+
+//---------------------------------------------------------------------------
+// Custom_Dhcpv6_EnsureInit
+//---------------------------------------------------------------------------
+
+static void Custom_Dhcpv6_EnsureInit(void)
+{
+    if (InterlockedCompareExchange(&Custom_Dhcpv6Inited, 1, 0) == 0) {
+        InitializeCriticalSection(&Custom_Dhcpv6CritSec);
+        map_init(&Custom_FakeIaid, Dll_Pool);
+        Custom_FakeDuidReady = FALSE;
+        Custom_DuidMacResolved = FALSE;
+        InterlockedExchange(&Custom_Dhcpv6Inited, 2);
+    } else {
+        ULONG spins = 0;
+        // Use an acquire CAS read to ensure writes from the init thread are
+        // visible before we proceed. A plain volatile read lacks the memory
+        // barrier needed for correct ordering on ARM64.
+        while (InterlockedCompareExchange(&Custom_Dhcpv6Inited, 0, 0) < 2 && ++spins < 10000)
+            Sleep(0);
+    }
+}
+
+//---------------------------------------------------------------------------
+// Custom_EnsureFakeDuidLocked
+//---------------------------------------------------------------------------
+
+// Initialise Custom_FakeDuid with a random DUID-LLT if not already done.
+// If a global NetworkAdapterMAC is configured, overwrite the random link-layer
+// bytes immediately as a provisional value (indexed source-interface matching
+// can still override it later via Custom_FakeDhcpv6RegValue or
+// Custom_GetFakeDhcpv6).  Must be called under Custom_Dhcpv6CritSec.
+static void Custom_EnsureFakeDuidLocked(void)
+{
+    if (!Custom_FakeDuidReady) {
+        DWORD r1, r2;
+        Custom_FakeDuid[0] = 0x00; Custom_FakeDuid[1] = 0x01; // DUID-LLT
+        Custom_FakeDuid[2] = 0x00; Custom_FakeDuid[3] = 0x01; // hw-type Ethernet
+        r1 = Dll_rand();
+        Custom_FakeDuid[4]  = (BYTE)(r1 >> 24);
+        Custom_FakeDuid[5]  = (BYTE)(r1 >> 16);
+        Custom_FakeDuid[6]  = (BYTE)(r1 >>  8);
+        Custom_FakeDuid[7]  = (BYTE)(r1);
+        r1 = Dll_rand(); r2 = Dll_rand();
+        Custom_FakeDuid[8]  = (BYTE)(r1 >> 24);
+        Custom_FakeDuid[9]  = (BYTE)(r1 >> 16);
+        Custom_FakeDuid[10] = (BYTE)(r1 >>  8);
+        Custom_FakeDuid[11] = (BYTE)(r1);
+        Custom_FakeDuid[12] = (BYTE)(r2 >> 24);
+        Custom_FakeDuid[13] = (BYTE)(r2 >> 16);
+
+        // Apply global NetworkAdapterMAC immediately as a provisional value so
+        // reg-query callers (e.g. reg.exe) see a stable DUID without waiting for
+        // adapter enumeration.  Indexed NIC matching can still override this later.
+        {
+            WCHAR Value[30] = { 0 };
+            if (SbieDll_GetSettingsForName(NULL, Dll_ImageName, L"NetworkAdapterMAC", Value, sizeof(Value), L"")) {
+                BYTE selectedMac[8] = { 0 };
+                size_t outLen = 8;
+                if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE) && outLen >= 6) {
+                    Custom_ApplySelectedDuidMacLocked(selectedMac);
+                    Custom_DuidMacResolved = FALSE; // provisional: indexed match may still override
+                }
+            }
+        }
+
+        Custom_FakeDuidReady = TRUE;
+    }
+}
+
+//---------------------------------------------------------------------------
+// Custom_MakeMacKey
+//---------------------------------------------------------------------------
+
+// Build a pointer-sized hash-map key from up to 8 raw MAC address bytes.
+// On 32-bit builds the two 32-bit halves are XOR-folded into one UINT_PTR.
+static UINT_PTR Custom_MakeMacKey(const BYTE *mac, ULONG macLen)
+{
+    BYTE tmp[8] = { 0 };
+    ULONG copyLen = (macLen < 8) ? macLen : 8;
+    if (copyLen)
+        memcpy(tmp, mac, copyLen);
+
+    UINT_PTR key = *(UINT_PTR*)&tmp[0];
+#ifndef _WIN64
+    key ^= *(UINT_PTR*)&tmp[4];
+#endif
+    return key;
+}
+
+
+//---------------------------------------------------------------------------
+// Custom_ApplySelectedDuidMacLocked
+//---------------------------------------------------------------------------
+
+// Write selectedMac[0..5] into Custom_FakeDuid[8..13] and compute a stable
+// pseudo-time field (bytes[4..7]) using an FNV-1a hash of the box name and
+// the MAC.  Must be called under Custom_Dhcpv6CritSec.
+static void Custom_ApplySelectedDuidMacLocked(const BYTE *selectedMac)
+{
+    DWORD h = 2166136261u; // FNV-1a offset basis
+    const WCHAR *p = Dll_BoxName ? Dll_BoxName : L"";
+    while (*p) {
+        h ^= (DWORD)(*p++);
+        h *= 16777619u;
+    }
+    for (int i = 0; i < 6; ++i) {
+        h ^= selectedMac[i];
+        h *= 16777619u;
+    }
+
+    Custom_FakeDuid[4] = (BYTE)(h >> 24);
+    Custom_FakeDuid[5] = (BYTE)(h >> 16);
+    Custom_FakeDuid[6] = (BYTE)(h >> 8);
+    Custom_FakeDuid[7] = (BYTE)(h);
+    memcpy(Custom_FakeDuid + 8, selectedMac, 6);
+}
+
+
+//---------------------------------------------------------------------------
+// Custom_SelectDuidMacFromOriginal
+//---------------------------------------------------------------------------
+
+// Determine which spoofed MAC bytes should be embedded in the system DUID,
+// given the original DUID reported by the OS for a specific adapter.
+//
+//   1. Extract original link-layer bytes from originalDuid[8..13].
+//   2. Look up the Sandboxie NIC index in Custom_NicIndexByOriginal.
+//   3. Query NetworkAdapterMAC for that NIC-index config group (indexed).
+//   4. Fall back to the global NetworkAdapterMAC image-name setting.
+//
+// Returns TRUE when *selectedMac was filled.  *usedIndexedMac is TRUE only
+// when step 3 succeeded; the caller uses this to decide whether to finalise
+// Custom_DuidMacResolved.
+//
+// Must be called while Custom_Dhcpv6CritSec is held.
+// Briefly acquires Custom_NicMac_CritSec (map read only; released before
+// the SbieDll config IOCTL to keep the lock-hold time minimal).
+static BOOL Custom_SelectDuidMacFromOriginal(
+    const BYTE *originalDuid,
+    ULONG originalDuidLen,
+    BYTE *selectedMac,
+    BOOL *usedIndexedMac)
+{
+    BOOL haveSelectedMac = FALSE;
+    *usedIndexedMac = FALSE;
+
+    if (!originalDuid || originalDuidLen < 14)
+        return FALSE;
+
+    BYTE origDuidMac[8] = { 0 };
+    memcpy(origDuidMac, originalDuid + 8, 6);
+
+    // Read nicIndex under the lock, then release before the blocking IOCTL in
+    // SbieDll_GetSettingsForName. Holding Custom_NicMac_CritSec during a kernel
+    // IOCTL would block all concurrent GetAdaptersAddresses callers.
+    BOOL haveNicIndex = FALSE;
+    DWORD nicIndex = 0;
+
+    EnterCriticalSection(&Custom_NicMac_CritSec);
+    UINT_PTR originalKey = Custom_MakeMacKey(origDuidMac, 6);
+    DWORD *pNicIndex = (DWORD*)map_get(&Custom_NicIndexByOriginal, (void*)originalKey);
+    if (pNicIndex) {
+        nicIndex = *pNicIndex;
+        haveNicIndex = TRUE;
+    }
+    LeaveCriticalSection(&Custom_NicMac_CritSec);
+
+    if (haveNicIndex) {
+        WCHAR NicIndex[30] = { 0 };
+        WCHAR Value[30] = { 0 };
+        Sbie_snwprintf(NicIndex, 30, L"%d", nicIndex);
+        if (SbieDll_GetSettingsForName(NULL, NicIndex, L"NetworkAdapterMAC", Value, sizeof(Value), L"")) {
+            size_t outLen = 8;
+            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE) && outLen >= 6) {
+                haveSelectedMac = TRUE;
+                *usedIndexedMac = TRUE;
+            }
+        }
+    }
+
+    if (!haveSelectedMac) {
+        WCHAR Value[30] = { 0 };
+        if (SbieDll_GetSettingsForName(NULL, Dll_ImageName, L"NetworkAdapterMAC", Value, sizeof(Value), L"")) {
+            size_t outLen = 8;
+            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE) && outLen >= 6)
+                haveSelectedMac = TRUE;
+        }
+    }
+
+    return haveSelectedMac;
+}
+
+
+//---------------------------------------------------------------------------
+// Custom_WarmupNicMapsForDuid
+//---------------------------------------------------------------------------
+
+// Ensure Custom_NicIndexByOriginal is populated before the first DUID
+// registry query fires.  Processes that never call GetAdaptersAddresses
+// themselves (e.g. reg.exe) would otherwise have an empty NIC index map,
+// making indexed NetworkAdapterMAC settings unmatchable.
+//
+// We resolve GetAdaptersAddresses through GetProcAddress at call time so
+// that Sandboxie's own IAT hook on it fires, which drives the Nsi hook
+// (Nsi_NsiAllocateAndGetTable) as a side-effect and populates the maps.
+//
+// Custom_NicMapWarmup state: 0 = not started, 1 = in progress, 2 = done.
+static void Custom_WarmupNicMapsForDuid(void)
+{
+    if (InterlockedCompareExchange(&Custom_NicMapWarmup, 1, 0) == 0) {
+        // Record this thread's ID before calling GetAdaptersAddresses.
+        // If GetAdaptersAddresses internally reads Dhcpv6DUID from the
+        // registry (triggering Custom_FakeDhcpv6RegValue again on the
+        // same thread), the re-entrant call detects the TID match and
+        // returns immediately instead of spinning on Custom_NicMapWarmup.
+        InterlockedExchange(&Custom_NicMapWarmupTid, (LONG)GetCurrentThreadId());
+        HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
+
+        if (iphlp) {
+            typedef ULONG (WINAPI *P_GetAdaptersAddresses)(
+                ULONG Family,
+                ULONG Flags,
+                PVOID Reserved,
+                PVOID AdapterAddresses,
+                PULONG SizePointer);
+
+            P_GetAdaptersAddresses pGetAdaptersAddresses =
+                (P_GetAdaptersAddresses)GetProcAddress(iphlp, "GetAdaptersAddresses");
+
+            if (pGetAdaptersAddresses) {
+                ULONG size = 16 * 1024;
+                void *buf = NULL;
+                int retries = 3;
+                ULONG rc;
+                // Retry on ERROR_BUFFER_OVERFLOW in case adapters are
+                // added between the size query and the data fetch.
+                do {
+                    if (buf) Dll_Free(buf);
+                    buf = Dll_Alloc(size);
+                    if (!buf) break;
+                    rc = pGetAdaptersAddresses(0 /* AF_UNSPEC */, 0, NULL, buf, &size);
+                } while (rc == ERROR_BUFFER_OVERFLOW && --retries > 0);
+
+                if (buf)
+                    Dll_Free(buf);
+            }
+        }
+
+        InterlockedExchange(&Custom_NicMapWarmup, 2);
+    } else {
+        // Re-entrant call on the warmup thread: GetAdaptersAddresses may
+        // internally read Dhcpv6DUID via the registry key hook, which calls
+        // Custom_FakeDhcpv6RegValue again and would spin on warmup state=1.
+        // Return immediately so the outer warmup call can finish.
+        if ((DWORD)InterlockedCompareExchange(&Custom_NicMapWarmupTid, 0, 0) == GetCurrentThreadId())
+            return;
+        ULONG spins = 0;
+        // Use an acquire CAS read for correct memory ordering on ARM64.
+        while (InterlockedCompareExchange(&Custom_NicMapWarmup, 0, 0) == 1 && ++spins < 10000)
+            Sleep(0);
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// Custom_GetFakeDhcpv6
+//---------------------------------------------------------------------------
+
+// Called from IpHlp_GetAdaptersAddresses (iphlp.c) for each adapter.
+//
+//   spoofedMac:   already-spoofed physical address bytes for this interface.
+//   originalDuid: real DUID reported by the OS, used to identify the source
+//                 adapter so that indexed NetworkAdapterMAC settings match.
+//   adapterGuid:  ANSI adapter GUID string "{...}" from GetAdaptersAddresses;
+//                 used as the shared IAID map key (same hash as the registry
+//                 path) so GetAdaptersAddresses and Dhcpv6IAID registry reads
+//                 always return the same value.
+//
+// Writes a stable 14-byte DUID-LLT into duid14[] and a deterministic IAID
+// into *iaid.  DUID is system-wide (same for every adapter); IAID is derived
+// from the spoofed MAC via FNV-1a (constant for a given MAC, no ifIndex
+// dependency) or random-per-process when no MAC is available.
+_FX void Custom_GetFakeDhcpv6(
+    ULONG ifIndex,
+    const BYTE *spoofedMac,
+    ULONG macLen,
+    const BYTE *originalDuid,
+    ULONG originalDuidLen,
+    const char *adapterGuid,
+    BYTE *duid14,
+    ULONG *iaid)
+{
+    Custom_Dhcpv6_EnsureInit();
+
+    EnterCriticalSection(&Custom_Dhcpv6CritSec);
+
+    // Ensure base DUID exists (random time field + random fallback link-layer bytes).
+    Custom_EnsureFakeDuidLocked();
+
+    // Resolve DUID MAC (bytes 8..13) once using requested policy:
+    // 1) Find source interface whose original MAC matches original DUID tail.
+    // 2) If that interface has indexed NetworkAdapterMAC=<idx>,<mac>, use it.
+    // 3) Else if global NetworkAdapterMAC=<mac> exists, use it.
+    // 4) Else keep randomized bytes.
+    if (!Custom_DuidMacResolved && originalDuid && originalDuidLen >= 14) {
+        BYTE selectedMac[8] = { 0 };
+        BOOL usedIndexedMac = FALSE;
+
+        if (Custom_SelectDuidMacFromOriginal(originalDuid, originalDuidLen, selectedMac, &usedIndexedMac))
+            Custom_ApplySelectedDuidMacLocked(selectedMac);
+
+        // Finalize only after successful indexed match; global fallback stays
+        // provisional so it can still be replaced once index mapping is known.
+        Custom_DuidMacResolved = usedIndexedMac;
+    }
+
+    memcpy(duid14, Custom_FakeDuid, 14);
+
+    // IAID derivation rules:
+    //   1. spoofedMac available from NetworkAdapterMAC config (isFixed):
+    //      FNV-1a over all 6 MAC bytes, high bit clear.
+    //      Result is constant for a given configured MAC regardless of sandbox or machine.
+    //   2. spoofedMac available but randomly generated (!isFixed):
+    //      FNV-1a seeded with box name first, then over all 6 MAC bytes.
+    //      This ensures two sandboxes that happen to receive the same random MAC
+    //      still get distinct IAIDs, while remaining stable within the same sandbox.
+    //   3. No MAC:               stable random per-process, keyed by GUID/ifIndex.
+    //
+    // Whether the MAC was from config is determined by looking up the original MAC
+    // (extracted from originalDuid[8..13]) in the Custom_NicMacIsFixed map, which
+    // is populated by the NSI hook (Nsi_NsiAllocateAndGetTable) when it assigns a
+    // spoofed address.  Unknown adapters (not seen by the NSI hook) default to
+    // !isFixed so they also get the box-name salt for additional uniqueness.
+    //
+    // Lock ordering: Custom_Dhcpv6CritSec -> Custom_NicMac_CritSec (map read only;
+    //   Custom_NicMac_CritSec is released before any blocking SbieDll IOCTL)
+    //
+    // The result is stored in Custom_FakeIaid keyed by adapter GUID hash
+    // (same algorithm as Custom_FakeDhcpv6RegValue) so that registry readers
+    // always see the same value as GetAdaptersAddresses callers.
+    // If a registry query raced first and inserted a random entry, overwrite it
+    // with the deterministic MAC-derived value so the registry path self-corrects.
+    {
+        DWORD fakeIaid;
+        BOOLEAN fromMac = FALSE;
+        if (spoofedMac != NULL && macLen >= 6) {
+            // Determine whether this adapter's MAC was assigned from a fixed
+            // NetworkAdapterMAC config entry or was randomly generated.
+            // Extract the original (pre-spoof) MAC from the adapter's reported DUID
+            // and use it to look up the per-adapter isFixed flag in the NSI map.
+            BOOL isFixedMac = FALSE;
+            if (originalDuid && originalDuidLen >= 14) {
+                BYTE origDuidMac[8] = { 0 };
+                memcpy(origDuidMac, originalDuid + 8, 6);
+                UINT_PTR origKey = Custom_MakeMacKey(origDuidMac, 6);
+                EnterCriticalSection(&Custom_NicMac_CritSec);
+                BOOL *pFixed = (BOOL *)map_get(&Custom_NicMacIsFixed, (void *)origKey);
+                if (pFixed) isFixedMac = *pFixed;
+                LeaveCriticalSection(&Custom_NicMac_CritSec);
+            }
+
+            // FNV-1a IAID derivation.
+            // For config MACs: hash MAC only, deterministic across all instances.
+            // For random MACs: seed with box name first so two sandboxes sharing the
+            // same random MAC bytes still produce different IAIDs.
+            DWORD h = 2166136261u; // FNV-1a offset basis
+            if (!isFixedMac) {
+                const WCHAR *bp = Dll_BoxName ? Dll_BoxName : L"";
+                while (*bp) {
+                    h ^= (DWORD)(*bp++);
+                    h *= 16777619u;
+                }
+            }
+            for (int i = 0; i < 6; i++) {
+                h ^= (DWORD)spoofedMac[i];
+                h *= 16777619u;
+            }
+            fakeIaid = h & 0x7FFFFFFF;
+            fromMac = TRUE;
+        } else {
+            fakeIaid = Dll_rand() & 0x7FFFFFFF;
+        }
+
+        // Key by adapter GUID hash (same algorithm as Custom_FakeDhcpv6RegValue).
+        UINT_PTR key;
+        if (adapterGuid && *adapterGuid) {
+            key = 5381;
+            const char *pg = adapterGuid;
+            while (*pg) {
+                WCHAR c = (WCHAR)(unsigned char)(*pg);
+                if (c >= L'a' && c <= L'z') c -= (L'a' - L'A');
+                key = ((key << 5) + key) ^ (UINT_PTR)c;
+                pg++;
+            }
+        } else {
+            key = (UINT_PTR)ifIndex;
+        }
+
+        void *pExisting = map_get(&Custom_FakeIaid, (void *)key);
+        if (pExisting && !fromMac) {
+            fakeIaid = *(DWORD *)pExisting; // random fallback: keep pre-existing entry
+        } else {
+            // MAC-derived: always write, deterministic value wins over any earlier random.
+            // Random path: write if not yet present.
+            if (!pExisting)
+                map_insert(&Custom_FakeIaid, (void *)key, &fakeIaid, sizeof(DWORD));
+            else if (fromMac)
+                *(DWORD *)pExisting = fakeIaid; // update pre-existing random with deterministic
+        }
+        *iaid = fakeIaid;
+    }
+
+    LeaveCriticalSection(&Custom_Dhcpv6CritSec);
+}
+
+
+//---------------------------------------------------------------------------
+// Custom_FakeDhcpv6RegValue
+//---------------------------------------------------------------------------
+
+// Called from Key_NtQueryValueKey (key.c) for KeyValuePartialInformation reads.
+//
+// Intercepts Dhcpv6DUID and Dhcpv6IAID queries under the Tcpip6 registry key
+// and returns spoofed values.  Triggers a one-time NIC-map warmup when
+// resolving DUID so that indexed NetworkAdapterMAC settings work even in
+// processes that never call GetAdaptersAddresses (e.g. reg.exe).
+//
+// Returns:
+//   STATUS_SUCCESS          - fake value written into OutputBuf
+//   STATUS_BUFFER_OVERFLOW  - OutputBuf too small; ResultLength is set
+//   STATUS_BAD_INITIAL_PC   - not our key/value; fall through to normal logic
+_FX NTSTATUS Custom_FakeDhcpv6RegValue(
+    const WCHAR *TruePath,
+    const WCHAR *ValueName,
+    ULONG        ValueNameLen,
+    const BYTE  *OriginalDuid,
+    ULONG        OriginalDuidLen,
+    void        *OutputBuf,
+    ULONG        OutputLen,
+    ULONG       *ResultLength)
+{
+    const ULONG kvpiHeaderLen = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
+
+    // One-time config check.  CAS(0->1) grants exclusive ownership of init.
+    // InterlockedExchange(&inited, 2) is a store-release so 'enabled' is visible
+    // before 'inited' reaches 2.  Late-arriving threads spin with an acquire-CAS
+    // until 'inited == 2', ensuring correct load ordering on ARM64 as well.
+    static BOOL enabled = FALSE;
+    static volatile LONG inited = 0;
+
+    if (InterlockedCompareExchange(&inited, 1, 0) == 0) {
+        enabled = Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE);
+        InterlockedExchange(&inited, 2);
+    } else {
+        // Another thread is initializing (inited==1) or already done (inited==2).
+        // Spin with an acquire read until initialization is complete.
+        while (InterlockedCompareExchange(&inited, 0, 0) < 2)
+            Sleep(0);
+    }
+    if (!enabled)
+        return STATUS_BAD_INITIAL_PC;
+
+    // Both target value names are exactly 10 characters long.
+    if (ValueNameLen != 10)
+        return STATUS_BAD_INITIAL_PC;
+
+    // Registry path suffixes we match against (case-insensitive).
+    static const WCHAR *_Tcpip6Params = L"\\services\\Tcpip6\\Parameters";
+    static const WCHAR *_Tcpip6Ifaces = L"\\services\\Tcpip6\\Parameters\\Interfaces\\";
+
+    BOOLEAN isDuid = FALSE;
+    BOOLEAN isIaid = FALSE;
+
+    if (_wcsicmp(ValueName, L"Dhcpv6DUID") == 0) {
+        // Key must be exactly ...\services\Tcpip6\Parameters  (no sub-key).
+        ULONG pathLen   = wcslen(TruePath);
+        ULONG paramLen  = wcslen(_Tcpip6Params);
+        if (pathLen >= paramLen &&
+            _wcsicmp(TruePath + pathLen - paramLen, _Tcpip6Params) == 0)
+            isDuid = TRUE;
+
+    } else if (_wcsicmp(ValueName, L"Dhcpv6IAID") == 0) {
+        // Key must contain ...\services\Tcpip6\Parameters\Interfaces\  anywhere.
+        // Only compare at backslash positions (the pattern starts with '\').
+        ULONG ifacesLen = wcslen(_Tcpip6Ifaces);
+        const WCHAR *p  = TruePath;
+        while ((p = wcschr(p, L'\\')) != NULL) {
+            if (_wcsnicmp(p, _Tcpip6Ifaces, ifacesLen) == 0) {
+                isIaid = TRUE;
+                break;
+            }
+            p++;
+        }
+    }
+
+    if (!isDuid && !isIaid)
+        return STATUS_BAD_INITIAL_PC;
+
+    if (!ResultLength)
+        return STATUS_INVALID_PARAMETER;
+
+    Custom_Dhcpv6_EnsureInit();
+
+    // KEY_VALUE_PARTIAL_INFORMATION header is 3 ULONGs (TitleIndex, Type, DataLength).
+    KEY_VALUE_PARTIAL_INFORMATION *kvpi = (KEY_VALUE_PARTIAL_INFORMATION *)OutputBuf;
+
+    if (isDuid) {
+        // DUID-LLT: type(2) + hw-type(2) + time(4) + MAC(6) = 14 bytes.
+        const ULONG duidLen = 14;
+        *ResultLength = kvpiHeaderLen + duidLen;
+
+        if (OutputLen < kvpiHeaderLen)
+            return STATUS_BUFFER_TOO_SMALL;
+
+        kvpi->TitleIndex = 0;
+        kvpi->Type       = REG_BINARY;
+        kvpi->DataLength = duidLen;
+
+        if (OutputLen < *ResultLength)
+            return STATUS_BUFFER_OVERFLOW;
+
+        if (!Custom_DuidMacResolved && OriginalDuid && OriginalDuidLen >= 14)
+            Custom_WarmupNicMapsForDuid();
+
+        EnterCriticalSection(&Custom_Dhcpv6CritSec);
+        Custom_EnsureFakeDuidLocked();
+
+        // Use original DUID data (provided by key.c) to attempt indexed
+        // source-interface resolution on pure registry query path too.
+        if (!Custom_DuidMacResolved && OriginalDuid && OriginalDuidLen >= 14) {
+            BYTE selectedMac[8] = { 0 };
+            BOOL usedIndexedMac = FALSE;
+
+            if (Custom_SelectDuidMacFromOriginal(OriginalDuid, OriginalDuidLen, selectedMac, &usedIndexedMac))
+                Custom_ApplySelectedDuidMacLocked(selectedMac);
+
+            Custom_DuidMacResolved = usedIndexedMac;
+        }
+        memcpy(kvpi->Data, Custom_FakeDuid, duidLen);
+        LeaveCriticalSection(&Custom_Dhcpv6CritSec);
+        return STATUS_SUCCESS;
+
+    } else { // isIaid
+
+        *ResultLength = kvpiHeaderLen + sizeof(DWORD);
+
+        if (OutputLen < kvpiHeaderLen)
+            return STATUS_BUFFER_TOO_SMALL;
+
+        kvpi->TitleIndex = 0;
+        kvpi->Type       = REG_DWORD;
+        kvpi->DataLength = sizeof(DWORD);
+
+        if (OutputLen < *ResultLength)
+            return STATUS_BUFFER_OVERFLOW;
+
+        // Derive a stable per-GUID key from the last path component.
+        // wcsrchr returns the '\' separator itself; skip it so we hash
+        // only the GUID text "{XXXXXXXX-...}" without the leading backslash.
+        const WCHAR *guid = wcsrchr(TruePath, L'\\');
+        if (!guid) guid = TruePath;
+        else guid++; // skip leading backslash
+
+        // djb2-XOR: case-insensitive, maps to UINT_PTR for use as map key.
+        UINT_PTR key = 5381;
+        const WCHAR *p = guid;
+        while (*p) {
+            WCHAR c = (*p >= L'a' && *p <= L'z') ? (*p - (L'a' - L'A')) : *p;
+            key = ((key << 5) + key) ^ (UINT_PTR)c;
+            p++;
+        }
+
+        // Warmup ensures GetAdaptersAddresses has run and populated Custom_FakeIaid
+        // with MAC-derived IAID entries before we look up here.  Without this, a
+        // registry-first query would always fall back to a random IAID even when a
+        // fixed NetworkAdapterMAC is configured.
+        Custom_WarmupNicMapsForDuid();
+
+        EnterCriticalSection(&Custom_Dhcpv6CritSec);
+        void *pIaid = map_get(&Custom_FakeIaid, (void *)key);
+        DWORD iaid;
+        if (pIaid) {
+            iaid = *(DWORD *)pIaid;
+        } else {
+            iaid = Dll_rand() & 0x7FFFFFFF; // keep high bit clear so %d display is never negative
+            map_insert(&Custom_FakeIaid, (void *)key, &iaid, sizeof(DWORD));
+        }
+        LeaveCriticalSection(&Custom_Dhcpv6CritSec);
+
+        *(DWORD *)kvpi->Data = iaid;
+        return STATUS_SUCCESS;
+    }
+}
+
+
 ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigned int TcpInformationId, void **pAddrEntry, int SizeOfAddrEntry, void **a6, int a7, void **pStateEntry, int SizeOfStateEntry, void **pOwnerEntry, int SizeOfOwnerEntry, DWORD *Count, int a13)
 {
     ULONG ret = __sys_NsiAllocateAndGetTable(a1, NPI_MS_ID, TcpInformationId, pAddrEntry, SizeOfAddrEntry, a6, a7, pStateEntry, SizeOfStateEntry, pOwnerEntry, SizeOfOwnerEntry, Count, a13);
@@ -1687,37 +2323,68 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
 
             if (pEntry->AddressLength) {
 
+                BYTE originalMac[8] = { 0 };
+                ULONG originalLen = (pEntry->AddressLength < 8) ? pEntry->AddressLength : 8;
+                if (originalLen)
+                    memcpy(originalMac, pEntry->Address, originalLen);
+                UINT_PTR originalKey = Custom_MakeMacKey(originalMac, originalLen);
 
                 EnterCriticalSection(&Custom_NicMac_CritSec);
-
-                UINT_PTR key; // simple keys are sizeof(void*)
-                key = *(UINT_PTR*)&pEntry->Address[0];
-#ifndef _WIN64 // on 32-bit platforms, xor both halves to generate a 32-bit key
-                key ^= *(UINT_PTR*)&pEntry->Address[4];
-#endif
-
-		        void* lpMac = map_get(&Custom_NicMac, (void*)key);
-                if (lpMac)
+		        void* lpMac = map_get(&Custom_NicMac, (void*)originalKey);
+                if (lpMac) {
                     memcpy(pEntry->Address, lpMac, 8);
-		        else
-		        {
+                    LeaveCriticalSection(&Custom_NicMac_CritSec);
+                } else {
+                    // Assign a unique NicIndex now (under the lock) so that concurrent
+                    // threads processing different adapters get distinct indices. Then
+                    // release the lock before the blocking SbieDll IOCTL to avoid
+                    // stalling every concurrent GetAdaptersAddresses call.
+                    DWORD nicIndex = (DWORD)num;
+                    num++;
+                    LeaveCriticalSection(&Custom_NicMac_CritSec);
+
                     WCHAR NicIndex[30] = { 0 };
-                    Sbie_snwprintf(NicIndex, 30, L"%d", num);
-
                     WCHAR Value[30] = { 0 };
-				    SbieDll_GetSettingsForName(NULL, NicIndex, L"NetworkAdapterMAC", Value, sizeof(Value), L"");
+                    Sbie_snwprintf(NicIndex, 30, L"%d", nicIndex);
+                    SbieDll_GetSettingsForName(NULL, NicIndex, L"NetworkAdapterMAC", Value, sizeof(Value), L"");
 
+                    // Compute the spoofed address into a local buffer first.
+                    BYTE spoofAddr[8];
+                    memcpy(spoofAddr, pEntry->Address, 8);
                     size_t AddressLen = 8;
-                    if (!hex_string_to_uint8_array(Value, pEntry->Address, &AddressLen, FALSE)) {
-                        *(DWORD*)&pEntry->Address[0] = Dll_rand();
-						*(DWORD*)&pEntry->Address[4] = Dll_rand();
+                    BOOL macFromConfig = (hex_string_to_uint8_array(Value, spoofAddr, &AddressLen, FALSE) && AddressLen >= 6);
+                    if (!macFromConfig) {
+                        // Config absent, unparseable, or shorter than a 6-byte MAC:
+                        // fall back to a fully random address to avoid a hybrid of
+                        // configured bytes + original MAC tail bytes.
+                        *(DWORD*)&spoofAddr[0] = Dll_rand();
+                        *(DWORD*)&spoofAddr[4] = Dll_rand();
                     }
 
-					num++;
-			        map_insert(&Custom_NicMac, (void*)key, pEntry->Address, 8);
-		        }
-
-		        LeaveCriticalSection(&Custom_NicMac_CritSec);
+                    // Re-acquire and double-check: another thread may have raced and
+                    // already inserted an entry for this adapter's original MAC key.
+                    EnterCriticalSection(&Custom_NicMac_CritSec);
+                    void *lpMacNow = map_get(&Custom_NicMac, (void*)originalKey);
+                    if (!lpMacNow) {
+                        map_insert(&Custom_NicMac, (void*)originalKey, spoofAddr, 8);
+                        map_insert(&Custom_NicIndexByOriginal, (void*)originalKey, &nicIndex, sizeof(DWORD));
+                        map_insert(&Custom_NicMacIsFixed, (void*)originalKey, &macFromConfig, sizeof(BOOL));
+                        memcpy(pEntry->Address, spoofAddr, 8);
+                    } else {
+                        // Lost the race. Roll back the pre-incremented NIC index
+                        // counter to keep indices contiguous, but only when no
+                        // other thread has advanced 'num' further since our
+                        // increment (verified under the lock).  Without this,
+                        // a concurrent call on the same adapter wastes a slot
+                        // and shifts every subsequent adapter's index up by 1,
+                        // breaking NetworkAdapterMAC=N,<mac> config lookups.
+                        if ((DWORD)num == nicIndex + 1)
+                            num--;
+                        // Use the winner's spoofed MAC for this adapter.
+                        memcpy(pEntry->Address, lpMacNow, 8);
+                    }
+                    LeaveCriticalSection(&Custom_NicMac_CritSec);
+                }
 
             }
         }
@@ -1933,7 +2600,7 @@ wchar_t* GuidToString(const GUID guid)
 
 _FX BOOLEAN  Custom_ProductID(void) 
 {
-	if (SbieApi_QueryConfBool(NULL, L"RandomRegUID", FALSE)) {
+	if (Config_GetSettingsForImageName_bool(L"RandomRegUID", FALSE)) {
 		NTSTATUS status;
 		UNICODE_STRING uni;
 		OBJECT_ATTRIBUTES objattrs;
