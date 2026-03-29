@@ -2235,7 +2235,7 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
         *ResultLength = kvpiHeaderLen + duidLen;
 
         if (OutputLen < kvpiHeaderLen)
-            return STATUS_BUFFER_TOO_SMALL;
+            return STATUS_BUFFER_OVERFLOW;
 
         kvpi->TitleIndex = 0;
         kvpi->Type       = REG_BINARY;
@@ -2270,7 +2270,7 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
         *ResultLength = kvpiHeaderLen + sizeof(DWORD);
 
         if (OutputLen < kvpiHeaderLen)
-            return STATUS_BUFFER_TOO_SMALL;
+            return STATUS_BUFFER_OVERFLOW;
 
         kvpi->TitleIndex = 0;
         kvpi->Type       = REG_DWORD;
@@ -2371,8 +2371,10 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
                     SbieDll_GetSettingsForName(NULL, NicIndex, L"NetworkAdapterMAC", Value, sizeof(Value), L"");
 
                     // Compute the spoofed address into a local buffer first.
-                    BYTE spoofAddr[8];
-                    memcpy(spoofAddr, pEntry->Address, 8);
+                    BYTE spoofAddr[8] = { 0 };
+                    ULONG addrCopyLen = (pEntry->AddressLength < 8) ? pEntry->AddressLength : 8;
+                    if (addrCopyLen)
+                        memcpy(spoofAddr, pEntry->Address, addrCopyLen);
                     size_t AddressLen = 8;
                     BOOL macFromConfig = (hex_string_to_uint8_array(Value, spoofAddr, &AddressLen, FALSE) && AddressLen >= 6);
                     if (!macFromConfig) {
