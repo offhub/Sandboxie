@@ -1706,6 +1706,15 @@ BOOL hex_string_to_uint8_array(const wchar_t* str, unsigned char* output_array, 
 // Forward declaration, defined after Custom_EnsureFakeDuidLocked.
 static void Custom_ApplySelectedDuidMacLocked(const BYTE *selectedMac);
 
+// True only for DUID-LLT with Ethernet hardware type.
+static BOOL Custom_IsDuidLltEthernet(const BYTE *duid, ULONG duidLen)
+{
+    return (duid != NULL &&
+            duidLen >= 14 &&
+            duid[0] == 0x00 && duid[1] == 0x01 &&
+            duid[2] == 0x00 && duid[3] == 0x01);
+}
+
 
 //---------------------------------------------------------------------------
 // Custom_Dhcpv6_EnsureInit
@@ -1853,7 +1862,7 @@ static BOOL Custom_SelectDuidMacFromOriginal(
     BOOL haveSelectedMac = FALSE;
     *usedIndexedMac = FALSE;
 
-    if (!originalDuid || originalDuidLen < 14)
+    if (!Custom_IsDuidLltEthernet(originalDuid, originalDuidLen))
         return FALSE;
 
     // Guard against calling into an uninitialized Custom_NicMac_CritSec.
@@ -1889,9 +1898,12 @@ static BOOL Custom_SelectDuidMacFromOriginal(
         Sbie_snwprintf(NicIndex, 30, L"%d", nicIndex);
         if (SbieDll_GetSettingsForName(NULL, NicIndex, L"NetworkAdapterMAC", Value, sizeof(Value), L"")) {
             size_t outLen = 8;
-            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE) && outLen >= 6) {
-                haveSelectedMac = TRUE;
-                *usedIndexedMac = TRUE;
+            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE)) {
+                // Bounds check: ensure we got between 6 and 8 bytes for a valid MAC -> DUID
+                if (outLen >= 6 && outLen <= 8) {
+                    haveSelectedMac = TRUE;
+                    *usedIndexedMac = TRUE;
+                }
             }
         }
     }
@@ -1900,8 +1912,11 @@ static BOOL Custom_SelectDuidMacFromOriginal(
         WCHAR Value[30] = { 0 };
         if (SbieDll_GetSettingsForName(NULL, Dll_ImageName, L"NetworkAdapterMAC", Value, sizeof(Value), L"")) {
             size_t outLen = 8;
-            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE) && outLen >= 6)
-                haveSelectedMac = TRUE;
+            if (hex_string_to_uint8_array(Value, selectedMac, &outLen, FALSE)) {
+                // Bounds check: ensure we got between 6 and 8 bytes for a valid MAC
+                if (outLen >= 6 && outLen <= 8)
+                    haveSelectedMac = TRUE;
+            }
         }
     }
 
@@ -1926,6 +1941,8 @@ static BOOL Custom_SelectDuidMacFromOriginal(
 static void Custom_WarmupNicMapsForDuid(void)
 {
     if (InterlockedCompareExchange(&Custom_NicMapWarmup, 1, 0) == 0) {
+        BOOL warmupDone = FALSE;
+
         // Record this thread's ID before calling GetAdaptersAddresses.
         // If GetAdaptersAddresses internally reads Dhcpv6DUID from the
         // registry (triggering Custom_FakeDhcpv6RegValue again on the
@@ -1957,6 +1974,7 @@ static void Custom_WarmupNicMapsForDuid(void)
                     buf = Dll_Alloc(size);
                     if (!buf) break;
                     rc = pGetAdaptersAddresses(0 /* AF_UNSPEC */, 0, NULL, buf, &size);
+                    warmupDone = TRUE;
                 } while (rc == ERROR_BUFFER_OVERFLOW && --retries > 0);
 
                 if (buf)
@@ -1964,7 +1982,11 @@ static void Custom_WarmupNicMapsForDuid(void)
             }
         }
 
-        InterlockedExchange(&Custom_NicMapWarmup, 2);
+        // Keep warmup retryable until GetAdaptersAddresses is actually called.
+        // This covers early registry-only processes where iphlpapi.dll is not
+        // loaded yet at the first Dhcpv6DUID query.
+        InterlockedExchange(&Custom_NicMapWarmupTid, 0);
+        InterlockedExchange(&Custom_NicMapWarmup, warmupDone ? 2 : 0);
     } else {
         // Re-entrant call on the warmup thread: GetAdaptersAddresses may
         // internally read Dhcpv6DUID via the registry key hook, which calls
@@ -2020,7 +2042,7 @@ _FX void Custom_GetFakeDhcpv6(
     // 2) If that interface has indexed NetworkAdapterMAC=<idx>,<mac>, use it.
     // 3) Else if global NetworkAdapterMAC=<mac> exists, use it.
     // 4) Else keep randomized bytes.
-    if (!Custom_DuidMacResolved && originalDuid && originalDuidLen >= 14) {
+    if (!Custom_DuidMacResolved && Custom_IsDuidLltEthernet(originalDuid, originalDuidLen)) {
         BYTE selectedMac[8] = { 0 };
         BOOL usedIndexedMac = FALSE;
 
@@ -2070,7 +2092,7 @@ _FX void Custom_GetFakeDhcpv6(
             // Only look up the isFixed flag when the NIC maps are initialized.
             // Custom_GetFakeDhcpv6 is called from IpHlp_GetAdaptersAddresses which
             // requires nsi.dll (so Nsi_Init will have run), but guard defensively.
-            if (originalDuid && originalDuidLen >= 14 &&
+            if (Custom_IsDuidLltEthernet(originalDuid, originalDuidLen) &&
                 InterlockedCompareExchange(&Custom_NicMapsReady, 0, 0) != 0) {
                 BYTE origDuidMac[8] = { 0 };
                 memcpy(origDuidMac, originalDuid + 8, 6);
@@ -2227,6 +2249,9 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     Custom_Dhcpv6_EnsureInit();
 
     // KEY_VALUE_PARTIAL_INFORMATION header is 3 ULONGs (TitleIndex, Type, DataLength).
+    if (!OutputBuf && OutputLen > 0)
+        return STATUS_ACCESS_VIOLATION;
+
     KEY_VALUE_PARTIAL_INFORMATION *kvpi = (KEY_VALUE_PARTIAL_INFORMATION *)OutputBuf;
 
     if (isDuid) {
@@ -2244,7 +2269,7 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
         if (OutputLen < *ResultLength)
             return STATUS_BUFFER_OVERFLOW;
 
-        if (!Custom_DuidMacResolved && OriginalDuid && OriginalDuidLen >= 14)
+        if (!Custom_DuidMacResolved && Custom_IsDuidLltEthernet(OriginalDuid, OriginalDuidLen))
             Custom_WarmupNicMapsForDuid();
 
         EnterCriticalSection(&Custom_Dhcpv6CritSec);
@@ -2252,7 +2277,7 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
 
         // Use original DUID data (provided by key.c) to attempt indexed
         // source-interface resolution on pure registry query path too.
-        if (!Custom_DuidMacResolved && OriginalDuid && OriginalDuidLen >= 14) {
+        if (!Custom_DuidMacResolved && Custom_IsDuidLltEthernet(OriginalDuid, OriginalDuidLen)) {
             BYTE selectedMac[8] = { 0 };
             BOOL usedIndexedMac = FALSE;
 
@@ -2321,8 +2346,13 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
 ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigned int TcpInformationId, void **pAddrEntry, int SizeOfAddrEntry, void **a6, int a7, void **pStateEntry, int SizeOfStateEntry, void **pOwnerEntry, int SizeOfOwnerEntry, DWORD *Count, int a13)
 {
     ULONG ret = __sys_NsiAllocateAndGetTable(a1, NPI_MS_ID, TcpInformationId, pAddrEntry, SizeOfAddrEntry, a6, a7, pStateEntry, SizeOfStateEntry, pOwnerEntry, SizeOfOwnerEntry, Count, a13);
-	static long num = 0;
-    if (ret == 0 && memcmp(NPI_MS_ID, NPI_MS_NDIS_MODULEID, 24) == 0 && TcpInformationId == 1 && pStateEntry)
+    static volatile long num = 0;
+    if (ret == 0 &&
+        NPI_MS_ID &&
+        memcmp(NPI_MS_ID, NPI_MS_NDIS_MODULEID, sizeof(NPI_MS_NDIS_MODULEID)) == 0 &&
+        TcpInformationId == 1 &&
+        pStateEntry && *pStateEntry &&
+        Count && *Count)
     {
         typedef struct _STATE_ENTRY {
             DWORD ThreadCompartmentId;     // 0
@@ -2336,12 +2366,19 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
             BYTE Unknown3[98];
         } STATE_ENTRY, * PSTATE_ENTRY;     // 656
 
+        const ULONG minStateSize =
+            FIELD_OFFSET(STATE_ENTRY, Address) + sizeof(((PSTATE_ENTRY)0)->Address);
+        if ((ULONG)SizeOfStateEntry < minStateSize)
+            return ret;
+
+        const ULONG stateStride = (ULONG)SizeOfStateEntry;
+
         //const int x = sizeof(STATE_ENTRY); 
         //const x1 = FIELD_OFFSET(STATE_ENTRY, Address);
 
         for (DWORD i = 0; i < *Count; i++) {
 
-            PSTATE_ENTRY pEntry = (PSTATE_ENTRY)((BYTE*)*pStateEntry + i * sizeof(STATE_ENTRY));
+            PSTATE_ENTRY pEntry = (PSTATE_ENTRY)((BYTE*)*pStateEntry + i * stateStride);
 
             if (pEntry->AddressLength) {
 
@@ -2376,9 +2413,15 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
                     if (addrCopyLen)
                         memcpy(spoofAddr, pEntry->Address, addrCopyLen);
                     size_t AddressLen = 8;
-                    BOOL macFromConfig = (hex_string_to_uint8_array(Value, spoofAddr, &AddressLen, FALSE) && AddressLen >= 6);
+                    BOOL macFromConfig = FALSE;
+                    if (hex_string_to_uint8_array(Value, spoofAddr, &AddressLen, FALSE)) {
+                        // Validate parsed MAC length is in acceptable range (6-8 bytes)
+                        if (AddressLen >= 6 && AddressLen <= 8) {
+                            macFromConfig = TRUE;
+                        }
+                    }
                     if (!macFromConfig) {
-                        // Config absent, unparseable, or shorter than a 6-byte MAC:
+                        // Config absent, unparseable, or wrong length:
                         // fall back to a fully random address to avoid a hybrid of
                         // configured bytes + original MAC tail bytes.
                         *(DWORD*)&spoofAddr[0] = Dll_rand();
