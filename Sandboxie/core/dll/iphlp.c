@@ -255,12 +255,14 @@ static ULONG WINAPI IpHlp_GetAdaptersAddresses(
             // the DHCPv6 fields, but an explicit check prevents heap corruption if
             // a shorter variant is ever returned (per IP_ADAPTER_ADDRESSES contract).
             ULONG adapterLen = (ULONG)(pAdapter->Alignment);
-            // Only spoof adapters that carry a full DUID-LLT (14 bytes minimum:
-            // type[2] + hw-type[2] + time[4] + MAC[6]) and a valid MAC.
-            // Shorter DUIDs (non-LLT formats) are left untouched to avoid
-            // writing a structurally invalid value into the DUID field.
+            // Only spoof adapters that carry a full DUID-LLT/Ethernet
+            // (type[2]=0001, hw-type[2]=0001, time[4], MAC[6]) and a valid MAC.
+            // Non-LLT DUID formats are left untouched to avoid changing semantics.
             if (adapterLen >= FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6Iaid) + sizeof(ULONG) &&
-                pAdapter->Dhcpv6ClientDuidLength >= 14 && pAdapter->PhysicalAddressLength >= 6) {
+                pAdapter->Dhcpv6ClientDuidLength >= 14 &&
+                pAdapter->Dhcpv6ClientDuid[0] == 0x00 && pAdapter->Dhcpv6ClientDuid[1] == 0x01 &&
+                pAdapter->Dhcpv6ClientDuid[2] == 0x00 && pAdapter->Dhcpv6ClientDuid[3] == 0x01 &&
+                pAdapter->PhysicalAddressLength >= 6) {
                 BYTE  fakeDuid[14];
                 ULONG fakeIaid;
                 Custom_GetFakeDhcpv6(
@@ -275,8 +277,8 @@ static ULONG WINAPI IpHlp_GetAdaptersAddresses(
                 memcpy(pAdapter->Dhcpv6ClientDuid, fakeDuid, 14);
                 pAdapter->Dhcpv6ClientDuidLength = 14;
 
-                if (pAdapter->Dhcpv6Iaid != 0)
-                    pAdapter->Dhcpv6Iaid = fakeIaid;
+                // Keep IAID aligned with registry spoofing and adapter-guid map.
+                pAdapter->Dhcpv6Iaid = fakeIaid;
             }
             pAdapter = pAdapter->Next;
         }

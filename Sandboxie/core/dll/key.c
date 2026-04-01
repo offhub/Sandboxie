@@ -3608,7 +3608,7 @@ _FX NTSTATUS Key_NtQueryValueKey(
         BYTE duidInfoBuf[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 130] = { 0 };
         const BYTE *OriginalDuid = NULL;
         ULONG OriginalDuidLen = 0;
-        if (ValueNameLen1 == 10 && _wcsicmp(ValueNameBuf, L"Dhcpv6DUID") == 0) {
+        if (ValueNameLen1 == 10 && _wcsnicmp(ValueNameBuf, L"Dhcpv6DUID", 10) == 0) {
             ULONG duidInfoLen = 0;
             NTSTATUS duidStatus = __sys_NtQueryValueKey(
                 KeyHandle, ValueName,
