@@ -809,7 +809,7 @@ NTSTATUS Custom_FakeDhcpv6RegValue(
     ULONG        OutputLen,
     ULONG       *ResultLength);
 
-void Custom_GetFakeDhcpv6(
+BOOLEAN Custom_GetFakeDhcpv6(
     ULONG ifIndex,
     const BYTE *spoofedMac,
     ULONG macLen,

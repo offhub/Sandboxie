@@ -227,6 +227,8 @@ C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, PhysicalAddressLength) ==
          FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, PhysicalAddress) + MY_MAX_ADAPTER_ADDR_LEN);
 C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Ipv6IfIndex) ==
          FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, OperStatus) + sizeof(ULONG));
+C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6ClientDuid) ==
+         FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6Server) + sizeof(MY_SOCKET_ADDRESS));
 C_ASSERT(FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6Iaid) ==
          FIELD_OFFSET(MY_IP_ADAPTER_ADDRESSES, Dhcpv6ClientDuid) + MY_MAX_DHCPV6_DUID_LENGTH + 2 + sizeof(ULONG));
 
@@ -265,20 +267,21 @@ static ULONG WINAPI IpHlp_GetAdaptersAddresses(
                 pAdapter->PhysicalAddressLength >= 6) {
                 BYTE  fakeDuid[14];
                 ULONG fakeIaid;
-                Custom_GetFakeDhcpv6(
+                if (Custom_GetFakeDhcpv6(
                     pAdapter->Ipv6IfIndex,
                     pAdapter->PhysicalAddress, pAdapter->PhysicalAddressLength,
                     pAdapter->Dhcpv6ClientDuid, pAdapter->Dhcpv6ClientDuidLength,
                     (const char *)pAdapter->AdapterName,
-                    fakeDuid, &fakeIaid);
+                    fakeDuid, &fakeIaid)) {
 
-                // Replace the DUID with our stable 14-byte DUID-LLT.
-                // The inline buffer (Dhcpv6ClientDuid[130]) is always large enough.
-                memcpy(pAdapter->Dhcpv6ClientDuid, fakeDuid, 14);
-                pAdapter->Dhcpv6ClientDuidLength = 14;
+                    // Replace the DUID with our stable 14-byte DUID-LLT.
+                    // The inline buffer (Dhcpv6ClientDuid[130]) is always large enough.
+                    memcpy(pAdapter->Dhcpv6ClientDuid, fakeDuid, 14);
+                    pAdapter->Dhcpv6ClientDuidLength = 14;
 
-                // Keep IAID aligned with registry spoofing and adapter-guid map.
-                pAdapter->Dhcpv6Iaid = fakeIaid;
+                    // Keep IAID aligned with registry spoofing and adapter-guid map.
+                    pAdapter->Dhcpv6Iaid = fakeIaid;
+                }
             }
             pAdapter = pAdapter->Next;
         }

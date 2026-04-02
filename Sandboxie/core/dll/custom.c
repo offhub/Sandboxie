@@ -1403,11 +1403,11 @@ _FX RPC_STATUS NsiRpc_NsiRpcRegisterChangeNotification(LPVOID  p1, LPVOID  p2, L
   };
 } NPI_MODULEID, *PNPI_MODULEID;*/
 
-typedef ULONG (*P_NsiAllocateAndGetTable)(int a1, struct NPI_MODULEID* a2, unsigned int a3, void *a4, int a5, void *a6, int a7, void *a8, int a9, void *a10, int a11, DWORD *a12, int a13);  
+typedef ULONG (*P_NsiAllocateAndGetTable)(int a1, struct NPI_MODULEID* a2, unsigned int a3, void **a4, int a5, void **a6, int a7, void **a8, int a9, void **a10, int a11, DWORD *a12, int a13);
 
 P_NsiAllocateAndGetTable __sys_NsiAllocateAndGetTable = NULL;
 
-static ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* a2, unsigned int a3, void *a4, int a5, void *a6, int a7, void *a8, int a9, void *a10, int a11, DWORD *a12, int a13);
+static ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* a2, unsigned int a3, void **a4, int a5, void **a6, int a7, void **a8, int a9, void **a10, int a11, DWORD *a12, int a13);
 
 
 extern POOL* Dll_Pool;
@@ -1438,13 +1438,21 @@ _FX BOOLEAN Nsi_Init(HMODULE module)
 {
     if (Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE)) {
 
-        InitializeCriticalSection(&Custom_NicMac_CritSec);
-		map_init(&Custom_NicMac, Dll_Pool);
-        map_init(&Custom_NicIndexByOriginal, Dll_Pool);
-        map_init(&Custom_NicMacIsFixed, Dll_Pool);
-        Custom_NicMac.func_key_size = Custom_MacKeySize;
-        Custom_NicIndexByOriginal.func_key_size = Custom_MacKeySize;
-        Custom_NicMacIsFixed.func_key_size = Custom_MacKeySize;
+        // Wrap all initialization atomically: either all succeeds or all is cleaned up.
+        // Partial initialization is not allowed because subsequent code gates on
+        // Custom_NicMapsReady before acquiring the critical section.
+        __try {
+            InitializeCriticalSection(&Custom_NicMac_CritSec);
+            map_init(&Custom_NicMac, Dll_Pool);
+            map_init(&Custom_NicIndexByOriginal, Dll_Pool);
+            map_init(&Custom_NicMacIsFixed, Dll_Pool);
+            Custom_NicMac.func_key_size = Custom_MacKeySize;
+            Custom_NicIndexByOriginal.func_key_size = Custom_MacKeySize;
+            Custom_NicMacIsFixed.func_key_size = Custom_MacKeySize;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return TRUE;
+        }
+        
         // Signal after all maps and the critical section are fully ready.
         // Custom_SelectDuidMacFromOriginal and Custom_GetFakeDhcpv6 check this
         // before acquiring Custom_NicMac_CritSec to avoid using an uninitialized
@@ -1729,21 +1737,32 @@ static BOOL Custom_IsDuidLltEthernet(const BYTE *duid, ULONG duidLen)
 // Custom_Dhcpv6_EnsureInit
 //---------------------------------------------------------------------------
 
-static void Custom_Dhcpv6_EnsureInit(void)
+static BOOL Custom_Dhcpv6_EnsureInit(void)
 {
     if (InterlockedCompareExchange(&Custom_Dhcpv6Inited, 1, 0) == 0) {
-        InitializeCriticalSection(&Custom_Dhcpv6CritSec);
-        map_init(&Custom_FakeIaid, Dll_Pool);
-        Custom_FakeDuidReady = FALSE;
-        Custom_DuidMacResolved = FALSE;
+        // Wrap all initialization atomically: either complete with inited=2,
+        // or reset to 0 and fail. Never leave inited=1 (in progress) on error.
+        // Callers gate on (inited == 2) before entering locks.
+        __try {
+            InitializeCriticalSection(&Custom_Dhcpv6CritSec);
+            map_init(&Custom_FakeIaid, Dll_Pool);
+            Custom_FakeDuidReady = FALSE;
+            Custom_DuidMacResolved = FALSE;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            InterlockedExchange(&Custom_Dhcpv6Inited, 0);
+            return FALSE;
+        }
         InterlockedExchange(&Custom_Dhcpv6Inited, 2);
     } else {
+        // Another thread is initializing (inited==1) or already done (inited==2).
         // Use an acquire CAS read to ensure writes from the init thread are
         // visible before we proceed. A plain volatile read lacks the memory
         // barrier needed for correct ordering on ARM64.
         while (InterlockedCompareExchange(&Custom_Dhcpv6Inited, 0, 0) < 2)
             Sleep(0);
     }
+
+    return (InterlockedCompareExchange(&Custom_Dhcpv6Inited, 0, 0) == 2);
 }
 
 //---------------------------------------------------------------------------
@@ -1951,46 +1970,55 @@ static void Custom_WarmupNicMapsForDuid(void)
         // same thread), the re-entrant call detects the TID match and
         // returns immediately instead of spinning on Custom_NicMapWarmup.
         InterlockedExchange(&Custom_NicMapWarmupTid, (LONG)GetCurrentThreadId());
-        HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
+        
+        __try {
+            HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
 
-        if (iphlp) {
-            typedef ULONG (WINAPI *P_GetAdaptersAddresses)(
-                ULONG Family,
-                ULONG Flags,
-                PVOID Reserved,
-                PVOID AdapterAddresses,
-                PULONG SizePointer);
+            if (iphlp) {
+                typedef ULONG (WINAPI *P_GetAdaptersAddresses)(
+                    ULONG Family,
+                    ULONG Flags,
+                    PVOID Reserved,
+                    PVOID AdapterAddresses,
+                    PULONG SizePointer);
 
-            P_GetAdaptersAddresses pGetAdaptersAddresses =
-                (P_GetAdaptersAddresses)GetProcAddress(iphlp, "GetAdaptersAddresses");
+                P_GetAdaptersAddresses pGetAdaptersAddresses =
+                    (P_GetAdaptersAddresses)GetProcAddress(iphlp, "GetAdaptersAddresses");
 
-            if (pGetAdaptersAddresses) {
-                ULONG size = 16 * 1024;
-                void *buf = NULL;
-                int retries = 3;
-                ULONG rc = ERROR_GEN_FAILURE;
-                // Retry on ERROR_BUFFER_OVERFLOW in case adapters are
-                // added between the size query and the data fetch.
-                do {
-                    if (buf) Dll_Free(buf);
-                    buf = Dll_Alloc(size);
-                    if (!buf) break;
-                    rc = pGetAdaptersAddresses(0 /* AF_UNSPEC */, 0, NULL, buf, &size);
-                } while (rc == ERROR_BUFFER_OVERFLOW && --retries > 0);
+                if (pGetAdaptersAddresses) {
+                    ULONG size = 16 * 1024;
+                    void *buf = NULL;
+                    int retries = 3;
+                    ULONG rc = ERROR_GEN_FAILURE;
+                    // Retry on ERROR_BUFFER_OVERFLOW in case adapters are
+                    // added between the size query and the data fetch.
+                    do {
+                        if (buf) Dll_Free(buf);
+                        buf = Dll_Alloc(size);
+                        if (!buf) break;
+                        rc = pGetAdaptersAddresses(0 /* AF_UNSPEC */, 0, NULL, buf, &size);
+                    } while (rc == ERROR_BUFFER_OVERFLOW && --retries > 0);
 
-                // Consider warmup complete only when enumeration succeeded,
-                // because the NSI map population side effect happens on success.
-                if (rc == ERROR_SUCCESS)
-                    warmupDone = TRUE;
+                    // Consider warmup complete only when enumeration succeeded,
+                    // because the NSI map population side effect happens on success.
+                    if (rc == ERROR_SUCCESS)
+                        warmupDone = TRUE;
 
-                if (buf)
-                    Dll_Free(buf);
+                    if (buf)
+                        Dll_Free(buf);
+                }
             }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // On exception, warmup stays retryable (flag reset to 0) rather than
+            // stuck in progress (flag==1) which would deadlock all waiting threads.
+            // This ensures a transient crash in GetAdaptersAddresses doesn't
+            // permanently break DUID resolution.
         }
 
         // Keep warmup retryable until GetAdaptersAddresses is actually called.
         // This covers early registry-only processes where iphlpapi.dll is not
-        // loaded yet at the first Dhcpv6DUID query.
+        // loaded yet at the first Dhcpv6DUID query. On exception, warmupDone
+        // stays FALSE so flag is reset to 0, making warmup retryable.
         InterlockedExchange(&Custom_NicMapWarmupTid, 0);
         InterlockedExchange(&Custom_NicMapWarmup, warmupDone ? 2 : 0);
     } else {
@@ -2026,7 +2054,7 @@ static void Custom_WarmupNicMapsForDuid(void)
 // into *iaid.  DUID is system-wide (same for every adapter); IAID is derived
 // from the spoofed MAC via FNV-1a (constant for a given MAC, no ifIndex
 // dependency) or random-per-process when no MAC is available.
-_FX void Custom_GetFakeDhcpv6(
+_FX BOOLEAN Custom_GetFakeDhcpv6(
     ULONG ifIndex,
     const BYTE *spoofedMac,
     ULONG macLen,
@@ -2036,7 +2064,9 @@ _FX void Custom_GetFakeDhcpv6(
     BYTE *duid14,
     ULONG *iaid)
 {
-    Custom_Dhcpv6_EnsureInit();
+    if (!Custom_Dhcpv6_EnsureInit()) {
+        return FALSE;
+    }
 
     EnterCriticalSection(&Custom_Dhcpv6CritSec);
 
@@ -2055,9 +2085,14 @@ _FX void Custom_GetFakeDhcpv6(
         if (Custom_SelectDuidMacFromOriginal(originalDuid, originalDuidLen, selectedMac, &usedIndexedMac))
             Custom_ApplySelectedDuidMacLocked(selectedMac);
 
-        // Finalize only after successful indexed match; global fallback stays
-        // provisional so it can still be replaced once index mapping is known.
-        Custom_DuidMacResolved = usedIndexedMac;
+        // Finalize after successful indexed match, or after warmup has completed
+        // (all adapters enumerated, NIC maps fully populated) with no indexed match.
+        // Before warmup completes, keep provisional so later adapters can still
+        // provide an indexed match.  After warmup, no further adapters will appear,
+        // so finalizing avoids repeated config IOCTLs under the lock.
+        if (usedIndexedMac ||
+            InterlockedCompareExchange(&Custom_NicMapWarmup, 0, 0) == 2)
+            Custom_DuidMacResolved = TRUE;
     }
 
     memcpy(duid14, Custom_FakeDuid, 14);
@@ -2161,6 +2196,7 @@ _FX void Custom_GetFakeDhcpv6(
     }
 
     LeaveCriticalSection(&Custom_Dhcpv6CritSec);
+    return TRUE;
 }
 
 
@@ -2202,7 +2238,14 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     static volatile LONG inited = 0;
 
     if (InterlockedCompareExchange(&inited, 1, 0) == 0) {
-        enabled = Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE);
+        __try {
+            enabled = Config_GetSettingsForImageName_bool(L"HideNetworkAdapterMAC", FALSE);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Reset to 0 so subsequent calls can retry instead of spinning
+            // forever on inited==1.  'enabled' stays FALSE on failure.
+            InterlockedExchange(&inited, 0);
+            return STATUS_BAD_INITIAL_PC;
+        }
         InterlockedExchange(&inited, 2);
     } else {
         // Another thread is initializing (inited==1) or already done (inited==2).
@@ -2262,7 +2305,8 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
     if (!ResultLength)
         return STATUS_INVALID_PARAMETER;
 
-    Custom_Dhcpv6_EnsureInit();
+    if (!Custom_Dhcpv6_EnsureInit())
+        return STATUS_INSUFFICIENT_RESOURCES;
 
     // KEY_VALUE_PARTIAL_INFORMATION header is 3 ULONGs (TitleIndex, Type, DataLength).
     if (!OutputBuf && OutputLen > 0)
@@ -2300,7 +2344,11 @@ _FX NTSTATUS Custom_FakeDhcpv6RegValue(
             if (Custom_SelectDuidMacFromOriginal(OriginalDuid, OriginalDuidLen, selectedMac, &usedIndexedMac))
                 Custom_ApplySelectedDuidMacLocked(selectedMac);
 
-            Custom_DuidMacResolved = usedIndexedMac;
+            // Same finalization logic as Custom_GetFakeDhcpv6: indexed match
+            // or warmup done (all adapter maps populated) -> stop retrying.
+            if (usedIndexedMac ||
+                InterlockedCompareExchange(&Custom_NicMapWarmup, 0, 0) == 2)
+                Custom_DuidMacResolved = TRUE;
         }
         memcpy(kvpi->Data, Custom_FakeDuid, duidLen);
         LeaveCriticalSection(&Custom_Dhcpv6CritSec);
@@ -2391,16 +2439,17 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
         for (DWORD i = 0; i < *Count; i++) {
 
             PSTATE_ENTRY pEntry = (PSTATE_ENTRY)((BYTE*)*pStateEntry + i * stateStride);
+            ULONG addressKeyLen = (pEntry->AddressLength < 8) ? pEntry->AddressLength : 8;
+            BOOL haveDuidKey = (pEntry->AddressLength == 6);
 
             // DHCPv6 DUID-LLT path uses 6-byte link-layer addresses. Keep the
-            // map consistent by tracking only Ethernet-sized entries.
+            // DUID lookup maps consistent by tracking only Ethernet-sized entries.
             if (pEntry->AddressLength >= 6 && pEntry->AddressLength <= 8) {
 
-                BYTE originalMac[8] = { 0 };
-                // DUID-LLT carries exactly 6 MAC bytes. Use the same 6-byte key
-                // width here so Custom_SelectDuidMacFromOriginal can always match.
-                memcpy(originalMac, pEntry->Address, 6);
-                ULONGLONG originalKey = Custom_MakeMacKey(originalMac, 6);
+                ULONGLONG originalKey = Custom_MakeMacKey(pEntry->Address, addressKeyLen);
+                ULONGLONG originalDuidKey = 0;
+                if (haveDuidKey)
+                    originalDuidKey = Custom_MakeMacKey(pEntry->Address, 6);
 
                 EnterCriticalSection(&Custom_NicMac_CritSec);
 		        void* lpMac = map_get(&Custom_NicMac, &originalKey);
@@ -2455,8 +2504,10 @@ ULONG Nsi_NsiAllocateAndGetTable(int a1, struct NPI_MODULEID* NPI_MS_ID, unsigne
                     void *lpMacNow = map_get(&Custom_NicMac, &originalKey);
                     if (!lpMacNow) {
                         map_insert(&Custom_NicMac, &originalKey, spoofAddr, 8);
-                        map_insert(&Custom_NicIndexByOriginal, &originalKey, &nicIndex, sizeof(DWORD));
-                        map_insert(&Custom_NicMacIsFixed, &originalKey, &macFromConfig, sizeof(BOOL));
+                        if (haveDuidKey) {
+                            map_insert(&Custom_NicIndexByOriginal, &originalDuidKey, &nicIndex, sizeof(DWORD));
+                            map_insert(&Custom_NicMacIsFixed, &originalDuidKey, &macFromConfig, sizeof(BOOL));
+                        }
                         memcpy(pEntry->Address, spoofAddr, 8);
                     } else {
                         // Lost the race. Roll back the pre-incremented NIC index
