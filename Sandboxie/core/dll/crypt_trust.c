@@ -116,6 +116,7 @@ static const WCHAR *Crypt_GetWinTrustFilePath(
 static BOOLEAN Crypt_ShouldForceTrustForPath(const WCHAR *path);
 static BOOLEAN Crypt_CopyPathSafe(
     const WCHAR *path, WCHAR *path_buf, size_t path_buf_count);
+static void Crypt_NormalizePathSeparators(WCHAR *path);
 static BOOLEAN Crypt_ShouldForceTrustForData(const WINTRUST_DATA *pWinTrustData);
 static void Crypt_FreeQueryObjectContext(DWORD contentType, const void *pvContext);
 static LONG Crypt_WinVerifyTrust(
@@ -852,6 +853,52 @@ static BOOLEAN Crypt_CopyPathSafe(
 
 
 //---------------------------------------------------------------------------
+// Crypt_NormalizePathSeparators
+//---------------------------------------------------------------------------
+
+
+static void Crypt_NormalizePathSeparators(WCHAR *path)
+{
+    WCHAR *src;
+    WCHAR *dst;
+
+    if (!path || !*path)
+        return;
+
+    src = path;
+    dst = path;
+
+    if ((src[0] == L'\\' || src[0] == L'/')
+            && (src[1] == L'\\' || src[1] == L'/')) {
+        *dst++ = L'\\';
+        *dst++ = L'\\';
+        src += 2;
+
+        if ((src[0] == L'?' || src[0] == L'.')
+                && (src[1] == L'\\' || src[1] == L'/')) {
+            *dst++ = *src++;
+            *dst++ = L'\\';
+            ++src;
+        }
+    }
+
+    while (*src) {
+        WCHAR ch = *src++;
+
+        if (ch == L'/' || ch == L'\\') {
+            if (dst == path || dst[-1] != L'\\')
+                *dst++ = L'\\';
+            continue;
+        }
+
+        *dst++ = ch;
+    }
+
+    *dst = L'\0';
+}
+
+
+//---------------------------------------------------------------------------
 // Crypt_ShouldForceTrustForPath
 //---------------------------------------------------------------------------
 
@@ -864,6 +911,8 @@ static BOOLEAN Crypt_ShouldForceTrustForPath(const WCHAR *path)
     if (!Crypt_CopyPathSafe(path, path_buf, sizeof(path_buf) / sizeof(path_buf[0]))
             || !path_buf[0])
         return FALSE;
+
+    Crypt_NormalizePathSeparators(path_buf);
 
     Crypt_InitTrustRules();
 
@@ -1051,13 +1100,14 @@ static BOOL Crypt_CryptQueryObject(
         dwExpectedContentTypeFlags, dwExpectedFormatTypeFlags,
         dwFlags, pdwMsgAndCertEncodingType, pdwContentType,
         pdwFormatType, phCertStore, phMsg, ppvContext);
+    DWORD original_err = GetLastError();
 
     if (dwObjectType == CERT_QUERY_OBJECT_FILE && pvObject) {
         LPCWSTR path = (LPCWSTR)pvObject;
         DWORD contentType = (pdwContentType ? *pdwContentType : 0);
         BOOLEAN force_target = Crypt_ShouldForceTrustForPath(path);
 
-        if (!result && force_target) {
+        if (force_target) {
             DWORD proxy_enc = 0;
             DWORD proxy_content = 0;
             DWORD proxy_format = 0;
@@ -1223,6 +1273,7 @@ static BOOL Crypt_CryptQueryObject(
         }
     }
 
+    SetLastError(original_err);
     return result;
 }
 
@@ -2176,6 +2227,8 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
     const WINTRUST_DATA *pProviderWtd = NULL;
     BOOLEAN has_provider_wtd =
         Crypt_GetProviderWinTrustData(pProvData, &pProviderWtd);
+    BOOLEAN force_target =
+        (pProvData && has_provider_wtd && Crypt_ShouldForceTrustForData(pProviderWtd));
 
     if (pProvData == &Crypt_FakeProviderData) {
         Crypt_RefreshFakeProviderState();
@@ -2190,10 +2243,20 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
     pSigner = __sys_WTHelperGetProvSignerFromChain(
         pProvData, idxSigner, fCounterSigner, idxCounterSigner);
 
+    if (force_target
+            && idxSigner == 0
+            && !fCounterSigner
+            && idxCounterSigner == 0) {
+        Crypt_RefreshFakeProviderState();
+        if (Crypt_HasFakeProviderCert()) {
+            Crypt_Trace(L"WTHelperGetProvSignerFromChain force fake signer");
+            return &Crypt_FakeProviderSigner;
+        }
+    }
+
     if (!pSigner
             && pProvData
-            && has_provider_wtd
-            && Crypt_ShouldForceTrustForData(pProviderWtd)
+            && force_target
             && idxSigner == 0
             && !fCounterSigner
             && idxCounterSigner == 0) {
