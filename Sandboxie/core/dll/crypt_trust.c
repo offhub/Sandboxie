@@ -114,6 +114,8 @@ static BOOLEAN Crypt_SetProviderSignerCertChain(
 static const WCHAR *Crypt_GetWinTrustFilePath(
     const WINTRUST_DATA *pWinTrustData);
 static BOOLEAN Crypt_ShouldForceTrustForPath(const WCHAR *path);
+static BOOLEAN Crypt_CopyPathSafe(
+    const WCHAR *path, WCHAR *path_buf, size_t path_buf_count);
 static BOOLEAN Crypt_ShouldForceTrustForData(const WINTRUST_DATA *pWinTrustData);
 static void Crypt_FreeQueryObjectContext(DWORD contentType, const void *pvContext);
 static LONG Crypt_WinVerifyTrust(
@@ -131,6 +133,10 @@ static HRESULT Crypt_WTHelperCertCheckValidSignature(
     CRYPT_PROVIDER_DATA *pProvData);
 static void Crypt_InitFakeProviderState(void);
 static BOOLEAN Crypt_HasFakeProviderCert(void);
+static void Crypt_TrySeedFakeProviderCert(HCERTSTORE hCertStore);
+static void Crypt_EnsureFakeProviderCert(void);
+static void Crypt_RefreshFakeProviderState(void);
+static void Crypt_UpdateFakeSignerInfo(void);
 static void Crypt_UpdateFakeProviderStatePointers(void);
 static void Crypt_SanitizeForcedProviderData(
     CRYPT_PROVIDER_DATA *pProvData, HANDLE hStateData, BOOLEAN trace);
@@ -139,6 +145,31 @@ static HANDLE Crypt_GetFakeStateHandle(void);
 static BOOLEAN Crypt_RememberForcedTrustState(HANDLE hStateData);
 static void Crypt_ForgetForcedTrustState(HANDLE hStateData);
 static BOOLEAN Crypt_IsForcedTrustState(HANDLE hStateData);
+static BOOLEAN Crypt_HandleWinTrustCloseState(
+    const WCHAR *trace_tag, BOOLEAN trace,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN has_state_handle, HANDLE hStateData,
+    LONG *pResult);
+static void Crypt_TraceWinTrustResult(
+    const WCHAR *trace_tag, BOOLEAN trace, LONG result,
+    BOOLEAN has_union_choice, DWORD union_choice,
+    BOOLEAN has_state_action, DWORD state_action,
+    HANDLE hStateData, const WCHAR *path);
+static void Crypt_TraceWinTrustProviderState(
+    const WCHAR *trace_tag, BOOLEAN trace,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN is_force_target, HANDLE hStateData);
+static BOOLEAN Crypt_ForceWinTrustSuccess(
+    const WCHAR *trace_tag, BOOLEAN trace, LONG result,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN is_force_target,
+    WINTRUST_DATA *pWinTrustData, HANDLE *phStateData,
+    const WCHAR *path);
+static LONG Crypt_RunWinVerifyTrust(
+    LONG (WINAPI *pfnVerifyTrust)(HWND, GUID *, WINTRUST_DATA *),
+    const WCHAR *trace_tag,
+    BOOLEAN trace_provider_state,
+    HWND hwnd, GUID *pgActionID, WINTRUST_DATA *pWinTrustData);
 
 #if defined(_DEBUG) || defined(_CRYPTDEBUG)
 static DWORD Crypt_SearchPathW(
@@ -216,6 +247,7 @@ static ULONG_PTR Crypt_ForcedTrustStates[CRYPT_FORCED_STATE_MAX] = { 0 };
 static CRYPT_PROVIDER_DATA Crypt_FakeProviderData = { 0 };
 static CRYPT_PROVIDER_SGNR Crypt_FakeProviderSigner = { 0 };
 static CRYPT_PROVIDER_CERT Crypt_FakeProviderCert = { 0 };
+static CMSG_SIGNER_INFO Crypt_FakeSignerInfo = { 0 };
 static PVOID Crypt_FakeCertContextPtr = NULL;
 
 
@@ -789,6 +821,37 @@ static void Crypt_InitTrustRules(void)
 
 
 //---------------------------------------------------------------------------
+// Crypt_CopyPathSafe
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN Crypt_CopyPathSafe(
+    const WCHAR *path, WCHAR *path_buf, size_t path_buf_count)
+{
+    size_t i;
+
+    if (!path || !path_buf || path_buf_count == 0)
+        return FALSE;
+
+    __try {
+        for (i = 0; i + 1 < path_buf_count; ++i) {
+            WCHAR ch = path[i];
+            path_buf[i] = ch;
+            if (ch == L'\0')
+                return TRUE;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        path_buf[0] = L'\0';
+        return FALSE;
+    }
+
+    path_buf[path_buf_count - 1] = L'\0';
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
 // Crypt_ShouldForceTrustForPath
 //---------------------------------------------------------------------------
 
@@ -796,14 +859,16 @@ static void Crypt_InitTrustRules(void)
 static BOOLEAN Crypt_ShouldForceTrustForPath(const WCHAR *path)
 {
     ULONG i;
+    WCHAR path_buf[1024];
 
-    if (!path || !*path)
+    if (!Crypt_CopyPathSafe(path, path_buf, sizeof(path_buf) / sizeof(path_buf[0]))
+            || !path_buf[0])
         return FALSE;
 
     Crypt_InitTrustRules();
 
     for (i = 0; i < Crypt_TrustRuleCount; ++i) {
-        if (Crypt_MatchTrustFixPath(Crypt_TrustRules[i], path))
+        if (Crypt_MatchTrustFixPath(Crypt_TrustRules[i], path_buf))
             return TRUE;
     }
 
@@ -1141,37 +1206,8 @@ static BOOL Crypt_CryptQueryObject(
                 if (ppvContext)
                     *ppvContext = proxy_ctx;
 
-                if (proxy_store != NULL && Crypt_FakeProviderCert.pCert == NULL) {
-                    HMODULE hCrypt32 = GetModuleHandleW(L"crypt32.dll");
-                    if (hCrypt32) {
-                        typedef PCCERT_CONTEXT (WINAPI *P_CertEnum)(HCERTSTORE, PCCERT_CONTEXT);
-                        typedef PCCERT_CONTEXT (WINAPI *P_CertDup)(PCCERT_CONTEXT);
-                        typedef BOOL (WINAPI *P_CertFree)(PCCERT_CONTEXT);
-                        P_CertEnum pfnEnum = (P_CertEnum)GetProcAddress(hCrypt32, "CertEnumCertificatesInStore");
-                        P_CertDup pfnDup = (P_CertDup)GetProcAddress(hCrypt32, "CertDuplicateCertificateContext");
-                        P_CertFree pfnFree = (P_CertFree)GetProcAddress(hCrypt32, "CertFreeCertificateContext");
-                        if (pfnEnum && pfnDup && pfnFree) {
-                            PCCERT_CONTEXT firstCert = pfnEnum(proxy_store, NULL);
-                            if (firstCert) {
-                                PCCERT_CONTEXT dupCert = pfnDup(firstCert);
-                                pfnFree(firstCert);
-                                if (dupCert) {
-                                    PVOID dupCertValue = (PVOID)dupCert;
-                                    if (InterlockedCompareExchangePointer(
-                                            (PVOID volatile *)&Crypt_FakeCertContextPtr,
-                                            dupCertValue, NULL) == NULL) {
-                                        InterlockedExchangePointer(
-                                            (PVOID volatile *)&Crypt_FakeProviderCert.pCert,
-                                            dupCertValue);
-                                        Crypt_UpdateFakeProviderStatePointers();
-                                    } else {
-                                        pfnFree(dupCert);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                if (proxy_store != NULL)
+                    Crypt_TrySeedFakeProviderCert(proxy_store);
 
                 Crypt_Trace(L"CryptQueryObject proxy ok content=%u msg=%p file=%s caller=%p",
                     proxy_content, CRYPT_REDACT(proxy_msg), path, CRYPT_REDACT(Crypt_GetCallerAddress()));
@@ -1359,7 +1395,8 @@ static void Crypt_InitFakeProviderState(void)
     Crypt_FakeProviderSigner.cbStruct = sizeof(CRYPT_PROVIDER_SGNR);
     Crypt_FakeProviderSigner.csCertChain = 0;
     Crypt_FakeProviderSigner.pasCertChain = NULL;
-    Crypt_FakeProviderSigner.dwSignerType = SGNR_TYPE_TIMESTAMP;
+    Crypt_FakeProviderSigner.dwSignerType = 0;
+    Crypt_FakeProviderSigner.psSigner = NULL;
     Crypt_FakeProviderSigner.sftVerifyAsOf.dwLowDateTime = 0;
     Crypt_FakeProviderSigner.sftVerifyAsOf.dwHighDateTime = 0;
     Crypt_FakeProviderSigner.dwError = ERROR_SUCCESS;
@@ -1390,20 +1427,162 @@ static BOOLEAN Crypt_HasFakeProviderCert(void)
 
 
 //---------------------------------------------------------------------------
+// Crypt_TrySeedFakeProviderCert
+//---------------------------------------------------------------------------
+
+
+static void Crypt_TrySeedFakeProviderCert(HCERTSTORE hCertStore)
+{
+    HMODULE hCrypt32;
+
+    if (!hCertStore || Crypt_HasFakeProviderCert())
+        return;
+
+    hCrypt32 = GetModuleHandleW(L"crypt32.dll");
+    if (hCrypt32) {
+        typedef PCCERT_CONTEXT (WINAPI *P_CertEnum)(HCERTSTORE, PCCERT_CONTEXT);
+        typedef PCCERT_CONTEXT (WINAPI *P_CertDup)(PCCERT_CONTEXT);
+        typedef BOOL (WINAPI *P_CertFree)(PCCERT_CONTEXT);
+        P_CertEnum pfnEnum = (P_CertEnum)GetProcAddress(hCrypt32, "CertEnumCertificatesInStore");
+        P_CertDup pfnDup = (P_CertDup)GetProcAddress(hCrypt32, "CertDuplicateCertificateContext");
+        P_CertFree pfnFree = (P_CertFree)GetProcAddress(hCrypt32, "CertFreeCertificateContext");
+
+        if (pfnEnum && pfnDup && pfnFree) {
+            PCCERT_CONTEXT firstCert = pfnEnum(hCertStore, NULL);
+
+            if (firstCert) {
+                PCCERT_CONTEXT dupCert = pfnDup(firstCert);
+                pfnFree(firstCert);
+
+                if (dupCert) {
+                    PVOID dupCertValue = (PVOID)dupCert;
+                    if (InterlockedCompareExchangePointer(
+                            (PVOID volatile *)&Crypt_FakeCertContextPtr,
+                            dupCertValue, NULL) == NULL) {
+                        InterlockedExchangePointer(
+                            (PVOID volatile *)&Crypt_FakeProviderCert.pCert,
+                            dupCertValue);
+                        Crypt_UpdateFakeProviderStatePointers();
+                    } else {
+                        pfnFree(dupCert);
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_EnsureFakeProviderCert
+//---------------------------------------------------------------------------
+
+
+static void Crypt_EnsureFakeProviderCert(void)
+{
+    HMODULE hCrypt32;
+
+    if (Crypt_HasFakeProviderCert())
+        return;
+
+    hCrypt32 = GetModuleHandleW(L"crypt32.dll");
+    if (!hCrypt32)
+        return;
+
+    {
+        typedef HCERTSTORE (WINAPI *P_CertOpenSystemStoreW)(HCRYPTPROV_LEGACY, LPCWSTR);
+        typedef BOOL (WINAPI *P_CertCloseStore)(HCERTSTORE, DWORD);
+        P_CertOpenSystemStoreW pfnOpen =
+            (P_CertOpenSystemStoreW)GetProcAddress(hCrypt32, "CertOpenSystemStoreW");
+        P_CertCloseStore pfnClose =
+            (P_CertCloseStore)GetProcAddress(hCrypt32, "CertCloseStore");
+
+        if (pfnOpen && pfnClose) {
+            HCERTSTORE hStore = pfnOpen(0, L"ROOT");
+            if (hStore) {
+                Crypt_TrySeedFakeProviderCert(hStore);
+                pfnClose(hStore, 0);
+            }
+
+            if (!Crypt_HasFakeProviderCert()) {
+                hStore = pfnOpen(0, L"CA");
+                if (hStore) {
+                    Crypt_TrySeedFakeProviderCert(hStore);
+                    pfnClose(hStore, 0);
+                }
+            }
+
+            if (!Crypt_HasFakeProviderCert()) {
+                hStore = pfnOpen(0, L"MY");
+                if (hStore) {
+                    Crypt_TrySeedFakeProviderCert(hStore);
+                    pfnClose(hStore, 0);
+                }
+            }
+        }
+    }
+
+    Crypt_UpdateFakeProviderStatePointers();
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_RefreshFakeProviderState
+//---------------------------------------------------------------------------
+
+
+static void Crypt_RefreshFakeProviderState(void)
+{
+    Crypt_InitFakeProviderState();
+    Crypt_EnsureFakeProviderCert();
+    Crypt_UpdateFakeProviderStatePointers();
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_UpdateFakeSignerInfo
+//---------------------------------------------------------------------------
+
+
+static void Crypt_UpdateFakeSignerInfo(void)
+{
+    PCCERT_CONTEXT pCert = (PCCERT_CONTEXT)InterlockedCompareExchangePointer(
+        (PVOID volatile *)&Crypt_FakeProviderCert.pCert, NULL, NULL);
+
+    memzero(&Crypt_FakeSignerInfo, sizeof(Crypt_FakeSignerInfo));
+
+    if (!pCert || !pCert->pCertInfo)
+        return;
+
+    Crypt_FakeSignerInfo.dwVersion = CMSG_SIGNER_INFO_V1;
+    Crypt_FakeSignerInfo.Issuer = pCert->pCertInfo->Issuer;
+    Crypt_FakeSignerInfo.SerialNumber = pCert->pCertInfo->SerialNumber;
+    Crypt_FakeSignerInfo.HashAlgorithm.pszObjId = szOID_NIST_sha256;
+    Crypt_FakeSignerInfo.HashEncryptionAlgorithm.pszObjId = szOID_RSA_SHA256RSA;
+}
+
+
+//---------------------------------------------------------------------------
 // Crypt_UpdateFakeProviderStatePointers
 //---------------------------------------------------------------------------
 
 
 static void Crypt_UpdateFakeProviderStatePointers(void)
 {
+    Crypt_UpdateFakeSignerInfo();
+
     if (Crypt_HasFakeProviderCert()) {
         Crypt_FakeProviderSigner.pasCertChain = &Crypt_FakeProviderCert;
         Crypt_FakeProviderSigner.csCertChain = 1;
+        Crypt_FakeProviderSigner.psSigner =
+            (Crypt_FakeSignerInfo.SerialNumber.pbData && Crypt_FakeSignerInfo.Issuer.pbData)
+                ? &Crypt_FakeSignerInfo : NULL;
         Crypt_FakeProviderData.pasSigners = &Crypt_FakeProviderSigner;
         Crypt_FakeProviderData.csSigners = 1;
     } else {
         Crypt_FakeProviderSigner.pasCertChain = NULL;
         Crypt_FakeProviderSigner.csCertChain = 0;
+        Crypt_FakeProviderSigner.psSigner = NULL;
         Crypt_FakeProviderData.pasSigners = NULL;
         Crypt_FakeProviderData.csSigners = 0;
     }
@@ -1432,7 +1611,7 @@ static void Crypt_SanitizeForcedProviderData(
     DWORD k;
     BOOLEAN has_fake_cert;
 
-    Crypt_InitFakeProviderState();
+    Crypt_RefreshFakeProviderState();
     has_fake_cert = Crypt_HasFakeProviderCert();
 
     if (!pProvData)
@@ -1617,17 +1796,233 @@ static BOOLEAN Crypt_IsForcedTrustState(HANDLE hStateData)
 
 
 //---------------------------------------------------------------------------
-// Crypt_WinVerifyTrust
+// Crypt_HandleWinTrustCloseState
 //---------------------------------------------------------------------------
 
 
-_FX LONG Crypt_WinVerifyTrust(
+static BOOLEAN Crypt_HandleWinTrustCloseState(
+    const WCHAR *trace_tag, BOOLEAN trace,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN has_state_handle, HANDLE hStateData,
+    LONG *pResult)
+{
+    BOOLEAN is_forced_state;
+
+    if (!(has_state_action
+            && state_action == WTD_STATEACTION_CLOSE
+            && has_state_handle
+            && hStateData))
+        return FALSE;
+
+    is_forced_state = Crypt_IsForcedTrustState(hStateData);
+
+    if (hStateData == Crypt_GetFakeStateHandle()) {
+        Crypt_ForgetForcedTrustState(hStateData);
+        if (trace) {
+            Crypt_Trace(L"%s fake close state=%p caller=%p",
+                trace_tag,
+                CRYPT_REDACT(hStateData),
+                CRYPT_REDACT(Crypt_GetCallerAddress()));
+        }
+        SetLastError(ERROR_SUCCESS);
+        *pResult = ERROR_SUCCESS;
+        return TRUE;
+    }
+
+    if (is_forced_state)
+        Crypt_ForgetForcedTrustState(hStateData);
+
+    if (is_forced_state && __sys_WTHelperProvDataFromStateData) {
+        CRYPT_PROVIDER_DATA *pProv =
+            __sys_WTHelperProvDataFromStateData(hStateData);
+        Crypt_RestoreForcedProviderData(pProv);
+    }
+
+    return FALSE;
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_TraceWinTrustResult
+//---------------------------------------------------------------------------
+
+
+static void Crypt_TraceWinTrustResult(
+    const WCHAR *trace_tag, BOOLEAN trace, LONG result,
+    BOOLEAN has_union_choice, DWORD union_choice,
+    BOOLEAN has_state_action, DWORD state_action,
+    HANDLE hStateData, const WCHAR *path)
+{
+    if (path && path[0]) {
+        if (trace
+#if !defined(_DEBUG) && !defined(_CRYPTDEBUG)
+            && (result != ERROR_SUCCESS || Crypt_ShouldForceTrustForPath(path))
+#endif
+        ) {
+            Crypt_Trace(L"%s rc=%08X action=%u state=%p file=%s caller=%p",
+                trace_tag,
+                (ULONG)result,
+                (ULONG)(has_state_action ? state_action : 0),
+                CRYPT_REDACT(hStateData),
+                path ? path : L"(null)",
+                CRYPT_REDACT(Crypt_GetCallerAddress()));
+        }
+    } else {
+#if defined(_DEBUG) || defined(_CRYPTDEBUG)
+        if (trace && has_union_choice) {
+            Crypt_Trace(L"%s rc=%08X choice=%u action=%u state=%p caller=%p",
+                trace_tag,
+                (ULONG)result,
+                (ULONG)union_choice,
+                (ULONG)(has_state_action ? state_action : 0),
+                CRYPT_REDACT(hStateData),
+                CRYPT_REDACT(Crypt_GetCallerAddress()));
+        }
+#else
+        (void)trace_tag;
+        (void)trace;
+        (void)result;
+        (void)has_union_choice;
+        (void)union_choice;
+        (void)has_state_action;
+        (void)state_action;
+        (void)hStateData;
+#endif
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_TraceWinTrustProviderState
+//---------------------------------------------------------------------------
+
+
+static void Crypt_TraceWinTrustProviderState(
+    const WCHAR *trace_tag, BOOLEAN trace,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN is_force_target, HANDLE hStateData)
+{
+    if (trace
+            && is_force_target
+            && has_state_action
+            && state_action != WTD_STATEACTION_CLOSE
+            && hStateData
+            && __sys_WTHelperProvDataFromStateData) {
+        CRYPT_PROVIDER_DATA *pProv =
+            __sys_WTHelperProvDataFromStateData(hStateData);
+        if (pProv) {
+            DWORD chainLen = 0;
+            DWORD signerCount = 0;
+            PCCERT_CONTEXT pCert = NULL;
+            PVOID signerPtr = NULL;
+
+            if (pProv->cbStruct >= CRYPT_STRUCT_FIELD_END(CRYPT_PROVIDER_DATA, pasSigners)
+                    && pProv->cbStruct >= CRYPT_STRUCT_FIELD_END(CRYPT_PROVIDER_DATA, csSigners)
+                    && pProv->pasSigners && pProv->csSigners) {
+                CRYPT_PROVIDER_CERT *pCertChain = NULL;
+                signerCount = pProv->csSigners;
+                signerPtr = (PVOID)pProv->pasSigners;
+                if (Crypt_GetProviderSignerCertChain(
+                            &pProv->pasSigners[0], &pCertChain, &chainLen)
+                        && pCertChain) {
+                    pCert = (chainLen > 0) ? pCertChain[0].pCert : NULL;
+                }
+            }
+
+            Crypt_Trace(
+                L"%s state signers=%u chain=%u pCert=%p sgnrPtr=%p",
+                trace_tag,
+                signerCount, chainLen, CRYPT_REDACT(pCert), CRYPT_REDACT(signerPtr));
+        }
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_ForceWinTrustSuccess
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN Crypt_ForceWinTrustSuccess(
+    const WCHAR *trace_tag, BOOLEAN trace, LONG result,
+    BOOLEAN has_state_action, DWORD state_action,
+    BOOLEAN is_force_target,
+    WINTRUST_DATA *pWinTrustData, HANDLE *phStateData,
+    const WCHAR *path)
+{
+    HANDLE hStateData;
+
+    if (!(result != ERROR_SUCCESS
+            && has_state_action
+            && state_action != WTD_STATEACTION_CLOSE
+            && is_force_target))
+        return FALSE;
+
+    hStateData = (phStateData ? *phStateData : NULL);
+
+    if (state_action == WTD_STATEACTION_VERIFY) {
+        BOOLEAN remember_ok;
+
+        if (!hStateData && Crypt_SetWinTrustStateHandle(
+                pWinTrustData, Crypt_GetFakeStateHandle())) {
+            hStateData = Crypt_GetFakeStateHandle();
+            if (phStateData)
+                *phStateData = hStateData;
+        }
+
+        remember_ok = Crypt_RememberForcedTrustState(hStateData);
+
+        if (remember_ok
+                && hStateData
+                && __sys_WTHelperProvDataFromStateData
+                && hStateData != Crypt_GetFakeStateHandle()) {
+            CRYPT_PROVIDER_DATA *pProv =
+                __sys_WTHelperProvDataFromStateData(hStateData);
+            Crypt_SanitizeForcedProviderData(pProv, hStateData, trace);
+        }
+
+        if (!remember_ok && trace && hStateData != Crypt_GetFakeStateHandle()) {
+            Crypt_Trace(L"%s force skip sanitize state=%p file=%s caller=%p",
+                trace_tag,
+                CRYPT_REDACT(hStateData),
+                path ? path : L"(null)",
+                CRYPT_REDACT(Crypt_GetCallerAddress()));
+        }
+    }
+
+    if (trace) {
+        Crypt_Trace(L"%s force rc=%08X action=%u state=%p file=%s caller=%p",
+            trace_tag,
+            (ULONG)result,
+            (ULONG)state_action,
+            CRYPT_REDACT(hStateData),
+            path ? path : L"(null)",
+            CRYPT_REDACT(Crypt_GetCallerAddress()));
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_RunWinVerifyTrust
+//---------------------------------------------------------------------------
+
+
+static LONG Crypt_RunWinVerifyTrust(
+    LONG (WINAPI *pfnVerifyTrust)(HWND, GUID *, WINTRUST_DATA *),
+    const WCHAR *trace_tag,
+    BOOLEAN trace_provider_state,
     HWND hwnd, GUID *pgActionID, WINTRUST_DATA *pWinTrustData)
 {
     LONG result;
-    const WCHAR *path = NULL;
+    const WCHAR *path_ptr = NULL;
+    WCHAR path_buf[MAX_PATH + 1] = { 0 };
+    const WCHAR *path = path_buf;
     BOOLEAN trace = Crypt_HasTrustRules();
     BOOLEAN is_force_target = FALSE;
+    BOOLEAN allow_file_path;
     DWORD union_choice = 0;
     DWORD state_action = 0;
     HANDLE hStateData = NULL;
@@ -1638,42 +2033,30 @@ _FX LONG Crypt_WinVerifyTrust(
     BOOLEAN has_state_handle =
         Crypt_GetWinTrustStateHandle(pWinTrustData, &hStateData);
 
-    path = Crypt_GetWinTrustFilePath(pWinTrustData);
-
-    if (has_state_action
-            && state_action == WTD_STATEACTION_CLOSE
-            && has_state_handle
-            && hStateData) {
-        BOOLEAN is_forced_state = Crypt_IsForcedTrustState(hStateData);
-
-        if (hStateData == Crypt_GetFakeStateHandle()) {
-            Crypt_ForgetForcedTrustState(hStateData);
-            if (trace) {
-                Crypt_Trace(L"WVT fake close state=%p caller=%p",
-                    CRYPT_REDACT(hStateData),
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-            SetLastError(ERROR_SUCCESS);
-            return ERROR_SUCCESS;
-        }
-
-        if (is_forced_state)
-            Crypt_ForgetForcedTrustState(hStateData);
-
-        if (is_forced_state && __sys_WTHelperProvDataFromStateData) {
-            CRYPT_PROVIDER_DATA *pProv =
-                __sys_WTHelperProvDataFromStateData(hStateData);
-            Crypt_RestoreForcedProviderData(pProv);
+    allow_file_path = (!has_state_action || state_action != WTD_STATEACTION_CLOSE);
+    if (allow_file_path) {
+        path_ptr = Crypt_GetWinTrustFilePath(pWinTrustData);
+        if (!path_ptr
+                || !Crypt_CopyPathSafe(path_ptr, path_buf, sizeof(path_buf) / sizeof(path_buf[0]))
+                || !path_buf[0]) {
+            path_buf[0] = L'\0';
         }
     }
 
-    if (has_state_action && state_action != WTD_STATEACTION_CLOSE && path)
+    if (Crypt_HandleWinTrustCloseState(
+                trace_tag, trace,
+                has_state_action, state_action,
+                has_state_handle, hStateData,
+                &result))
+        return result;
+
+    if (has_state_action && state_action != WTD_STATEACTION_CLOSE && path && path[0])
         is_force_target = Crypt_ShouldForceTrustForPath(path);
 
     if (is_force_target)
         Crypt_EnterForceChainPolicy();
 
-    result = __sys_WinVerifyTrust(hwnd, pgActionID, pWinTrustData);
+    result = pfnVerifyTrust(hwnd, pgActionID, pWinTrustData);
 
     has_state_handle = Crypt_GetWinTrustStateHandle(pWinTrustData, &hStateData);
 
@@ -1681,83 +2064,45 @@ _FX LONG Crypt_WinVerifyTrust(
         Crypt_LeaveForceChainPolicy();
 
     if (pWinTrustData) {
-        if (path) {
-            if (trace
-#if !defined(_DEBUG) && !defined(_CRYPTDEBUG)
-                && (result != ERROR_SUCCESS || is_force_target)
-#endif
-            ) {
-                Crypt_Trace(L"WVT rc=%08X action=%u state=%p file=%s caller=%p",
-                    (ULONG)result,
-                    (ULONG)(has_state_action ? state_action : 0),
-                    CRYPT_REDACT(hStateData),
-                    path ? path : L"(null)",
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-        } else {
-#if defined(_DEBUG) || defined(_CRYPTDEBUG)
-            if (trace && has_union_choice) {
-                Crypt_Trace(L"WVT rc=%08X choice=%u action=%u state=%p caller=%p",
-                    (ULONG)result,
-                    (ULONG)union_choice,
-                    (ULONG)(has_state_action ? state_action : 0),
-                    CRYPT_REDACT(hStateData),
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-#endif
-        }
+        Crypt_TraceWinTrustResult(
+            trace_tag, trace, result,
+            has_union_choice, union_choice,
+            has_state_action, state_action,
+            hStateData, path);
 
-        if (result != ERROR_SUCCESS
-                && has_state_action
-                && state_action != WTD_STATEACTION_CLOSE
-                && is_force_target) {
+        if (trace_provider_state && result == ERROR_SUCCESS)
+            Crypt_TraceWinTrustProviderState(
+                trace_tag, trace,
+                has_state_action, state_action,
+                is_force_target, hStateData);
 
-            if (state_action == WTD_STATEACTION_VERIFY) {
-                BOOLEAN remember_ok;
-
-                if (!hStateData && Crypt_SetWinTrustStateHandle(
-                        pWinTrustData, Crypt_GetFakeStateHandle())) {
-                    has_state_handle = TRUE;
-                    hStateData = Crypt_GetFakeStateHandle();
-                }
-
-                remember_ok = Crypt_RememberForcedTrustState(hStateData);
-
-                if (remember_ok
-                        && hStateData
-                        && __sys_WTHelperProvDataFromStateData
-                        && hStateData != Crypt_GetFakeStateHandle()) {
-                    CRYPT_PROVIDER_DATA *pProv =
-                        __sys_WTHelperProvDataFromStateData(hStateData);
-                    Crypt_SanitizeForcedProviderData(pProv, hStateData, trace);
-                }
-
-                if (!remember_ok && trace && hStateData != Crypt_GetFakeStateHandle()) {
-                    Crypt_Trace(L"WVT force skip sanitize state=%p file=%s caller=%p",
-                        CRYPT_REDACT(hStateData),
-                        path ? path : L"(null)",
-                        CRYPT_REDACT(Crypt_GetCallerAddress()));
-                }
-            }
-
-            if (trace) {
-                Crypt_Trace(L"WVT force rc=%08X action=%u state=%p file=%s caller=%p",
-                    (ULONG)result,
-                    (ULONG)state_action,
-                    CRYPT_REDACT(hStateData),
-                    path ? path : L"(null)",
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-
-            SetLastError(ERROR_SUCCESS);
+        if (Crypt_ForceWinTrustSuccess(
+                    trace_tag, trace, result,
+                    has_state_action, state_action,
+                    is_force_target,
+                    pWinTrustData, &hStateData,
+                    path))
             return ERROR_SUCCESS;
-        }
 
         if (has_state_action && state_action == WTD_STATEACTION_CLOSE)
             Crypt_ForgetForcedTrustState(hStateData);
     }
 
     return result;
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_WinVerifyTrust
+//---------------------------------------------------------------------------
+
+
+_FX LONG Crypt_WinVerifyTrust(
+    HWND hwnd, GUID *pgActionID, WINTRUST_DATA *pWinTrustData)
+{
+    return Crypt_RunWinVerifyTrust(
+        __sys_WinVerifyTrust, L"WVT", FALSE,
+        hwnd, pgActionID, pWinTrustData);
 }
 
 
@@ -1769,171 +2114,9 @@ _FX LONG Crypt_WinVerifyTrust(
 _FX LONG Crypt_WinVerifyTrustEx(
     HWND hwnd, GUID *pgActionID, WINTRUST_DATA *pWinTrustData)
 {
-    LONG result;
-    const WCHAR *path = NULL;
-    BOOLEAN trace = Crypt_HasTrustRules();
-    BOOLEAN is_force_target = FALSE;
-    DWORD union_choice = 0;
-    DWORD state_action = 0;
-    HANDLE hStateData = NULL;
-    BOOLEAN has_union_choice =
-        Crypt_GetWinTrustUnionChoice(pWinTrustData, &union_choice);
-    BOOLEAN has_state_action =
-        Crypt_GetWinTrustStateAction(pWinTrustData, &state_action);
-    BOOLEAN has_state_handle =
-        Crypt_GetWinTrustStateHandle(pWinTrustData, &hStateData);
-
-    path = Crypt_GetWinTrustFilePath(pWinTrustData);
-
-    if (has_state_action
-            && state_action == WTD_STATEACTION_CLOSE
-            && has_state_handle
-            && hStateData) {
-        BOOLEAN is_forced_state = Crypt_IsForcedTrustState(hStateData);
-
-        if (hStateData == Crypt_GetFakeStateHandle()) {
-            Crypt_ForgetForcedTrustState(hStateData);
-            if (trace) {
-                Crypt_Trace(L"WVTEx fake close state=%p caller=%p",
-                    CRYPT_REDACT(hStateData),
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-            SetLastError(ERROR_SUCCESS);
-            return ERROR_SUCCESS;
-        }
-
-        if (is_forced_state)
-            Crypt_ForgetForcedTrustState(hStateData);
-
-        if (is_forced_state && __sys_WTHelperProvDataFromStateData) {
-            CRYPT_PROVIDER_DATA *pProv =
-                __sys_WTHelperProvDataFromStateData(hStateData);
-            Crypt_RestoreForcedProviderData(pProv);
-        }
-    }
-
-    if (has_state_action && state_action != WTD_STATEACTION_CLOSE && path)
-        is_force_target = Crypt_ShouldForceTrustForPath(path);
-
-    if (is_force_target)
-        Crypt_EnterForceChainPolicy();
-
-    result = __sys_WinVerifyTrustEx(hwnd, pgActionID, pWinTrustData);
-
-    has_state_handle = Crypt_GetWinTrustStateHandle(pWinTrustData, &hStateData);
-
-    if (is_force_target)
-        Crypt_LeaveForceChainPolicy();
-
-    if (pWinTrustData) {
-        if (path) {
-            if (trace
-#if !defined(_DEBUG) && !defined(_CRYPTDEBUG)
-                && (result != ERROR_SUCCESS || is_force_target)
-#endif
-            ) {
-                Crypt_Trace(L"WVTEx rc=%08X action=%u state=%p file=%s caller=%p",
-                    (ULONG)result,
-                    (ULONG)(has_state_action ? state_action : 0),
-                    CRYPT_REDACT(hStateData),
-                    path ? path : L"(null)",
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-
-            if (result == ERROR_SUCCESS
-                    && has_state_action
-                    && state_action != WTD_STATEACTION_CLOSE
-                    && is_force_target
-                    && hStateData
-                    && __sys_WTHelperProvDataFromStateData) {
-                CRYPT_PROVIDER_DATA *pProv =
-                    __sys_WTHelperProvDataFromStateData(hStateData);
-                if (trace && pProv) {
-                    DWORD chainLen = 0;
-                    DWORD signerCount = 0;
-                    PCCERT_CONTEXT pCert = NULL;
-                    PVOID signerPtr = NULL;
-                    if (pProv->cbStruct >= CRYPT_STRUCT_FIELD_END(CRYPT_PROVIDER_DATA, pasSigners)
-                            && pProv->cbStruct >= CRYPT_STRUCT_FIELD_END(CRYPT_PROVIDER_DATA, csSigners)
-                            && pProv->pasSigners && pProv->csSigners) {
-                        CRYPT_PROVIDER_CERT *pCertChain = NULL;
-                        signerCount = pProv->csSigners;
-                        signerPtr = (PVOID)pProv->pasSigners;
-                        if (Crypt_GetProviderSignerCertChain(
-                                    &pProv->pasSigners[0], &pCertChain, &chainLen)
-                                && pCertChain) {
-                               pCert = (chainLen > 0) ? pCertChain[0].pCert : NULL;
-                        }
-                    }
-                    Crypt_Trace(
-                        L"WVTEx state signers=%u chain=%u pCert=%p sgnrPtr=%p",
-                        signerCount, chainLen, CRYPT_REDACT(pCert), CRYPT_REDACT(signerPtr));
-                }
-            }
-        } else {
-#if defined(_DEBUG) || defined(_CRYPTDEBUG)
-            if (trace && has_union_choice) {
-                Crypt_Trace(L"WVTEx rc=%08X choice=%u action=%u state=%p caller=%p",
-                    (ULONG)result,
-                    (ULONG)union_choice,
-                    (ULONG)(has_state_action ? state_action : 0),
-                    CRYPT_REDACT(hStateData),
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-#endif
-        }
-
-        if (result != ERROR_SUCCESS
-                && has_state_action
-                && state_action != WTD_STATEACTION_CLOSE
-                && is_force_target) {
-
-            if (state_action == WTD_STATEACTION_VERIFY) {
-                BOOLEAN remember_ok;
-
-                if (!hStateData && Crypt_SetWinTrustStateHandle(
-                        pWinTrustData, Crypt_GetFakeStateHandle())) {
-                    has_state_handle = TRUE;
-                    hStateData = Crypt_GetFakeStateHandle();
-                }
-
-                remember_ok = Crypt_RememberForcedTrustState(hStateData);
-
-                if (remember_ok
-                        && hStateData
-                        && __sys_WTHelperProvDataFromStateData
-                        && hStateData != Crypt_GetFakeStateHandle()) {
-                    CRYPT_PROVIDER_DATA *pProv =
-                        __sys_WTHelperProvDataFromStateData(hStateData);
-                    Crypt_SanitizeForcedProviderData(pProv, hStateData, trace);
-                }
-
-                if (!remember_ok && trace && hStateData != Crypt_GetFakeStateHandle()) {
-                    Crypt_Trace(L"WVTEx force skip sanitize state=%p file=%s caller=%p",
-                        CRYPT_REDACT(hStateData),
-                        path ? path : L"(null)",
-                        CRYPT_REDACT(Crypt_GetCallerAddress()));
-                }
-            }
-
-            if (trace) {
-                Crypt_Trace(L"WVTEx force rc=%08X action=%u state=%p file=%s caller=%p",
-                    (ULONG)result,
-                    (ULONG)state_action,
-                    CRYPT_REDACT(hStateData),
-                    path ? path : L"(null)",
-                    CRYPT_REDACT(Crypt_GetCallerAddress()));
-            }
-
-            SetLastError(ERROR_SUCCESS);
-            return ERROR_SUCCESS;
-        }
-
-        if (has_state_action && state_action == WTD_STATEACTION_CLOSE)
-            Crypt_ForgetForcedTrustState(hStateData);
-    }
-
-    return result;
+    return Crypt_RunWinVerifyTrust(
+        (P_WinVerifyTrust)__sys_WinVerifyTrustEx, L"WVTEx", TRUE,
+        hwnd, pgActionID, pWinTrustData);
 }
 
 
@@ -1950,8 +2133,7 @@ _FX CRYPT_PROVIDER_DATA *Crypt_WTHelperProvDataFromStateData(HANDLE hStateData)
     BOOLEAN trace = Crypt_HasTrustRules();
 
     if (hStateData == Crypt_GetFakeStateHandle()) {
-        Crypt_InitFakeProviderState();
-        Crypt_UpdateFakeProviderStatePointers();
+        Crypt_RefreshFakeProviderState();
         if (trace) {
             Crypt_Trace(L"WTHelperProvDataFromStateData fake state=%p",
                 CRYPT_REDACT(hStateData));
@@ -1996,7 +2178,7 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
         Crypt_GetProviderWinTrustData(pProvData, &pProviderWtd);
 
     if (pProvData == &Crypt_FakeProviderData) {
-        Crypt_UpdateFakeProviderStatePointers();
+        Crypt_RefreshFakeProviderState();
         Crypt_Trace(L"WTHelperGetProvSignerFromChain fake idx=%u ctr=%u cidx=%u",
             (ULONG)idxSigner, (ULONG)fCounterSigner, (ULONG)idxCounterSigner);
         if (idxSigner == 0 && !fCounterSigner && idxCounterSigner == 0
@@ -2016,8 +2198,7 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
             && !fCounterSigner
             && idxCounterSigner == 0) {
 
-        Crypt_InitFakeProviderState();
-        Crypt_UpdateFakeProviderStatePointers();
+        Crypt_RefreshFakeProviderState();
         if (!Crypt_HasFakeProviderCert())
             return NULL;
         Crypt_Trace(L"WTHelperGetProvSignerFromChain force fake signer");
@@ -2037,7 +2218,7 @@ _FX CRYPT_PROVIDER_CERT *Crypt_WTHelperGetProvCertFromChain(
     CRYPT_PROVIDER_SGNR *pSgnr, DWORD idxCert)
 {
     if (pSgnr == &Crypt_FakeProviderSigner) {
-        Crypt_UpdateFakeProviderStatePointers();
+        Crypt_RefreshFakeProviderState();
         Crypt_Trace(L"WTHelperGetProvCertFromChain fake idx=%u", (ULONG)idxCert);
         if (idxCert == 0 && Crypt_HasFakeProviderCert())
             return &Crypt_FakeProviderCert;
