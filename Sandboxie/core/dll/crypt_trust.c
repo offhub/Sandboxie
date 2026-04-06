@@ -130,6 +130,8 @@ static CRYPT_PROVIDER_CERT *Crypt_WTHelperGetProvCertFromChain(
 static HRESULT Crypt_WTHelperCertCheckValidSignature(
     CRYPT_PROVIDER_DATA *pProvData);
 static void Crypt_InitFakeProviderState(void);
+static BOOLEAN Crypt_HasFakeProviderCert(void);
+static void Crypt_UpdateFakeProviderStatePointers(void);
 static void Crypt_SanitizeForcedProviderData(
     CRYPT_PROVIDER_DATA *pProvData, HANDLE hStateData, BOOLEAN trace);
 static void Crypt_RestoreForcedProviderData(CRYPT_PROVIDER_DATA *pProvData);
@@ -994,20 +996,88 @@ static BOOL Crypt_CryptQueryObject(
             DWORD proxy_enc = 0;
             DWORD proxy_content = 0;
             DWORD proxy_format = 0;
+            DWORD proxy_expected_content = dwExpectedContentTypeFlags;
+            DWORD proxy_expected_format = dwExpectedFormatTypeFlags;
             HCERTSTORE proxy_store = NULL;
             HCRYPTMSG proxy_msg = NULL;
             const void *proxy_ctx = NULL;
             const void **proxy_ctx_ptr = (ppvContext ? &proxy_ctx : NULL);
             BOOL proxy_ok;
 
+            if (proxy_expected_content == 0)
+                proxy_expected_content = CERT_QUERY_CONTENT_FLAG_ALL;
+            if (proxy_expected_format == 0)
+                proxy_expected_format = CERT_QUERY_FORMAT_FLAG_ALL;
+
             proxy_ok = __sys_CryptQueryObject(
                 CERT_QUERY_OBJECT_FILE,
                 L"C:\\Windows\\System32\\crypt32.dll",
-                CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
-                CERT_QUERY_FORMAT_FLAG_ALL,
-                0,
+                proxy_expected_content,
+                proxy_expected_format,
+                dwFlags,
                 &proxy_enc, &proxy_content, &proxy_format,
                 &proxy_store, &proxy_msg, proxy_ctx_ptr);
+
+            if (!proxy_ok && proxy_expected_content != CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED) {
+                if (proxy_msg) {
+                    __sys_CryptMsgClose(proxy_msg);
+                    proxy_msg = NULL;
+                }
+
+                if (proxy_store) {
+                    HMODULE hCrypt32 = GetModuleHandleW(L"crypt32.dll");
+                    if (hCrypt32) {
+                        typedef BOOL (WINAPI *P_CertCloseStore)(HCERTSTORE, DWORD);
+                        P_CertCloseStore pfnCertCloseStore =
+                            (P_CertCloseStore)GetProcAddress(hCrypt32, "CertCloseStore");
+                        if (pfnCertCloseStore)
+                            pfnCertCloseStore(proxy_store, 0);
+                    }
+                    proxy_store = NULL;
+                }
+
+                if (proxy_ctx) {
+                    Crypt_FreeQueryObjectContext(proxy_content, proxy_ctx);
+                    proxy_ctx = NULL;
+                }
+
+                proxy_ok = __sys_CryptQueryObject(
+                    CERT_QUERY_OBJECT_FILE,
+                    L"C:\\Windows\\System32\\crypt32.dll",
+                    CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED,
+                    CERT_QUERY_FORMAT_FLAG_ALL,
+                    0,
+                    &proxy_enc, &proxy_content, &proxy_format,
+                    &proxy_store, &proxy_msg, proxy_ctx_ptr);
+            }
+
+            if (proxy_ok && ppvContext && !proxy_ctx) {
+                HMODULE hCrypt32 = GetModuleHandleW(L"crypt32.dll");
+
+                Crypt_Trace(L"CryptQueryObject proxy invalid context content=%u file=%s caller=%p",
+                    proxy_content, path, CRYPT_REDACT(Crypt_GetCallerAddress()));
+
+                if (proxy_msg) {
+                    __sys_CryptMsgClose(proxy_msg);
+                    proxy_msg = NULL;
+                }
+
+                if (proxy_store && hCrypt32) {
+                    typedef BOOL (WINAPI *P_CertCloseStore)(HCERTSTORE, DWORD);
+                    P_CertCloseStore pfnCertCloseStore =
+                        (P_CertCloseStore)GetProcAddress(hCrypt32, "CertCloseStore");
+                    if (pfnCertCloseStore)
+                        pfnCertCloseStore(proxy_store, 0);
+                }
+
+                if (proxy_ctx) {
+                    Crypt_FreeQueryObjectContext(proxy_content, proxy_ctx);
+                    proxy_ctx = NULL;
+                }
+
+                proxy_store = NULL;
+                proxy_ok = FALSE;
+            }
 
             if (proxy_ok) {
                 if (!phCertStore && proxy_store) {
@@ -1093,6 +1163,7 @@ static BOOL Crypt_CryptQueryObject(
                                         InterlockedExchangePointer(
                                             (PVOID volatile *)&Crypt_FakeProviderCert.pCert,
                                             dupCertValue);
+                                        Crypt_UpdateFakeProviderStatePointers();
                                     } else {
                                         pfnFree(dupCert);
                                     }
@@ -1281,13 +1352,13 @@ static void Crypt_InitFakeProviderState(void)
     }
 
     Crypt_FakeProviderData.cbStruct = sizeof(CRYPT_PROVIDER_DATA);
-    Crypt_FakeProviderData.csSigners = 1;
-    Crypt_FakeProviderData.pasSigners = &Crypt_FakeProviderSigner;
+    Crypt_FakeProviderData.csSigners = 0;
+    Crypt_FakeProviderData.pasSigners = NULL;
     Crypt_FakeProviderData.dwFinalError = ERROR_SUCCESS;
 
     Crypt_FakeProviderSigner.cbStruct = sizeof(CRYPT_PROVIDER_SGNR);
-    Crypt_FakeProviderSigner.csCertChain = 1;
-    Crypt_FakeProviderSigner.pasCertChain = &Crypt_FakeProviderCert;
+    Crypt_FakeProviderSigner.csCertChain = 0;
+    Crypt_FakeProviderSigner.pasCertChain = NULL;
     Crypt_FakeProviderSigner.dwSignerType = SGNR_TYPE_TIMESTAMP;
     Crypt_FakeProviderSigner.sftVerifyAsOf.dwLowDateTime = 0;
     Crypt_FakeProviderSigner.sftVerifyAsOf.dwHighDateTime = 0;
@@ -1300,7 +1371,42 @@ static void Crypt_InitFakeProviderState(void)
     Crypt_FakeProviderCert.dwConfidence = CERT_CONFIDENCE_HIGHEST;
     Crypt_FakeProviderCert.dwRevokedReason = 0;
 
+    Crypt_UpdateFakeProviderStatePointers();
+
     InterlockedExchange(&inited, 2);
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_HasFakeProviderCert
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN Crypt_HasFakeProviderCert(void)
+{
+    return (InterlockedCompareExchangePointer(
+        (PVOID volatile *)&Crypt_FakeProviderCert.pCert, NULL, NULL) != NULL);
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_UpdateFakeProviderStatePointers
+//---------------------------------------------------------------------------
+
+
+static void Crypt_UpdateFakeProviderStatePointers(void)
+{
+    if (Crypt_HasFakeProviderCert()) {
+        Crypt_FakeProviderSigner.pasCertChain = &Crypt_FakeProviderCert;
+        Crypt_FakeProviderSigner.csCertChain = 1;
+        Crypt_FakeProviderData.pasSigners = &Crypt_FakeProviderSigner;
+        Crypt_FakeProviderData.csSigners = 1;
+    } else {
+        Crypt_FakeProviderSigner.pasCertChain = NULL;
+        Crypt_FakeProviderSigner.csCertChain = 0;
+        Crypt_FakeProviderData.pasSigners = NULL;
+        Crypt_FakeProviderData.csSigners = 0;
+    }
 }
 
 
@@ -1324,8 +1430,10 @@ static void Crypt_SanitizeForcedProviderData(
     CRYPT_PROVIDER_DATA *pProvData, HANDLE hStateData, BOOLEAN trace)
 {
     DWORD k;
+    BOOLEAN has_fake_cert;
 
     Crypt_InitFakeProviderState();
+    has_fake_cert = Crypt_HasFakeProviderCert();
 
     if (!pProvData)
         return;
@@ -1339,7 +1447,7 @@ static void Crypt_SanitizeForcedProviderData(
     pProvData->dwFinalError = ERROR_SUCCESS;
     pProvData->dwError = ERROR_SUCCESS;
 
-    if (!pProvData->pasSigners || pProvData->csSigners == 0) {
+    if ((!pProvData->pasSigners || pProvData->csSigners == 0) && has_fake_cert) {
         Crypt_InitFakeProviderState();
         pProvData->pasSigners = &Crypt_FakeProviderSigner;
         pProvData->csSigners = 1;
@@ -1362,9 +1470,15 @@ static void Crypt_SanitizeForcedProviderData(
 
             if (Crypt_GetProviderSignerCertChain(
                         &pProvData->pasSigners[k], &pCertChain, &cCertChain)
-                    && (!pCertChain || cCertChain == 0)) {
-                Crypt_SetProviderSignerCertChain(
-                    &pProvData->pasSigners[k], &Crypt_FakeProviderCert, 1);
+                    && (!pCertChain || cCertChain == 0
+                        || (cCertChain > 0 && pCertChain[0].pCert == NULL))) {
+                if (has_fake_cert) {
+                    Crypt_SetProviderSignerCertChain(
+                        &pProvData->pasSigners[k], &Crypt_FakeProviderCert, 1);
+                } else {
+                    Crypt_SetProviderSignerCertChain(
+                        &pProvData->pasSigners[k], NULL, 0);
+                }
             }
         }
     }
@@ -1837,6 +1951,7 @@ _FX CRYPT_PROVIDER_DATA *Crypt_WTHelperProvDataFromStateData(HANDLE hStateData)
 
     if (hStateData == Crypt_GetFakeStateHandle()) {
         Crypt_InitFakeProviderState();
+        Crypt_UpdateFakeProviderStatePointers();
         if (trace) {
             Crypt_Trace(L"WTHelperProvDataFromStateData fake state=%p",
                 CRYPT_REDACT(hStateData));
@@ -1881,9 +1996,11 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
         Crypt_GetProviderWinTrustData(pProvData, &pProviderWtd);
 
     if (pProvData == &Crypt_FakeProviderData) {
+        Crypt_UpdateFakeProviderStatePointers();
         Crypt_Trace(L"WTHelperGetProvSignerFromChain fake idx=%u ctr=%u cidx=%u",
             (ULONG)idxSigner, (ULONG)fCounterSigner, (ULONG)idxCounterSigner);
-        if (idxSigner == 0 && !fCounterSigner && idxCounterSigner == 0)
+        if (idxSigner == 0 && !fCounterSigner && idxCounterSigner == 0
+                && Crypt_HasFakeProviderCert())
             return &Crypt_FakeProviderSigner;
         return NULL;
     }
@@ -1900,6 +2017,9 @@ _FX CRYPT_PROVIDER_SGNR *Crypt_WTHelperGetProvSignerFromChain(
             && idxCounterSigner == 0) {
 
         Crypt_InitFakeProviderState();
+        Crypt_UpdateFakeProviderStatePointers();
+        if (!Crypt_HasFakeProviderCert())
+            return NULL;
         Crypt_Trace(L"WTHelperGetProvSignerFromChain force fake signer");
         return &Crypt_FakeProviderSigner;
     }
@@ -1917,8 +2037,9 @@ _FX CRYPT_PROVIDER_CERT *Crypt_WTHelperGetProvCertFromChain(
     CRYPT_PROVIDER_SGNR *pSgnr, DWORD idxCert)
 {
     if (pSgnr == &Crypt_FakeProviderSigner) {
+        Crypt_UpdateFakeProviderStatePointers();
         Crypt_Trace(L"WTHelperGetProvCertFromChain fake idx=%u", (ULONG)idxCert);
-        if (idxCert == 0)
+        if (idxCert == 0 && Crypt_HasFakeProviderCert())
             return &Crypt_FakeProviderCert;
         return NULL;
     }
