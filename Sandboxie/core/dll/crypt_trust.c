@@ -682,6 +682,30 @@ static BOOLEAN Crypt_WildcardMatchNoCase(const WCHAR *pattern, const WCHAR *text
 
 
 //---------------------------------------------------------------------------
+// Crypt_SkipDosPathPrefix
+//---------------------------------------------------------------------------
+
+
+static const WCHAR *Crypt_SkipDosPathPrefix(const WCHAR *path)
+{
+    if (!path)
+        return NULL;
+
+    if (path[0] == L'\\' && path[1] == L'\\'
+            && path[2] == L'?' && path[3] == L'\\'
+            && path[5] == L':')
+        return path + 4;
+
+    if (path[0] == L'\\' && path[1] == L'?'
+            && path[2] == L'?' && path[3] == L'\\'
+            && path[5] == L':')
+        return path + 4;
+
+    return path;
+}
+
+
+//---------------------------------------------------------------------------
 // Crypt_MatchTrustFixPath
 //---------------------------------------------------------------------------
 
@@ -689,6 +713,8 @@ static BOOLEAN Crypt_WildcardMatchNoCase(const WCHAR *pattern, const WCHAR *text
 static BOOLEAN Crypt_MatchTrustFixPath(const WCHAR *rule, const WCHAR *path)
 {
     const WCHAR *base;
+    const WCHAR *norm_path;
+    const WCHAR *norm_base;
 
     if (!rule || !*rule || !path || !*path)
         return FALSE;
@@ -699,8 +725,18 @@ static BOOLEAN Crypt_MatchTrustFixPath(const WCHAR *rule, const WCHAR *path)
     else
         ++base;
 
+    norm_path = Crypt_SkipDosPathPrefix(path);
+    norm_base = wcsrchr(norm_path, L'\\');
+    if (!norm_base)
+        norm_base = norm_path;
+    else
+        ++norm_base;
+
     return Crypt_WildcardMatchNoCase(rule, path)
-        || Crypt_WildcardMatchNoCase(rule, base);
+        || Crypt_WildcardMatchNoCase(rule, base)
+        || (norm_path != path &&
+            (Crypt_WildcardMatchNoCase(rule, norm_path)
+                || Crypt_WildcardMatchNoCase(rule, norm_base)));
 }
 
 
