@@ -239,6 +239,11 @@ typedef struct _THREAD_DATA {
 
     ULONG_PTR       rpc_caller;
 
+    //
+    // crypt module: per-thread VerifyTrustFile chain policy override depth
+    //
+
+    ULONG           crypt_force_chain_policy_depth;
 } THREAD_DATA;
 
 

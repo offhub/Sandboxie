@@ -3,6 +3,7 @@
   <ItemGroup>
     <ClCompile Include="advapi.c" />
     <ClCompile Include="crypt.c" />
+    <ClCompile Include="crypt_trust.c" />
     <ClCompile Include="custom.c" />
     <ClCompile Include="dllmem.c" />
     <ClCompile Include="dllpath.c" />

@@ -213,6 +213,7 @@ static DLL Ldr_Dlls[] = {
     { L"wevtapi.dll",           EvtApi_Init,                    0}, // disable EvtIntAssertConfig
     { L"cfgmgr32.dll",          Setup_Init_CfgMgr32,            0}, // CM_Add_Driver_PackageW
     // Workarounds:
+    { L"wintrust.dll",          Trust_Init,                     0}, // WinVerifyTrust hooks for VerifyTrustFile
     { L"setupapi.dll",          Setup_Init_SetupApi,            0}, // VerifyCatalogFile
     { L"zipfldr.dll",           SH32_Init_ZipFldr,              0},
     { L"uxtheme.dll",           SH32_Init_UxTheme,              0}, // explorer.exe, SetWindowThemeAttribute

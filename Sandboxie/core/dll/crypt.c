@@ -36,6 +36,8 @@ static void Crypt_InitPromptData(
     COM_CRYPT_PROTECT_DATA_REQ *req,
     CRYPTPROTECT_PROMPTSTRUCT *pPromptStruct);
 
+BOOLEAN Trust_Crypt_Init(HMODULE module);
+
 static BOOL Crypt_CryptUnprotectData(
     DATA_BLOB *pDataIn, LPWSTR *ppszDataDescr, DATA_BLOB *pOptionalEntropy,
     PVOID pvReserved, CRYPTPROTECT_PROMPTSTRUCT *pPromptStruct,
@@ -393,11 +395,12 @@ _FX BOOLEAN Crypt_Init(HMODULE module)
     void *CertGetCertificateChain;
 
     //
-    // in app mode we have our original token so no need to hook this
+    // in app mode we have our original token so no need to hook this,
+    // but trust-specific hooks may still be needed for VerifyTrustFile.
     //
 
-    if (Dll_CompartmentMode) 
-        return TRUE;
+    if (Dll_CompartmentMode)
+        return Trust_Crypt_Init(module);
 
     //
     // hook cryptography services
@@ -422,7 +425,7 @@ _FX BOOLEAN Crypt_Init(HMODULE module)
     SBIEDLL_HOOK(Crypt_,CryptUnprotectData);
     SBIEDLL_HOOK(Crypt_,CertGetCertificateChain);
 
-    return TRUE;
+    return Trust_Crypt_Init(module);
 }
 
 #ifdef _WIN64

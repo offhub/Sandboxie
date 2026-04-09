@@ -493,6 +493,7 @@
     <ClCompile Include="config.c" />
     <ClCompile Include="cred.c" />
     <ClCompile Include="crypt.c" />
+    <ClCompile Include="crypt_trust.c" />
     <ClCompile Include="custom.c" />
     <ClCompile Include="debug.c" />
     <ClCompile Include="dllhook.c" />
