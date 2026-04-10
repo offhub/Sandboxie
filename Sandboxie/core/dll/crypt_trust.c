@@ -19,9 +19,11 @@
 // Trust Hooks - Code Signing Verification
 //
 // Implements VerifyTrustFile policy handling for sandboxed processes.
-// Matching file paths are processed in one of two modes:
+// Matching file paths are processed in one of three modes:
 //   - :fake    -> force WinVerifyTrust success and sanitize provider state.
 //   - :catalog -> prefer catalog-based verification/query paths.
+//   - :skip    -> exclude this path from any fake or catalog action, even
+//                 if a broader wildcard rule would otherwise match it.
 //
 // If no suffix is provided in VerifyTrustFile, :fake is used for backward
 // compatibility.
@@ -41,9 +43,11 @@
 //   - WTHelperCertCheckValidSignature
 //
 // Configuration (Sandboxie.ini):
-//   VerifyTrustFile=[process,]path_or_wildcard[:fake|:catalog]
+//   VerifyTrustFile=[process,]path_or_wildcard[:fake|:catalog|:skip]
 //     - One or more entries; mode is applied per matching path.
 //     - Wildcards (* and ?) are matched against full path and filename.
+//     - Exact rules (no wildcards) take priority over wildcard rules.
+//     - A :skip rule suppresses any matching fake or catalog action.
 //
 // Entry points:
 //   Trust_Crypt_Init(HMODULE) - installs crypt32.dll hooks, called by Crypt_Init
@@ -85,6 +89,7 @@
 #define CRYPT_TRUST_MODE_NONE    0
 #define CRYPT_TRUST_MODE_FAKE    1
 #define CRYPT_TRUST_MODE_CATALOG 2
+#define CRYPT_TRUST_MODE_SKIP    3
 #define CRYPT_STRUCT_FIELD_END(type, field) \
     (FIELD_OFFSET(type, field) + sizeof(((type *)0)->field))
 
@@ -229,6 +234,9 @@ static LONG Crypt_RunWinVerifyTrust(
     const WCHAR *trace_tag,
     BOOLEAN trace_provider_state,
     HWND hwnd, GUID *pgActionID, WINTRUST_DATA *pWinTrustData);
+static void Crypt_EnterSysWvtex(void);
+static void Crypt_LeaveSysWvtex(void);
+static BOOLEAN Crypt_IsInSysWvtex(void);
 static LONG Crypt_TryCatalogScanDir(
     LONG (WINAPI *pfnVerifyTrust)(HWND, GUID *, WINTRUST_DATA *),
     const WCHAR *trace_tag, BOOLEAN trace,
@@ -415,6 +423,39 @@ static void Crypt_LeaveForceChainPolicy(void)
 
     if (data && data->crypt_force_chain_policy_depth > 0)
         --data->crypt_force_chain_policy_depth;
+}
+
+
+//---------------------------------------------------------------------------
+// Crypt_EnterSysWvtex / Crypt_LeaveSysWvtex / Crypt_IsInSysWvtex
+//---------------------------------------------------------------------------
+
+
+static void Crypt_EnterSysWvtex(void)
+{
+    THREAD_DATA *data = Dll_GetTlsData(NULL);
+
+    if (data)
+        ++data->crypt_in_sys_wvtex;
+}
+
+
+static void Crypt_LeaveSysWvtex(void)
+{
+    THREAD_DATA *data = Dll_GetTlsData(NULL);
+
+    if (data && data->crypt_in_sys_wvtex > 0)
+        --data->crypt_in_sys_wvtex;
+}
+
+
+static BOOLEAN Crypt_IsInSysWvtex(void)
+{
+    THREAD_DATA *data = Dll_GetTlsData(NULL);
+
+    if (!data)
+        return FALSE;
+    return (data->crypt_in_sys_wvtex > 0);
 }
 
 
@@ -650,6 +691,9 @@ static ULONG Crypt_ParseTrustRuleMode(
     } else if (len >= 8 && _wcsnicmp(value + len - 8, L":catalog", 8) == 0) {
         mode = CRYPT_TRUST_MODE_CATALOG;
         len -= 8;
+    } else if (len >= 5 && _wcsnicmp(value + len - 5, L":skip", 5) == 0) {
+        mode = CRYPT_TRUST_MODE_SKIP;
+        len -= 5;
     }
 
     while (len > 0 && iswspace(value[len - 1]))
@@ -682,6 +726,7 @@ static ULONG Crypt_ParseTrustRuleMode(
 static ULONG Crypt_GetTrustModeForPath(const WCHAR *path)
 {
     ULONG i;
+    ULONG pass;
     WCHAR path_buf[1024];
 
     if (!Crypt_CopyPathSafe(path, path_buf, sizeof(path_buf) / sizeof(path_buf[0]))
@@ -692,9 +737,24 @@ static ULONG Crypt_GetTrustModeForPath(const WCHAR *path)
 
     Crypt_InitTrustRules();
 
-    for (i = 0; i < Crypt_TrustRuleCount; ++i) {
-        if (Crypt_MatchTrustFixPath(Crypt_TrustRules[i], path_buf))
-            return (ULONG)Crypt_TrustRuleModes[i];
+    // Two passes: exact rules (no wildcards) are checked before wildcard
+    // rules so that a specific entry like "msiexec.exe:skip" overrides a
+    // broader wildcard like "*.exe:fake".
+    for (pass = 0; pass < 2; ++pass) {
+        for (i = 0; i < Crypt_TrustRuleCount; ++i) {
+            const WCHAR *rule = Crypt_TrustRules[i];
+            BOOLEAN is_wildcard = (wcschr(rule, L'*') != NULL || wcschr(rule, L'?') != NULL);
+            if (pass == 0 && is_wildcard)
+                continue;
+            if (pass == 1 && !is_wildcard)
+                continue;
+            if (Crypt_MatchTrustFixPath(rule, path_buf)) {
+                ULONG mode = (ULONG)Crypt_TrustRuleModes[i];
+                if (mode == CRYPT_TRUST_MODE_SKIP)
+                    return CRYPT_TRUST_MODE_NONE;
+                return mode;
+            }
+        }
     }
 
     return CRYPT_TRUST_MODE_NONE;
@@ -2007,13 +2067,16 @@ sha256_done:
 //---------------------------------------------------------------------------
 
 
-// Scans catroot2 and catroot (two passes) for a catalog that covers the
-// member file identified by pHash/memberTag. Calls Crypt_TryCatalogScanDir
-// on the root itself, the well-known {F750...} GUID subdirectory, and every
-// other subdirectory found under the root.
+// Scans catroot for a catalog that covers the member file identified by
+// pHash/memberTag. Calls Crypt_TryCatalogScanDir on the root itself, the
+// well-known {F750...} GUID subdirectory, and every other subdirectory found
+// under the root.
+//
+// CatRoot2 contains only indexed catalog databases (.catdb), not .cat files,
+// so it is not scanned here.
 //
 // This inner helper lets Crypt_TryCatalogScanFallback reuse the same scan
-// logic for both the SHA1 and SHA256 hash passes without duplication.
+// logic for both the SHA256 and SHA1 hash passes without duplication.
 
 static LONG Crypt_ScanCatalogRoots(
     LONG (WINAPI *pfnVerifyTrust)(HWND, GUID *, WINTRUST_DATA *),
@@ -2031,30 +2094,52 @@ static LONG Crypt_ScanCatalogRoots(
     WCHAR dirPath[MAX_PATH + 96];
     WIN32_FIND_DATAW dirFd;
     HANDLE hFindDir;
-    DWORD pass;
 
-    for (pass = 0; pass < 2; ++pass) {
-        if (pass == 0) {
-            Sbie_snwprintf(rootPath, sizeof(rootPath) / sizeof(rootPath[0]),
-                L"%s\\System32\\catroot2", winDir);
-        } else {
-            Sbie_snwprintf(rootPath, sizeof(rootPath) / sizeof(rootPath[0]),
-                L"%s\\System32\\catroot", winDir);
-        }
+    Sbie_snwprintf(rootPath, sizeof(rootPath) / sizeof(rootPath[0]),
+        L"%s\\System32\\catroot", winDir);
 
-        if (Crypt_TryCatalogScanDir(
-                    pfnVerifyTrust, trace_tag, trace,
-                    hwnd, pgActionID,
-                    pWinTrustData,
-                    memberPath, hMemberFile,
-                    pHash, cbHash,
-                    memberTag,
-                    rootPath,
-                    pTried) == ERROR_SUCCESS)
-            return ERROR_SUCCESS;
+    if (Crypt_TryCatalogScanDir(
+                pfnVerifyTrust, trace_tag, trace,
+                hwnd, pgActionID,
+                pWinTrustData,
+                memberPath, hMemberFile,
+                pHash, cbHash,
+                memberTag,
+                rootPath,
+                pTried) == ERROR_SUCCESS)
+        return ERROR_SUCCESS;
+
+    Sbie_snwprintf(dirPath, sizeof(dirPath) / sizeof(dirPath[0]),
+        L"%s\\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}", rootPath);
+
+    if (Crypt_TryCatalogScanDir(
+                pfnVerifyTrust, trace_tag, trace,
+                hwnd, pgActionID,
+                pWinTrustData,
+                memberPath, hMemberFile,
+                pHash, cbHash,
+                memberTag,
+                dirPath,
+                pTried) == ERROR_SUCCESS)
+        return ERROR_SUCCESS;
+
+    Sbie_snwprintf(dirPath, sizeof(dirPath) / sizeof(dirPath[0]),
+        L"%s\\*", rootPath);
+
+    hFindDir = FindFirstFileW(dirPath, &dirFd);
+    if (hFindDir == INVALID_HANDLE_VALUE)
+        return TRUST_E_NOSIGNATURE;
+
+    do {
+        if (!(dirFd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        if (dirFd.cFileName[0] == L'.'
+                && (dirFd.cFileName[1] == L'\0'
+                    || (dirFd.cFileName[1] == L'.' && dirFd.cFileName[2] == L'\0')))
+            continue;
 
         Sbie_snwprintf(dirPath, sizeof(dirPath) / sizeof(dirPath[0]),
-            L"%s\\{F750E6C3-38EE-11D1-85E5-00C04FC295EE}", rootPath);
+            L"%s\\%s", rootPath, dirFd.cFileName);
 
         if (Crypt_TryCatalogScanDir(
                     pfnVerifyTrust, trace_tag, trace,
@@ -2064,55 +2149,25 @@ static LONG Crypt_ScanCatalogRoots(
                     pHash, cbHash,
                     memberTag,
                     dirPath,
-                    pTried) == ERROR_SUCCESS)
+                    pTried) == ERROR_SUCCESS) {
+            FindClose(hFindDir);
             return ERROR_SUCCESS;
+        }
 
-        Sbie_snwprintf(dirPath, sizeof(dirPath) / sizeof(dirPath[0]),
-            L"%s\\*", rootPath);
-
-        hFindDir = FindFirstFileW(dirPath, &dirFd);
-        if (hFindDir == INVALID_HANDLE_VALUE)
-            continue;
-
-        do {
-            if (!(dirFd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-                continue;
-            if (dirFd.cFileName[0] == L'.'
-                    && (dirFd.cFileName[1] == L'\0'
-                        || (dirFd.cFileName[1] == L'.' && dirFd.cFileName[2] == L'\0')))
-                continue;
-
-            Sbie_snwprintf(dirPath, sizeof(dirPath) / sizeof(dirPath[0]),
-                L"%s\\%s", rootPath, dirFd.cFileName);
-
-            if (Crypt_TryCatalogScanDir(
-                        pfnVerifyTrust, trace_tag, trace,
-                        hwnd, pgActionID,
-                        pWinTrustData,
-                        memberPath, hMemberFile,
-                        pHash, cbHash,
-                        memberTag,
-                        dirPath,
-                        pTried) == ERROR_SUCCESS) {
-                FindClose(hFindDir);
-                return ERROR_SUCCESS;
+        if (*pTried >= 512) {
+            if (trace) {
+                Crypt_Trace(L"%s catalog scan limit reached file=%s tried=%u caller=%p",
+                    trace_tag,
+                    memberPath,
+                    (ULONG)(*pTried),
+                    CRYPT_REDACT(Crypt_GetCallerAddress()));
             }
+            FindClose(hFindDir);
+            return TRUST_E_NOSIGNATURE;
+        }
+    } while (FindNextFileW(hFindDir, &dirFd));
 
-            if (*pTried >= 512) {
-                if (trace) {
-                    Crypt_Trace(L"%s catalog scan limit reached file=%s tried=%u caller=%p",
-                        trace_tag,
-                        memberPath,
-                        (ULONG)(*pTried),
-                        CRYPT_REDACT(Crypt_GetCallerAddress()));
-                }
-                FindClose(hFindDir);
-                return TRUST_E_NOSIGNATURE;
-            }
-        } while (FindNextFileW(hFindDir, &dirFd));
-
-        FindClose(hFindDir);
-    }
+    FindClose(hFindDir);
 
     return TRUST_E_NOSIGNATURE;
 }
@@ -2141,32 +2196,10 @@ static LONG Crypt_TryCatalogScanFallback(
             || !hMemberFile || !pHash || !cbHash)
         return TRUST_E_NOSIGNATURE;
 
-    if (cbHash * 2 + 1 > (DWORD)(sizeof(memberTag) / sizeof(memberTag[0])))
-        return TRUST_E_NOSIGNATURE;
-
-    for (i = 0; i < cbHash; ++i) {
-        static const WCHAR hex[] = L"0123456789ABCDEF";
-        memberTag[i * 2] = hex[(pHash[i] >> 4) & 0xF];
-        memberTag[i * 2 + 1] = hex[pHash[i] & 0xF];
-    }
-    memberTag[cbHash * 2] = L'\0';
-
     if (!GetWindowsDirectoryW(winDir, MAX_PATH) || !winDir[0])
         return TRUST_E_NOSIGNATURE;
 
-    // SHA1 pass.
-    if (Crypt_ScanCatalogRoots(
-                pfnVerifyTrust, trace_tag, trace,
-                hwnd, pgActionID,
-                pWinTrustData,
-                memberPath, hMemberFile,
-                pHash, cbHash,
-                memberTag,
-                winDir,
-                &tried) == ERROR_SUCCESS)
-        return ERROR_SUCCESS;
-
-    // SHA1 scan found nothing; try SHA256 member hash.
+    // SHA256 pass first, as it is the current standard.
     {
         BYTE sha256Hash[32];
         DWORD cbSha256 = 0;
@@ -2192,6 +2225,28 @@ static LONG Crypt_TryCatalogScanFallback(
                 return ERROR_SUCCESS;
         }
     }
+
+    // SHA256 scan found nothing; try SHA1 member hash.
+    if (cbHash * 2 + 1 > (DWORD)(sizeof(memberTag) / sizeof(memberTag[0])))
+        return TRUST_E_NOSIGNATURE;
+
+    for (i = 0; i < cbHash; ++i) {
+        static const WCHAR hex[] = L"0123456789ABCDEF";
+        memberTag[i * 2] = hex[(pHash[i] >> 4) & 0xF];
+        memberTag[i * 2 + 1] = hex[pHash[i] & 0xF];
+    }
+    memberTag[cbHash * 2] = L'\0';
+
+    if (Crypt_ScanCatalogRoots(
+                pfnVerifyTrust, trace_tag, trace,
+                hwnd, pgActionID,
+                pWinTrustData,
+                memberPath, hMemberFile,
+                pHash, cbHash,
+                memberTag,
+                winDir,
+                &tried) == ERROR_SUCCESS)
+        return ERROR_SUCCESS;
 
     if (trace) {
         Crypt_Trace(L"%s catalog scan miss file=%s tried=%u caller=%p",
@@ -4241,6 +4296,24 @@ static LONG Crypt_RunWinVerifyTrust(
     BOOLEAN catalog_preferred_tried = FALSE;
     BOOLEAN catalog_preferred_ok = FALSE;
 
+    // Detect re-entrant WVT call from inside real WinVerifyTrustEx.
+    // When real WinVerifyTrustEx internally invokes WinVerifyTrust (hooked
+    // here) during a CLOSE state action, skip calling __sys_WinVerifyTrust
+    // to avoid a double-free: real WinVerifyTrustEx cleans up the state
+    // itself after this returns.
+    if (pfnVerifyTrust == __sys_WinVerifyTrust
+            && Crypt_IsInSysWvtex()
+            && has_state_action
+            && state_action == WTD_STATEACTION_CLOSE) {
+        if (Crypt_HasTrustRules()) {
+            Crypt_Trace(L"%s wvtex inner close skip state=%p caller=%p",
+                trace_tag,
+                CRYPT_REDACT(hStateData),
+                CRYPT_REDACT(Crypt_GetCallerAddress()));
+        }
+        return ERROR_SUCCESS;
+    }
+
     allow_file_path = (!has_state_action || state_action != WTD_STATEACTION_CLOSE);
     if (allow_file_path) {
         path_ptr = Crypt_GetWinTrustFilePath(pWinTrustData);
@@ -4319,8 +4392,14 @@ static LONG Crypt_RunWinVerifyTrust(
         }
     }
 
-    if (!catalog_preferred_ok)
+    if (!catalog_preferred_ok) {
+        BOOLEAN is_wvtex_call = (pfnVerifyTrust == (P_WinVerifyTrust)__sys_WinVerifyTrustEx);
+        if (is_wvtex_call)
+            Crypt_EnterSysWvtex();
         result = pfnVerifyTrust(hwnd, pgActionID, pWinTrustData);
+        if (is_wvtex_call)
+            Crypt_LeaveSysWvtex();
+    }
 
     if (trace) {
         DWORD verify_err = GetLastError();

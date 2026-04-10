@@ -244,6 +244,15 @@ typedef struct _THREAD_DATA {
     //
 
     ULONG           crypt_force_chain_policy_depth;
+
+    //
+    // crypt module: re-entrancy depth for calls into real WinVerifyTrustEx.
+    // Prevents double-free when real WinVerifyTrustEx internally calls
+    // WinVerifyTrust (which is hooked) during a CLOSE state action.
+    //
+
+    ULONG           crypt_in_sys_wvtex;
+
 } THREAD_DATA;
 
 
