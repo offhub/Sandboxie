@@ -204,13 +204,13 @@ _FX BOOLEAN File_Init(void)
         File_QueryConfUlong(L"RegDeleteV3JournalKeepOpenMs", 0, 0, 60000));
 
     // High-IO burst-defer: skip compaction while writes/sec exceeds threshold for the hold period.
-    // Both default to 200.  Set WritesPerSec to 0 to disable.
+    // Both default to 100.  Set WritesPerSec to 0 to disable.
     File_SetDeleteV3CompactionBusyWritesPerSec(
-        File_QueryConfUlong(L"FileDeleteV3CompactionBusyWritesPerSec", 200, 0, 100000));
+        File_QueryConfUlong(L"FileDeleteV3CompactionBusyWritesPerSec", 100, 0, 100000));
     File_SetDeleteV3CompactionBusyHoldMs(
         File_QueryConfUlong(L"FileDeleteV3CompactionBusyHoldMs", 60000, 0, 300000));
     Key_SetDeleteV3CompactionBusyWritesPerSec(
-        File_QueryConfUlong(L"RegDeleteV3CompactionBusyWritesPerSec", 200, 0, 100000));
+        File_QueryConfUlong(L"RegDeleteV3CompactionBusyWritesPerSec", 100, 0, 100000));
     Key_SetDeleteV3CompactionBusyHoldMs(
         File_QueryConfUlong(L"RegDeleteV3CompactionBusyHoldMs", 60000, 0, 300000));
 
