@@ -384,10 +384,130 @@
             <layout class="QGridLayout" name="gridLayout_30">
              <item row="0" column="0">
               <layout class="QGridLayout" name="gridLayout_28">
+               <item row="7" column="2" colspan="4">
+                <widget class="QLabel" name="lblImDisk">
+                 <property name="text">
+                  <string>&lt;a href=&quot;addon://ImDisk&quot;&gt;Install ImDisk&lt;/a&gt; driver to enable Ram Disk and Disk Image support.</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="11" column="1" colspan="6">
+                <widget class="QCheckBox" name="chkProtectBox">
+                 <property name="toolTip">
+                  <string>Partially checked means prevent box removal but not content deletion.</string>
+                 </property>
+                 <property name="text">
+                  <string>Protect this sandbox from deletion or emptying</string>
+                 </property>
+                 <property name="tristate">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item row="5" column="1" colspan="4">
+                <widget class="QCheckBox" name="chkEncrypt">
+                 <property name="text">
+                  <string>Encrypt sandbox content</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="0" column="2" colspan="4">
+                <widget class="QLabel" name="lblWhenEmpty">
+                 <property name="text">
+                  <string>The box structure can only be changed when the sandbox is empty</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="6" column="2" colspan="4">
+                <widget class="QLabel" name="lblCrypto">
+                 <property name="text">
+                  <string>When &lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;Box Encryption&lt;/a&gt; is enabled the box's root folder, including its registry hive, is stored in an encrypted disk image, using &lt;a href=&quot;https://diskcryptor.org&quot;&gt;Disk Cryptor's&lt;/a&gt; AES-XTS implementation.</string>
+                 </property>
+                 <property name="wordWrap">
+                  <bool>true</bool>
+                 </property>
+                 <property name="openExternalLinks">
+                  <bool>true</bool>
+                 </property>
+                </widget>
+               </item>
+               <item row="14" column="2" colspan="5">
+                <widget class="QCheckBox" name="chkRawDiskNotify">
+                 <property name="text">
+                  <string>Warn when an application opens a harddrive handle</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="5" column="5">
+                <widget class="QToolButton" name="btnPassword">
+                 <property name="text">
+                  <string>Set Password</string>
+                 </property>
+                </widget>
+               </item>
                <item row="10" column="1" colspan="6">
                 <widget class="QCheckBox" name="chkAutoEmpty">
                  <property name="text">
                   <string>Auto delete content changes when last sandboxed process terminates</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="1" column="3">
+                <widget class="QComboBox" name="cmbVersion"/>
+               </item>
+               <item row="9" column="0" colspan="3">
+                <widget class="QLabel" name="lblDelete">
+                 <property name="font">
+                  <font>
+                   <bold>true</bold>
+                   <kerning>true</kerning>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Box Delete options</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="16" column="2" colspan="5">
+                <spacer name="horizontalSpacer_4">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>0</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+               <item row="1" column="4">
+                <widget class="QPushButton" name="btnDeleteV3Options">
+                 <property name="maximumSize">
+                  <size>
+                   <width>32</width>
+                   <height>32</height>
+                  </size>
+                 </property>
+                 <property name="toolTip">
+                  <string>Delete V3 advanced settings</string>
+                 </property>
+                 <property name="text">
+                  <string>⚙</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="13" column="1" colspan="6">
+                <widget class="QCheckBox" name="chkRawDiskRead">
+                 <property name="text">
+                  <string>Allow elevated sandboxed applications to read the harddrive</string>
+                 </property>
+                </widget>
+               </item>
+               <item row="15" column="1" colspan="2">
+                <widget class="QCheckBox" name="chkAllowEfs">
+                 <property name="text">
+                  <string>Allow sandboxed processes to open files protected by EFS</string>
                  </property>
                 </widget>
                </item>
@@ -404,16 +524,23 @@
                  </property>
                 </widget>
                </item>
-               <item row="11" column="1" colspan="6">
-                <widget class="QCheckBox" name="chkProtectBox">
-                 <property name="toolTip">
-                  <string>Partially checked means prevent box removal but not content deletion.</string>
+               <item row="12" column="0" colspan="2">
+                <widget class="QLabel" name="lblRawDisk">
+                 <property name="font">
+                  <font>
+                   <bold>true</bold>
+                   <kerning>true</kerning>
+                  </font>
                  </property>
                  <property name="text">
-                  <string>Protect this sandbox from deletion or emptying</string>
+                  <string>Disk/File access</string>
                  </property>
-                 <property name="tristate">
-                  <bool>true</bool>
+                </widget>
+               </item>
+               <item row="4" column="1" colspan="4">
+                <widget class="QCheckBox" name="chkRamBox">
+                 <property name="text">
+                  <string>Store the sandbox content in a Ram Disk</string>
                  </property>
                 </widget>
                </item>
@@ -440,40 +567,10 @@
                  </property>
                 </spacer>
                </item>
-               <item row="9" column="0" colspan="3">
-                <widget class="QLabel" name="lblDelete">
-                 <property name="font">
-                  <font>
-                   <bold>true</bold>
-                   <kerning>true</kerning>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Box Delete options</string>
-                 </property>
-                </widget>
-               </item>
                <item row="8" column="2" colspan="3">
                 <widget class="QCheckBox" name="chkForceProtection">
                  <property name="text">
                   <string>Force protection on mount</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="1" column="3">
-                <widget class="QComboBox" name="cmbVersion"/>
-               </item>
-               <item row="7" column="2" colspan="4">
-                <widget class="QLabel" name="lblImDisk">
-                 <property name="text">
-                  <string>&lt;a href=&quot;addon://ImDisk&quot;&gt;Install ImDisk&lt;/a&gt; driver to enable Ram Disk and Disk Image support.</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="3" column="1" colspan="5">
-                <widget class="QCheckBox" name="chkUseVolumeSerialNumbers">
-                 <property name="text">
-                  <string>Use volume serial numbers for drives, like: \drive\C~1234-ABCD</string>
                  </property>
                 </widget>
                </item>
@@ -487,64 +584,10 @@
                  </property>
                 </widget>
                </item>
-               <item row="0" column="2" colspan="4">
-                <widget class="QLabel" name="lblWhenEmpty">
+               <item row="3" column="1" colspan="5">
+                <widget class="QCheckBox" name="chkUseVolumeSerialNumbers">
                  <property name="text">
-                  <string>The box structure can only be changed when the sandbox is empty</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="5" column="5">
-                <widget class="QToolButton" name="btnPassword">
-                 <property name="text">
-                  <string>Set Password</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="5" column="1" colspan="4">
-                <widget class="QCheckBox" name="chkEncrypt">
-                 <property name="text">
-                  <string>Encrypt sandbox content</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="14" column="2" colspan="5">
-                <widget class="QCheckBox" name="chkRawDiskNotify">
-                 <property name="text">
-                  <string>Warn when an application opens a harddrive handle</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="6" column="2" colspan="4">
-                <widget class="QLabel" name="lblCrypto">
-                 <property name="text">
-                  <string>When &lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;Box Encryption&lt;/a&gt; is enabled the box's root folder, including its registry hive, is stored in an encrypted disk image, using &lt;a href=&quot;https://diskcryptor.org&quot;&gt;Disk Cryptor's&lt;/a&gt; AES-XTS implementation.</string>
-                 </property>
-                 <property name="wordWrap">
-                  <bool>true</bool>
-                 </property>
-                 <property name="openExternalLinks">
-                  <bool>true</bool>
-                 </property>
-                </widget>
-               </item>
-               <item row="13" column="1" colspan="6">
-                <widget class="QCheckBox" name="chkRawDiskRead">
-                 <property name="text">
-                  <string>Allow elevated sandboxed applications to read the harddrive</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="12" column="0" colspan="2">
-                <widget class="QLabel" name="lblRawDisk">
-                 <property name="font">
-                  <font>
-                   <bold>true</bold>
-                   <kerning>true</kerning>
-                  </font>
-                 </property>
-                 <property name="text">
-                  <string>Disk/File access</string>
+                  <string>Use volume serial numbers for drives, like: \drive\C~1234-ABCD</string>
                  </property>
                 </widget>
                </item>
@@ -558,33 +601,6 @@
                  </property>
                  <property name="text">
                   <string/>
-                 </property>
-                </widget>
-               </item>
-               <item row="4" column="1" colspan="4">
-                <widget class="QCheckBox" name="chkRamBox">
-                 <property name="text">
-                  <string>Store the sandbox content in a Ram Disk</string>
-                 </property>
-                </widget>
-               </item>
-               <item row="16" column="2" colspan="5">
-                <spacer name="horizontalSpacer_4">
-                 <property name="orientation">
-                  <enum>Qt::Orientation::Horizontal</enum>
-                 </property>
-                 <property name="sizeHint" stdset="0">
-                  <size>
-                   <width>40</width>
-                   <height>0</height>
-                  </size>
-                 </property>
-                </spacer>
-               </item>
-               <item row="15" column="1" colspan="2">
-                <widget class="QCheckBox" name="chkAllowEfs">
-                 <property name="text">
-                  <string>Allow sandboxed processes to open files protected by EFS</string>
                  </property>
                 </widget>
                </item>

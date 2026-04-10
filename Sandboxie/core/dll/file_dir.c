@@ -481,13 +481,11 @@ _FX NTSTATUS File_Merge(
                 //
 
                 break;
-
-            } else {
-
-                Handle_UnRegisterHandler(merge->handle, File_NtCloseDir, NULL);
-                List_Remove(&File_DirHandles, merge);
-                File_MergeFree(merge);
             }
+
+            Handle_UnRegisterHandler(merge->handle, File_NtCloseDir, NULL);
+            List_Remove(&File_DirHandles, merge);
+            File_MergeFree(merge);
         }
 
         merge = next;
@@ -502,9 +500,18 @@ _FX NTSTATUS File_Merge(
     if (! merge) {
 
         merge = Dll_Alloc(sizeof(FILE_MERGE) + TruePath_len + sizeof(WCHAR));
+        if (! merge) {
+            LeaveCriticalSection(&File_DirHandles_CritSec);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         memzero(merge, sizeof(FILE_MERGE));
 
 		merge->files = Dll_Alloc(sizeof(FILE_MERGE_FILE) * (2 + File_Snapshot_Count));
+        if (! merge->files) {
+            Dll_Free(merge);
+            LeaveCriticalSection(&File_DirHandles_CritSec);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
 		memzero(merge->files, sizeof(FILE_MERGE_FILE) * (2 + File_Snapshot_Count));
 
         merge->handle = FileHandle;

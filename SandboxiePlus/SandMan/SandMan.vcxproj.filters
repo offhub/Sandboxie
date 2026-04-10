@@ -258,6 +258,9 @@
     <ClCompile Include="Views\NtObjectView.cpp">
       <Filter>Views</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\OptionsDeleteV3.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">

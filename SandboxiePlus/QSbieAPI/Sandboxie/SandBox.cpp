@@ -412,6 +412,10 @@ QList<SBoxDataFile> CSandBox__BoxDataFiles = QList<SBoxDataFile>()
 	<< SBoxDataFile("RegHive", true, false) 
 	<< SBoxDataFile("RegPaths.dat", false, false) 
 	<< SBoxDataFile("FilePaths.dat", false, true)
+	<< SBoxDataFile("RegPaths_v3.dat", false, false)
+	<< SBoxDataFile("RegPaths_v3.sbie", false, false)
+	<< SBoxDataFile("FilePaths_v3.dat", false, true)
+	<< SBoxDataFile("FilePaths_v3.sbie", false, true)
 ;
 
 bool CSandBox::IsInitialized() const
@@ -612,6 +616,26 @@ void CSandBox__MoveDataFilesSafe(const QString& SourceFolder, const QString& Tar
 	}
 }
 
+static void CSandBox__AppendDataFile(const QString& SourceFile, const QString& TargetFile)
+{
+	QFile src(SourceFile);
+	if (!src.open(QFile::ReadOnly))
+		return;
+
+	QFile dst(TargetFile);
+	if (!dst.open(QFile::ReadWrite)) {
+		src.close();
+		return;
+	}
+
+	dst.seek(dst.size());
+	dst.write(src.readAll());
+	dst.close();
+	src.close();
+
+	QFile::remove(SourceFile);
+}
+
 // path flags, saved to file
 #define FILE_DELETED_FLAG       0x0001
 #define FILE_RELOCATION_FLAG    0x0002
@@ -637,10 +661,12 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 
 	SB_STATUS Status = SB_OK;
 
-	// apply source FilePaths.dat on the targetfolder
-	if (QFile::exists(SourceFolder + "\\FilePaths.dat")) 
+	// apply source FilePaths*.dat on the target folder (handles both v2 and v3 file names)
+	QStringList datFileNames = QStringList() << "FilePaths.dat" << "FilePaths_v3.dat";
+	foreach (const QString& datFileName, datFileNames) {
+	if (QFile::exists(SourceFolder + "\\" + datFileName)) 
 	{
-		QFile datSource(SourceFolder + "\\FilePaths.dat");
+		QFile datSource(SourceFolder + "\\" + datFileName);
 		if (datSource.open(QFile::ReadOnly)) 
 		{
 			QByteArray datBin = datSource.readAll();
@@ -705,8 +731,8 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 				}
 			}
 
-			// merge DeleteV2 file entries to the Target FilePaths.dat
-			QFile datTarget(TargetFolder + "\\FilePaths.dat");
+			// merge DeleteV2/V3 file entries to the Target dat file
+			QFile datTarget(TargetFolder + "\\" + datFileName);
 			if (datTarget.open(QFile::ReadWrite)) {
 				// merge with target
 				datTarget.seek(datTarget.size());
@@ -714,11 +740,20 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 				datTarget.close();
 			}
 
-			// remove source FilePaths.dat
+			// remove source dat file
 			datSource.close();
 			datSource.remove();
 		}
 	}
+	} // end foreach datFileName
+
+	// merge file/reg journals by concatenating source onto target.
+	// source is the newer layer, so its entries must come last.
+	if (QFile::exists(SourceFolder + "\\FilePaths_v3.sbie"))
+		CSandBox__AppendDataFile(SourceFolder + "\\FilePaths_v3.sbie", TargetFolder + "\\FilePaths_v3.sbie");
+
+	if (QFile::exists(SourceFolder + "\\RegPaths_v3.sbie"))
+		CSandBox__AppendDataFile(SourceFolder + "\\RegPaths_v3.sbie", TargetFolder + "\\RegPaths_v3.sbie");
 
 	// merge source folders to the target snapshot
 	foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders) 

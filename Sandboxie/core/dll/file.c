@@ -6205,6 +6205,13 @@ _FX NTSTATUS File_NtQueryInformationByName(
                     status = STATUS_OBJECT_NAME_NOT_FOUND;
             }*/
 
+            // In V2/V3 delete mode the CopyPath query result is authoritative:
+            // deletion physically removes the copy file, so if CopyPath exists
+            // the file genuinely lives in the sandbox.  No additional path-tree
+            // check is needed on this success branch.
+            // (Legacy V1 checked a delete-mark timestamp on the copy file here;
+            // that mechanism is not used in V2/V3.)
+
             __leave;
         }
 
@@ -8028,8 +8035,12 @@ after_rename:
                 TrueExists = TRUE;
                 IsDirectroy = (open_info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-                if (!IsDirectroy)
-                    File_MarkDeleted_v2(SourceTruePath);
+                if (!IsDirectroy) {
+                    // STATUS_TIMEOUT means the VFS mutex timed-out.  The system rename
+                    // already succeeded at this point so we cannot abort; the delete
+                    // marker simply won't be recorded for this call.
+                    (void)File_MarkDeleted_v2(SourceTruePath);
+                }
             }
             else {
 
@@ -8053,8 +8064,10 @@ after_rename:
             //
 
             if (TrueExists && IsDirectroy) {
-
-                File_SetRelocation(SourceTruePath, TargetTruePath);
+                // Same STATUS_TIMEOUT caveat: relocation entry may not be
+                // recorded if the mutex times out, but the rename already
+                // completed so we cannot roll it back.
+                (void)File_SetRelocation(SourceTruePath, TargetTruePath);
             }
         }
         else
