@@ -312,6 +312,7 @@ _FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, L
 {
     WCHAR conf_buf[2048];
     const BOOLEAN breakout_folder_setting = (_wcsicmp(setting, L"BreakoutFolder") == 0);
+    const BOOLEAN breakout_document_setting = (_wcsicmp(setting, L"BreakoutDocument") == 0);
 
     PATTERN* pat;
 
@@ -339,6 +340,11 @@ _FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, L
                 size_t val_len = wcslen(value);
                 while (val_len > 0 && value[val_len - 1] == L'\\')
                     value[--val_len] = L'\0';
+            } else if (breakout_document_setting) {
+                // BreakoutDocument supports an optional target suffix: path_pattern|BoxName.
+                WCHAR* sep = wcschr(value, L'|');
+                if (sep && sep > value && sep[1])
+                    *sep = L'\0';
             }
 
             if (dos && *value != L'*')

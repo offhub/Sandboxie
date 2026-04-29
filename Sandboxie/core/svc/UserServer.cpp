@@ -32,6 +32,7 @@
 #include <sddl.h>
 #include <aclapi.h>
 #include <wtsapi32.h>
+#include <userenv.h>
 #include <shellapi.h>
 #include "misc.h"
 #include "core/drv/verify.h"
@@ -70,6 +71,216 @@ typedef struct _USER_WORKER {
 // Variables
 //---------------------------------------------------------------------------
 
+static WCHAR* UserServer_FindBreakoutTargetSeparator(WCHAR* value)
+{
+    WCHAR* sep = wcschr(value, L'|');
+    if (!sep || sep <= value || !sep[1])
+        return NULL;
+
+    return sep;
+}
+
+static WCHAR* UserServer_MatchImageAndGetValue(WCHAR* value, const WCHAR* imageName, ULONG* pLevel)
+{
+    WCHAR* tmp = wcschr(value, L',');
+
+    if (tmp) {
+
+        BOOLEAN inv;
+        BOOLEAN match;
+        ULONG len;
+
+        if (!imageName)
+            return NULL;
+
+        if (*value == L'!') {
+            inv = TRUE;
+            ++value;
+        } else
+            inv = FALSE;
+
+        len = (ULONG)(tmp - value);
+        if (len) {
+            WCHAR saved = value[len];
+            value[len] = L'\0';
+            match = SbieDll_MatchImage(value, imageName, NULL);
+            value[len] = saved;
+            if (inv)
+                match = !match;
+            if (!match)
+                return NULL;
+            else if (pLevel) {
+                if (len == 1 && *value == L'*')
+                    *pLevel = 2;
+                else
+                    *pLevel = inv ? 1 : 0;
+            }
+        }
+
+        value = tmp + 1;
+    }
+    else {
+
+        if (pLevel)
+            *pLevel = 2;
+    }
+
+    if (!*value)
+        return NULL;
+
+    return value;
+}
+
+static BOOLEAN UserServer_GetBreakoutDocumentTarget(
+    const WCHAR* boxname, const WCHAR* imageName, const WCHAR* path, ULONG length,
+    WCHAR* outTarget, ULONG outTargetCch)
+{
+    WCHAR conf_buf[2048];
+    WCHAR* path_lwr;
+    POOL* pool;
+    ULONG found_level = (ULONG)-1;
+    BOOLEAN found = FALSE;
+    ULONG index = 0;
+    ULONG path_len = (length + 1) * sizeof(WCHAR);
+
+    if (!boxname || !imageName || !path || !outTarget || outTargetCch == 0)
+        return FALSE;
+
+    path_lwr = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, path_len);
+    if (!path_lwr)
+        return FALSE;
+
+    memcpy(path_lwr, path, path_len);
+    path_lwr[length] = L'\0';
+    _wcslwr(path_lwr);
+
+    pool = Pool_Create();
+    if (!pool) {
+        HeapFree(GetProcessHeap(), 0, path_lwr);
+        return FALSE;
+    }
+
+    while (1) {
+
+        NTSTATUS status = SbieApi_QueryConf(
+            boxname, L"BreakoutDocument", index, conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR));
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_BUFFER_TOO_SMALL) {
+                ++index;
+                continue;
+            }
+            break;
+        }
+        ++index;
+
+        ULONG level = (ULONG)-1;
+        WCHAR* value = UserServer_MatchImageAndGetValue(conf_buf, imageName, &level);
+        if (!value || level > found_level)
+            continue;
+
+        WCHAR* sep = UserServer_FindBreakoutTargetSeparator(value);
+        if (!sep)
+            continue;
+
+        *sep = L'\0';
+        if (*value != L'*')
+            SbieDll_TranslateNtToDosPath(value);
+
+        PATTERN* pattern = Pattern_Create(pool, value, TRUE, level);
+        if (!pattern)
+            continue;
+
+        if (Pattern_Match(pattern, path_lwr, length)) {
+            wcscpy_s(outTarget, outTargetCch, sep + 1);
+            found_level = level;
+            found = TRUE;
+        }
+
+        Pattern_Free(pattern);
+    }
+
+    Pool_Delete(pool);
+    HeapFree(GetProcessHeap(), 0, path_lwr);
+    return found;
+}
+
+static ULONG UserServer_OpenDocumentInTargetBox(const WCHAR* targetBox, const WCHAR* path)
+{
+    const DWORD TOKEN_RIGHTS = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID | TOKEN_ADJUST_GROUPS;
+    WCHAR homePath[MAX_PATH];
+    WCHAR startExe[MAX_PATH];
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+    WCHAR* cmdline;
+    size_t cmdlineCch;
+    HANDLE hOldToken = NULL;
+    HANDLE hNewToken = NULL;
+    LPVOID env = NULL;
+    BOOL ok;
+    LONG status;
+
+    status = SbieApi_GetHomePath(NULL, 0, homePath, MAX_PATH);
+    if (status != 0)
+        return status;
+
+    if (swprintf_s(startExe, _countof(startExe), L"%s\\%s", homePath, START_EXE) < 0)
+        return STATUS_BUFFER_TOO_SMALL;
+
+    cmdlineCch = wcslen(startExe) + wcslen(targetBox) + wcslen(path) + 16;
+    cmdline = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, cmdlineCch * sizeof(WCHAR));
+    if (!cmdline)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    if (swprintf_s(
+            cmdline, cmdlineCch, L"\"%s\" /box:%s \"%s\"", startExe, targetBox, path) < 0) {
+        HeapFree(GetProcessHeap(), 0, cmdline);
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &hOldToken);
+    if (!ok) {
+        HeapFree(GetProcessHeap(), 0, cmdline);
+        return STATUS_ACCESS_DENIED;
+    }
+
+    ok = DuplicateTokenEx(
+            hOldToken, TOKEN_RIGHTS, NULL, SecurityAnonymous, TokenPrimary, &hNewToken);
+    if (!ok) {
+        CloseHandle(hOldToken);
+        HeapFree(GetProcessHeap(), 0, cmdline);
+        return STATUS_ACCESS_DENIED;
+    }
+
+    ok = CreateEnvironmentBlock(&env, hNewToken, FALSE);
+    if (!ok)
+        env = NULL;
+
+    memzero(&si, sizeof(STARTUPINFO));
+    memzero(&pi, sizeof(PROCESS_INFORMATION));
+    si.cb = sizeof(STARTUPINFO);
+    si.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    si.lpDesktop = L"WinSta0\\Default";
+
+    DWORD flags = 0;
+    if (env)
+        flags |= CREATE_UNICODE_ENVIRONMENT;
+    ok = CreateProcessAsUser(
+        hNewToken, startExe, cmdline, NULL, NULL, FALSE,
+        flags, env, homePath, &si, &pi);
+
+    if (env)
+        DestroyEnvironmentBlock(env);
+    CloseHandle(hNewToken);
+    CloseHandle(hOldToken);
+
+    HeapFree(GetProcessHeap(), 0, cmdline);
+    if (!ok)
+        return STATUS_UNSUCCESSFUL;
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return STATUS_SUCCESS;
+}
 
 //---------------------------------------------------------------------------
 // Constructor
@@ -127,6 +338,7 @@ ULONG UserServer::StartWorker(ULONG session_id)
                              | TOKEN_ADJUST_GROUPS  | TOKEN_ASSIGN_PRIMARY;
     HANDLE hOldToken = NULL;
     HANDLE hNewToken = NULL;
+    LPVOID env = NULL;
     ULONG status;
     BOOL ok = TRUE;
 
@@ -197,6 +409,12 @@ ULONG UserServer::StartWorker(ULONG session_id)
             status = 0x73000000 | GetLastError();
     }
 
+    if (ok) {
+        ok = CreateEnvironmentBlock(&env, hNewToken, FALSE);
+        if (!ok)
+            env = NULL;
+    }
+
     //if (ok) {
     //    ok = SetTokenInformation(
     //            hNewToken, TokenSessionId, &session_id, sizeof(ULONG));
@@ -241,9 +459,13 @@ ULONG UserServer::StartWorker(ULONG session_id)
         si.dwFlags = STARTF_FORCEOFFFEEDBACK;
         si.lpDesktop = L"WinSta0\\Default";
 
+        DWORD flags = ABOVE_NORMAL_PRIORITY_CLASS;
+        if (env)
+            flags |= CREATE_UNICODE_ENVIRONMENT;
+
         ok = CreateProcessAsUser(
-                hNewToken, NULL, cmdline, NULL, NULL, FALSE,
-                ABOVE_NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi);
+            hNewToken, NULL, cmdline, NULL, NULL, FALSE,
+            flags, env, NULL, &si, &pi);
         if (! ok)
             status = 0x76000000 | GetLastError();
         else {
@@ -302,6 +524,8 @@ ULONG UserServer::StartWorker(ULONG session_id)
 
     if (EventHandle)
         CloseHandle(EventHandle);
+    if (env)
+        DestroyEnvironmentBlock(env);
     if (hNewToken)
         CloseHandle(hNewToken);
     if (hOldToken)
@@ -780,7 +1004,9 @@ ULONG UserServer::OpenDocument(WorkerArgs *args)
 
     ULONG session_id;
     WCHAR boxname[BOXNAME_COUNT];
-    if (!NT_SUCCESS(SbieApi_QueryProcess((HANDLE)(ULONG_PTR)args->pid, boxname, NULL, NULL, &session_id))
+    WCHAR image[96];
+    WCHAR sid[96];
+    if (!NT_SUCCESS(SbieApi_QueryProcess((HANDLE)(ULONG_PTR)args->pid, boxname, image, sid, &session_id))
      || session_id != m_SessionId) {
 
         return STATUS_ACCESS_DENIED;
@@ -790,7 +1016,20 @@ ULONG UserServer::OpenDocument(WorkerArgs *args)
     // check the BreakoutDocument list and execute if ok
     //
 
-    if (SbieDll_CheckPatternInList(path_buff, (ULONG)wcslen(path_buff), boxname, L"BreakoutDocument")) {
+    ULONG path_len = (ULONG)wcslen(path_buff);
+    if (SbieDll_CheckPatternInList(path_buff, path_len, boxname, L"BreakoutDocument")) {
+
+        WCHAR targetBox[BOXNAME_COUNT] = { 0 };
+        if (UserServer_GetBreakoutDocumentTarget(
+                boxname, image, path_buff, path_len, targetBox, BOXNAME_COUNT)) {
+
+            if (!NT_SUCCESS(SbieApi_Call(
+                    API_IS_BOX_ENABLED, 3,
+                    (ULONG_PTR)targetBox, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
+                return STATUS_ACCESS_DENIED;
+
+            return UserServer_OpenDocumentInTargetBox(targetBox, path_buff);
+        }
 
         SHELLEXECUTEINFO shex;
         memzero(&shex, sizeof(SHELLEXECUTEINFO));
