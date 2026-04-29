@@ -311,6 +311,7 @@ _FX BOOLEAN SbieDll_GetSettingsForName_bool(
 _FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, LIST* list, BOOLEAN dos)
 {
     WCHAR conf_buf[2048];
+    const BOOLEAN breakout_folder_setting = (_wcsicmp(setting, L"BreakoutFolder") == 0);
 
     PATTERN* pat;
 
@@ -327,6 +328,19 @@ _FX BOOLEAN Config_InitPatternList(const WCHAR* boxname, const WCHAR* setting, L
         WCHAR* value = Config_MatchImageAndGetValue(conf_buf, Dll_ImageName, &level);
         if (value)
         {
+            if (breakout_folder_setting) {
+                // BreakoutFolder supports optional target suffix: path_pattern|BoxName.
+                // Strip the target suffix first, then trim any trailing backslash from the path.
+                WCHAR* sep = wcschr(value, L'|');
+                if (sep && sep > value && sep[1])
+                    *sep = L'\0';
+
+                // Trim trailing backslashes so patterns like "C:\path\" match "C:\path".
+                size_t val_len = wcslen(value);
+                while (val_len > 0 && value[val_len - 1] == L'\\')
+                    value[--val_len] = L'\0';
+            }
+
             if (dos && *value != L'*')
                 SbieDll_TranslateNtToDosPath(value);
 
@@ -618,6 +632,7 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_GetStringsForStringList(const WCHAR* string, con
 BOOLEAN SbieDll_CheckStringInList(const WCHAR* string, const WCHAR* boxname, const WCHAR* setting)
 {
     WCHAR buf[66];
+    const BOOLEAN breakout_process_setting = (_wcsicmp(setting, L"BreakoutProcess") == 0);
     ULONG index = 0;
     while (1) {
         NTSTATUS status = SbieApi_QueryConfAsIs(boxname, setting, index, buf, 64 * sizeof(WCHAR));
@@ -625,6 +640,15 @@ BOOLEAN SbieDll_CheckStringInList(const WCHAR* string, const WCHAR* boxname, con
         if (NT_SUCCESS(status)) {
             if (_wcsicmp(buf, string) == 0) {
                 return TRUE;
+            }
+
+            if (breakout_process_setting) {
+                WCHAR* sep = wcschr(buf, L'|');
+                if (sep && sep > buf && sep[1]) {
+                    SIZE_T len = (SIZE_T)(sep - buf);
+                    if (wcslen(string) == len && _wcsnicmp(buf, string, len) == 0)
+                        return TRUE;
+                }
             }
         }
         else if (status != STATUS_BUFFER_TOO_SMALL)
