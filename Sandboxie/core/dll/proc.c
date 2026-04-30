@@ -991,8 +991,10 @@ _FX BOOL Proc_CreateProcessInternalW(
         if (lpProgram) {
             // Breakout candidates must not inherit sandbox remapped CWD.
             is_breakout_candidate = (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
+                || SbieDll_CheckPatternInList(lpApplicationName, wcslen(lpApplicationName), NULL, L"BreakoutProcess")
                 || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), NULL, L"BreakoutFolder"))
                 || (Dll_BoxName && (SbieDll_CheckStringInList(lpProgram + 1, Dll_BoxName, L"BreakoutProcess")
+                    || SbieDll_CheckPatternInList(lpApplicationName, wcslen(lpApplicationName), Dll_BoxName, L"BreakoutProcess")
                     || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")));
         }
     }
@@ -1259,8 +1261,10 @@ _FX BOOL Proc_CreateProcessInternalW(
         const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
         if (lpProgram) {
             if ((SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
+                || SbieDll_CheckPatternInList(lpApplicationName, wcslen(lpApplicationName), NULL, L"BreakoutProcess")
                 || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder"))
                 || (Dll_BoxName && (SbieDll_CheckStringInList(lpProgram + 1, Dll_BoxName, L"BreakoutProcess")
+                    || SbieDll_CheckPatternInList(lpApplicationName, wcslen(lpApplicationName), Dll_BoxName, L"BreakoutProcess")
                     || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")))) {
                 
                 const WCHAR* lpArguments = NULL;

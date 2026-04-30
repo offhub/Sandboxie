@@ -16,6 +16,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
   - `BreakoutFolder=path_pattern|TargetBox`
   - `BreakoutDocument=path_pattern|TargetBox`
 - added `BreakoutUseTargetDir` (supports global and `process,value` forms) to prefer the target executable directory as breakout CWD
+- added path pattern support for `BreakoutProcess`, enabling full-qualified-path matching like `C:\Program Files\app\*.exe` in addition to name-only matching
 
 ### Changed
 - changed breakout handoff to support explicit target-box routing and improved wildcard folder rule matching with trailing backslash normalization for `BreakoutFolder`

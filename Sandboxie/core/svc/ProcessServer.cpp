@@ -122,7 +122,37 @@ static bool ProcessServer_MatchBreakoutFolderRule(const WCHAR* rule, const WCHAR
     return (_wcsnicmp(rule, appPath, ruleLen) == 0);
 }
 
-static bool ProcessServer_GetBreakoutProcessTarget(const WCHAR* boxname, const WCHAR* imageName, WCHAR* outTarget, size_t outTargetCch)
+static bool ProcessServer_MatchBreakoutProcessRule(const WCHAR* rule, const WCHAR* imageName, const WCHAR* appPath, ULONG appPathLen)
+{
+    if (!rule || !*rule || !imageName || !*imageName || !appPath || !appPathLen)
+        return false;
+
+    if (_wcsicmp(rule, imageName) == 0)
+        return true;
+
+    size_t ruleLen = wcslen(rule);
+    if (!ruleLen)
+        return false;
+
+    // BreakoutProcess supports name rules and path rules. Path-like rules use full path matching.
+    bool ruleLooksLikePath = (wcschr(rule, L'\\') != NULL) || (ruleLen > 1 && rule[1] == L':');
+    if (!ruleLooksLikePath)
+        return false;
+
+    if (wcschr(rule, L'*') || wcschr(rule, L'?')) {
+        std::wstring pathLower(appPath, appPathLen);
+        for (size_t i = 0; i < pathLower.size(); ++i)
+            pathLower[i] = (WCHAR)towlower(pathLower[i]);
+        return ProcessServer_WildcardMatchI(rule, pathLower.c_str());
+    }
+
+    if (ruleLen != appPathLen)
+        return false;
+
+    return (_wcsnicmp(rule, appPath, ruleLen) == 0);
+}
+
+static bool ProcessServer_GetBreakoutProcessTarget(const WCHAR* boxname, const WCHAR* imageName, const WCHAR* appPath, ULONG appPathLen, WCHAR* outTarget, size_t outTargetCch)
 {
     WCHAR buf[CONF_LINE_LEN];
     ULONG index = 0;
@@ -141,7 +171,7 @@ static bool ProcessServer_GetBreakoutProcessTarget(const WCHAR* boxname, const W
             continue;
 
         *sep = L'\0';
-        if (_wcsicmp(buf, imageName) == 0) {
+        if (ProcessServer_MatchBreakoutProcessRule(buf, imageName, appPath, appPathLen)) {
             wcscpy_s(outTarget, outTargetCch, sep + 1);
             return true;
         }
@@ -729,7 +759,8 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                         // if its a BreakoutProcess or BreakoutFolder we must also test if the path is not in the sandbox itself
                         //
 
-                        bool breakout_process = SbieDll_CheckStringInList(lpProgram + 1, boxname, L"BreakoutProcess")
+                        bool breakout_process = (SbieDll_CheckStringInList(lpProgram + 1, boxname, L"BreakoutProcess")
+                            || SbieDll_CheckPatternInList(lpApplicationName, wcslen(lpApplicationName), boxname, L"BreakoutProcess"))
                             && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
                         bool breakout_folder = SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), boxname, L"BreakoutFolder")
                             && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
@@ -753,7 +784,7 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                             // Keep BreakoutProcess precedence over BreakoutFolder.
                             // If process rule matches, only process-target lookup is allowed.
                             if (breakout_process)
-                                has_explicit_target = ProcessServer_GetBreakoutProcessTarget(boxname, lpProgram + 1, TargetBox, BOXNAME_COUNT);
+                                has_explicit_target = ProcessServer_GetBreakoutProcessTarget(boxname, lpProgram + 1, lpApplicationName, wcslen(lpApplicationName), TargetBox, BOXNAME_COUNT);
 
                             if (!breakout_process && breakout_folder)
                                 has_explicit_target = ProcessServer_GetBreakoutFolderTarget(boxname, lpApplicationName, (ULONG)(lpProgram - lpApplicationName), TargetBox, BOXNAME_COUNT);

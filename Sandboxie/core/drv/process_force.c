@@ -1841,11 +1841,11 @@ _FX BOOLEAN Process_IsBreakoutProcess(
 
     Process_AddForceFolders(&BreakoutFolder, L"BreakoutFolder", box, box->name);
 
-    Process_AddForceProcesses(&BreakoutProcess, L"BreakoutProcess", box->name);
+    Process_AddForceFolders(&BreakoutProcess, L"BreakoutProcess", box, box->name);
         
     Conf_AdjustUseCount(FALSE);
 
-    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName);
+    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName, ImagePath2);
     if (!IsBreakout) {
         const WCHAR *ptr;
         ULONG prefix_len;
@@ -1861,7 +1861,7 @@ _FX BOOLEAN Process_IsBreakoutProcess(
     }
 
     Process_DeleteForceDataFolders(&BreakoutFolder);
-    Process_DeleteForceDataProcesses(&BreakoutProcess);
+    Process_DeleteForceDataFolders(&BreakoutProcess);
 
 finish:
     Mem_Free(ImagePath2, ImagePath2_len);
