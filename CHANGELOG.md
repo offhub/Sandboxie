@@ -21,6 +21,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Changed
 - changed breakout handoff to support explicit target-box routing and improved wildcard folder rule matching with trailing backslash normalization for `BreakoutFolder`
 - changed force/breakout interaction so `PrioritizeBreakoutOverForce=y` skips source-box force capture for matching breakout rules while still allowing other boxes to force the process
+  - note: when `BreakoutProcess` uses path-based rules, `ForceFolder` or wildcard `ForceProcess` rules can still force unmatched child processes spawned by a breakout-launched parent
 
 ### Fixed
 - fixed box rename failing with "The parameter is incorrect" since 1.17.3, caused by multi-line section content being rejected by the new ContainsCRLF check in CIniFile::AddValue

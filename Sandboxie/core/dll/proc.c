@@ -1372,7 +1372,7 @@ _FX BOOL Proc_CreateProcessInternalW(
                             if (use_target_dir) {
                                 const WCHAR* last_sep = wcsrchr(lpApplicationName, L'\\');
                                 if (last_sep && last_sep > lpApplicationName) {
-                                    ULONG dir_len = (ULONG)(last_sep - lpApplicationName);
+                                    ULONG dir_len = (ULONG)(last_sep - lpApplicationName + 1);
                                     if (dir_len < 8191) {
                                         wmemcpy(breakout_dir, lpApplicationName, dir_len);
                                         breakout_dir[dir_len] = L'\0';

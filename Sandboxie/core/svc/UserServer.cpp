@@ -204,7 +204,7 @@ static BOOLEAN UserServer_GetBreakoutDocumentTarget(
     return found;
 }
 
-static ULONG UserServer_OpenDocumentInTargetBox(const WCHAR* targetBox, const WCHAR* path)
+static ULONG UserServer_OpenDocumentInTargetBox(const WCHAR* targetBox, const WCHAR* path, const WCHAR* lpDirectory)
 {
     const DWORD TOKEN_RIGHTS = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID | TOKEN_ADJUST_GROUPS;
     WCHAR homePath[MAX_PATH];
@@ -266,7 +266,7 @@ static ULONG UserServer_OpenDocumentInTargetBox(const WCHAR* targetBox, const WC
         flags |= CREATE_UNICODE_ENVIRONMENT;
     ok = CreateProcessAsUser(
         hNewToken, startExe, cmdline, NULL, NULL, FALSE,
-        flags, env, homePath, &si, &pi);
+        flags, env, (lpDirectory && lpDirectory[0]) ? lpDirectory : homePath, &si, &pi);
 
     if (env)
         DestroyEnvironmentBlock(env);
@@ -1019,6 +1019,20 @@ ULONG UserServer::OpenDocument(WorkerArgs *args)
     ULONG path_len = (ULONG)wcslen(path_buff);
     if (SbieDll_CheckPatternInList(path_buff, path_len, boxname, L"BreakoutDocument")) {
 
+        // When BreakoutUseTargetDir is set, use the document's parent directory
+        // as the working directory for the launched viewer, not the Launcher's home path.
+        WCHAR doc_dir[MAX_PATH] = { 0 };
+        if (SbieDll_GetSettingsForName_bool(boxname, image, L"BreakoutUseTargetDir", FALSE)) {
+            const WCHAR* last_sep = wcsrchr(path_buff, L'\\');
+            if (last_sep && last_sep > path_buff) {
+                ULONG dir_len = (ULONG)(last_sep - path_buff + 1);
+                if (dir_len < MAX_PATH) {
+                    wmemcpy(doc_dir, path_buff, dir_len);
+                    doc_dir[dir_len] = L'\0';
+                }
+            }
+        }
+
         WCHAR targetBox[BOXNAME_COUNT] = { 0 };
         if (UserServer_GetBreakoutDocumentTarget(
                 boxname, image, path_buff, path_len, targetBox, BOXNAME_COUNT)) {
@@ -1028,7 +1042,7 @@ ULONG UserServer::OpenDocument(WorkerArgs *args)
                     (ULONG_PTR)targetBox, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
                 return STATUS_ACCESS_DENIED;
 
-            return UserServer_OpenDocumentInTargetBox(targetBox, path_buff);
+            return UserServer_OpenDocumentInTargetBox(targetBox, path_buff, doc_dir[0] ? doc_dir : NULL);
         }
 
         SHELLEXECUTEINFO shex;
@@ -1039,7 +1053,7 @@ ULONG UserServer::OpenDocument(WorkerArgs *args)
         shex.lpVerb = L"open";
         shex.lpFile = path_buff;
         shex.lpParameters = NULL;
-        shex.lpDirectory = NULL;
+        shex.lpDirectory = doc_dir[0] ? doc_dir : NULL;
         shex.nShow = SW_SHOWNORMAL;
         shex.hInstApp = NULL;
 

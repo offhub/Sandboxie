@@ -1002,6 +1002,7 @@ _FX void Process_AddForceFolders(
     ULONG index2;
     const WCHAR *value;
     FORCE_ENTRY *folder;
+    const BOOLEAN breakout_setting = (_wcsicmp(Setting, L"BreakoutFolder") == 0 || _wcsicmp(Setting, L"BreakoutProcess") == 0);
 
     index2 = 0;
 
@@ -1009,11 +1010,46 @@ _FX void Process_AddForceFolders(
 
         WCHAR *expnd, *buf;
         ULONG buf_len;
+        WCHAR *value_copy;
+        WCHAR *value_norm;
+        ULONG value_norm_len;
 
         value = Conf_Get(section, Setting, index2);
         if (! value)
             break;
         ++index2;
+
+        value_copy = NULL;
+        if (breakout_setting) {
+            const WCHAR *sep = wcschr(value, L'|');
+            if (sep && sep > value && sep[1]) {
+                value_copy = Mem_AllocString(Driver_Pool, value);
+                if (!value_copy)
+                    continue;
+                value_copy[sep - value] = L'\0';
+                value = value_copy;
+            }
+
+            // Accept drive-relative wildcard forms like "C:*\firefox.exe"
+            // by normalizing to rooted DOS form "C:\*\firefox.exe".
+            value_norm = NULL;
+            value_norm_len = 0;
+            if (value[0] && value[1] == L':' && value[2] && value[2] != L'\\' && value[2] != L'/') {
+                ULONG value_len = (ULONG)wcslen(value);
+                value_norm_len = (value_len + 2) * sizeof(WCHAR);
+                value_norm = Mem_Alloc(Driver_Pool, value_norm_len);
+                if (value_norm) {
+                    value_norm[0] = value[0];
+                    value_norm[1] = L':';
+                    value_norm[2] = L'\\';
+                    wcscpy(value_norm + 3, value + 2);
+                    value = value_norm;
+                }
+            }
+        } else {
+            value_norm = NULL;
+            value_norm_len = 0;
+        }
 
         if (wcschr(value, L'\\') != NULL) { // folder, full_path or path_pattern
 
@@ -1069,6 +1105,11 @@ _FX void Process_AddForceFolders(
                 wcscpy(buf, value);
         }
 
+        if (value_copy)
+            Mem_FreeString(value_copy);
+        if (value_norm)
+            Mem_Free(value_norm, value_norm_len);
+
         if (! buf)
             continue;
 
@@ -1078,21 +1119,28 @@ _FX void Process_AddForceFolders(
             break;
         }
 
-        if (wcschr(buf, L'*')) {
+        if (wcschr(buf, L'*') || wcschr(buf, L'?')) {
 
             folder->pat =
                 Pattern_Create(box->expand_args->pool, buf, TRUE, 0);
 
-            Mem_Free(buf, buf_len);
-
             if (! folder->pat) {
+                Mem_Free(buf, buf_len);
                 Mem_Free(folder, sizeof(FORCE_ENTRY));
                 break;
             }
 
-            folder->buf_len = 0;
-            folder->len = 0;
-            folder->buf = NULL;
+            // Breakout wildcard rules need original text for path-like filtering.
+            if (breakout_setting) {
+                folder->buf_len = buf_len;
+                folder->len = wcslen(buf);
+                folder->buf = buf;
+            } else {
+                Mem_Free(buf, buf_len);
+                folder->buf_len = 0;
+                folder->len = 0;
+                folder->buf = NULL;
+            }
 
         } else {
 
@@ -1268,9 +1316,11 @@ _FX void Process_DeleteForceDataFolders(LIST* Folders)
 
 		List_Remove(Folders, folder);
 
-		if (folder->pat)
+        if (folder->pat) {
 			Pattern_Free(folder->pat);
-		else
+            if (folder->buf)
+                Mem_Free(folder->buf, folder->buf_len);
+        } else
 			Mem_Free(folder->buf, folder->buf_len);
 
 		Mem_Free(folder, sizeof(FORCE_ENTRY));
@@ -1502,6 +1552,17 @@ _FX BOX *Process_CheckForceFolder(
 
     name = ptr + 1;
 
+#ifdef DRV_BREAKOUT
+    //
+    // never force a Sandboxie program from the home directory
+    //
+
+    if (Process_ShouldIgnoreBreakoutTarget(name, path)) {
+
+        *IsAlert = 2;
+        return NULL;
+    }
+#else
     //
     // never force a program from the Sandboxie home directory
     //
@@ -1513,6 +1574,7 @@ _FX BOX *Process_CheckForceFolder(
         *IsAlert = 2;
         return NULL;
     }
+#endif
 
     //
     // check if the folder is forced to any box
@@ -1652,8 +1714,14 @@ static BOOLEAN Process_CheckBreakoutProcessList(
 
         } else {
 
-            if (Process_MatchImage(box, entry->buf, 0, name, 1))
-                match = TRUE;
+            if (Process_IsPathLikeBreakoutRule(entry->buf)) {
+                ULONG entry_len = entry->len;
+                if (entry_len == wcslen(path) && _wcsnicmp(entry->buf, path, entry_len) == 0)
+                    match = TRUE;
+            } else {
+                if (Process_MatchImage(box, entry->buf, 0, name, 1))
+                    match = TRUE;
+            }
         }
 
         if (match)
@@ -1680,9 +1748,16 @@ _FX BOX *Process_CheckForceProcess(
     FORCE_BOX *box;
 
     //
-    // never force a program from the Sandboxie home directory
+    // never force a Sandboxie program from the home directory
     //
 
+#ifdef DRV_BREAKOUT
+    if (Process_ShouldIgnoreBreakoutTarget(name, path)) {
+
+        *IsAlert = 2;
+        return NULL;
+    }
+#else
     if (wcslen(path) > Driver_HomePathNt_Len + 1
         && _wcsnicmp(path, Driver_HomePathNt, Driver_HomePathNt_Len) == 0
         && path[Driver_HomePathNt_Len] == L'\\') {
@@ -1690,6 +1765,7 @@ _FX BOX *Process_CheckForceProcess(
         *IsAlert = 2;
         return NULL;
     }
+#endif
 
     //
     // check if the process name is forced to any box
@@ -1839,11 +1915,63 @@ _FX BOX *Process_CheckHostInjectProcess(
 }
 
 
+#ifdef DRV_BREAKOUT
+
+//---------------------------------------------------------------------------
+// Kernel-mode breakout helper: home-path + image-name exclusion policy
+// Ignore candidate if it's a known Sandboxie image inside the home directory
+//---------------------------------------------------------------------------
+
+static __inline int Process_ShouldIgnoreBreakoutTarget(
+    const WCHAR *imageName, const WCHAR *appPath)
+{
+    if (!imageName || !appPath)
+        return 0;
+
+    // Check if appPath is in home directory
+    if (wcslen(appPath) <= Driver_HomePathNt_Len + 1
+        || _wcsnicmp(appPath, Driver_HomePathNt, Driver_HomePathNt_Len) != 0
+        || appPath[Driver_HomePathNt_Len] != L'\\') {
+
+        return 0;
+    }
+
+    // If in home directory, check if it's a known Sandboxie image
+    if (_wcsicmp(imageName, L"ImBox.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"KmdUtil.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandboxieBITS.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandboxieCrypto.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandboxieDcomLaunch.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandboxieRpcSs.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandboxieWUAU.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SandMan.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SbieCtrl.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SbieIni.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"SbieSvc.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"Start.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"unins000.exe") == 0)
+        return 1;
+    if (_wcsicmp(imageName, L"UpdUtil.exe") == 0)
+        return 1;
+
+    return 0;
+}
+
 //---------------------------------------------------------------------------
 // Process_IsBreakoutProcess
 //---------------------------------------------------------------------------
-
-#ifdef DRV_BREAKOUT
 _FX BOOLEAN Process_IsBreakoutProcess(
     BOX *box, const WCHAR *ImagePath)
 {
@@ -1876,12 +2004,10 @@ _FX BOOLEAN Process_IsBreakoutProcess(
     }
 
     //
-    // never break out a program from the Sandboxie home directory
+    // never break out a Sandboxie program from the home directory
     //
 
-    if (wcslen(ImagePath2) > Driver_HomePathNt_Len + 1
-        && _wcsnicmp(ImagePath2, Driver_HomePathNt, Driver_HomePathNt_Len) == 0
-        && ImagePath2[Driver_HomePathNt_Len] == L'\\') {
+    if (Process_ShouldIgnoreBreakoutTarget(ImageName, ImagePath2)) {
 
         goto finish;
     }
