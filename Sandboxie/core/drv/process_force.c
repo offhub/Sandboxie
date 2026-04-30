@@ -118,10 +118,20 @@ void Process_DeleteForceData(LIST *boxes);
 static BOX *Process_CheckBoxPath(LIST *boxes, const WCHAR *path);
 
 static BOX *Process_CheckForceFolder(
-    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert);
+    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert,
+    const WCHAR *prioritizeName, const WCHAR *prioritizePath);
+
+static BOOLEAN Process_CheckForceProcessList(
+    BOX *box, LIST* ForceProcess, const WCHAR* name, const WCHAR* path);
+
+static BOOLEAN Process_CheckBreakoutProcessList(
+    BOX *box, LIST* BreakoutProcess, const WCHAR* name, const WCHAR* path);
 
 static BOX *Process_CheckForceProcess(
     LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath);
+
+static BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *name, const WCHAR *path);
 
 static void Process_CheckAlertFolder(
 	LIST *boxes, const WCHAR *path, ULONG *IsAlert);
@@ -275,7 +285,7 @@ _FX BOX *Process_GetForcedStartBox(
         if (!box) {
 
             box = Process_CheckForceFolder(
-                        &boxes, ImagePath2, force_alert, &alert);
+                        &boxes, ImagePath2, force_alert, &alert, ImageName, ImagePath2);
 
             if ((! box) && (! alert)) {
                 box = Process_CheckForceProcess(
@@ -284,12 +294,12 @@ _FX BOX *Process_GetForcedStartBox(
 
             if ((! box) && CurDir && !is_start_exe && (! alert)) {
                 box = Process_CheckForceFolder(
-                        &boxes, CurDir, force_alert, &alert);
+                    &boxes, CurDir, force_alert, &alert, ImageName, ImagePath2);
             }
 
             if ((! box) && DocArg && !is_start_exe && (! alert)) {
                 box = Process_CheckForceFolder(
-                        &boxes, DocArg, force_alert, &alert);
+                    &boxes, DocArg, force_alert, &alert, ImageName, ImagePath2);
             }
 
             if (box && (! Conf_Get_Boolean(NULL, L"AllowForceImmersive", 0, FALSE)) &&
@@ -993,6 +1003,7 @@ _FX void Process_AddForceFolders(
     ULONG index2;
     const WCHAR *value;
     FORCE_ENTRY *folder;
+    const BOOLEAN breakout_setting = (_wcsicmp(Setting, L"BreakoutFolder") == 0 || _wcsicmp(Setting, L"BreakoutProcess") == 0);
 
     index2 = 0;
 
@@ -1000,11 +1011,46 @@ _FX void Process_AddForceFolders(
 
         WCHAR *expnd, *buf;
         ULONG buf_len;
+        WCHAR *value_copy;
+        WCHAR *value_norm;
+        ULONG value_norm_len;
 
         value = Conf_Get(section, Setting, index2);
         if (! value)
             break;
         ++index2;
+
+        value_copy = NULL;
+        if (breakout_setting) {
+            const WCHAR *sep = wcschr(value, L'|');
+            if (sep && sep > value && sep[1]) {
+                value_copy = Mem_AllocString(Driver_Pool, value);
+                if (!value_copy)
+                    continue;
+                value_copy[sep - value] = L'\0';
+                value = value_copy;
+            }
+
+            // Accept drive-relative wildcard forms like "C:*\firefox.exe"
+            // by normalizing to rooted DOS form "C:\*\firefox.exe".
+            value_norm = NULL;
+            value_norm_len = 0;
+            if (value[0] && value[1] == L':' && value[2] && value[2] != L'\\' && value[2] != L'/') {
+                ULONG value_len = (ULONG)wcslen(value);
+                value_norm_len = (value_len + 2) * sizeof(WCHAR);
+                value_norm = Mem_Alloc(Driver_Pool, value_norm_len);
+                if (value_norm) {
+                    value_norm[0] = value[0];
+                    value_norm[1] = L':';
+                    value_norm[2] = L'\\';
+                    wcscpy(value_norm + 3, value + 2);
+                    value = value_norm;
+                }
+            }
+        } else {
+            value_norm = NULL;
+            value_norm_len = 0;
+        }
 
         if (wcschr(value, L'\\') != NULL) { // folder, full_path or path_pattern
 
@@ -1060,6 +1106,11 @@ _FX void Process_AddForceFolders(
                 wcscpy(buf, value);
         }
 
+        if (value_copy)
+            Mem_FreeString(value_copy);
+        if (value_norm)
+            Mem_Free(value_norm, value_norm_len);
+
         if (! buf)
             continue;
 
@@ -1069,21 +1120,28 @@ _FX void Process_AddForceFolders(
             break;
         }
 
-        if (wcschr(buf, L'*')) {
+        if (wcschr(buf, L'*') || wcschr(buf, L'?')) {
 
             folder->pat =
                 Pattern_Create(box->expand_args->pool, buf, TRUE, 0);
 
-            Mem_Free(buf, buf_len);
-
             if (! folder->pat) {
+                Mem_Free(buf, buf_len);
                 Mem_Free(folder, sizeof(FORCE_ENTRY));
                 break;
             }
 
-            folder->buf_len = 0;
-            folder->len = 0;
-            folder->buf = NULL;
+            // Breakout wildcard rules need original text for path-like filtering.
+            if (breakout_setting) {
+                folder->buf_len = buf_len;
+                folder->len = wcslen(buf);
+                folder->buf = buf;
+            } else {
+                Mem_Free(buf, buf_len);
+                folder->buf_len = 0;
+                folder->len = 0;
+                folder->buf = NULL;
+            }
 
         } else {
 
@@ -1259,9 +1317,11 @@ _FX void Process_DeleteForceDataFolders(LIST* Folders)
 
 		List_Remove(Folders, folder);
 
-		if (folder->pat)
+        if (folder->pat) {
 			Pattern_Free(folder->pat);
-		else
+            if (folder->buf)
+                Mem_Free(folder->buf, folder->buf_len);
+        } else
 			Mem_Free(folder->buf, folder->buf_len);
 
 		Mem_Free(folder, sizeof(FORCE_ENTRY));
@@ -1419,14 +1479,65 @@ _FX BOOLEAN Process_CheckForceFolderList(
 
 
 //---------------------------------------------------------------------------
+// Process_IsPrioritizedBreakoutMatch
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *name, const WCHAR *path)
+{
+    BOOLEAN breakout_match = FALSE;
+    LIST BreakoutFolder;
+    LIST BreakoutProcess;
+    const WCHAR *ptr;
+    ULONG prefix_len;
+
+    if (!Conf_Get_Boolean(box->name, L"PrioritizeBreakoutOverForce", 0, FALSE))
+        return FALSE;
+
+    List_Init(&BreakoutFolder);
+    List_Init(&BreakoutProcess);
+
+    Conf_AdjustUseCount(TRUE);
+    Process_AddForceFolders(&BreakoutFolder, L"BreakoutFolder", box, box->name);
+    Process_AddForceFolders(&BreakoutProcess, L"BreakoutProcess", box, box->name);
+    Conf_AdjustUseCount(FALSE);
+
+    if (Process_CheckBreakoutProcessList(box, &BreakoutProcess, name, path)) {
+        breakout_match = TRUE;
+        goto finish;
+    }
+
+    ptr = wcsrchr(path, L'\\');
+    if (ptr && ptr[1])
+        prefix_len = (ULONG)(ptr - path);
+    else
+        prefix_len = 0;
+
+    if (prefix_len && Process_CheckForceFolderList(box, &BreakoutFolder, prefix_len, path))
+        breakout_match = TRUE;
+
+finish:
+    Process_DeleteForceDataFolders(&BreakoutFolder);
+    Process_DeleteForceDataFolders(&BreakoutProcess);
+
+    return breakout_match;
+}
+
+
+//---------------------------------------------------------------------------
 // Process_CheckForceFolder
 //---------------------------------------------------------------------------
 
 
 _FX BOX *Process_CheckForceFolder(
-    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert)
+    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert,
+    const WCHAR *prioritizeName, const WCHAR *prioritizePath)
 {
     const WCHAR *ptr;
+    const WCHAR *name;
+    const WCHAR *breakout_name;
+    const WCHAR *breakout_path;
     ULONG prefix_len;
     FORCE_BOX *box;
 
@@ -1442,6 +1553,10 @@ _FX BOX *Process_CheckForceFolder(
 
     if (! prefix_len)
         return NULL;
+
+    name = ptr + 1;
+    breakout_name = (prioritizeName && *prioritizeName) ? prioritizeName : name;
+    breakout_path = (prioritizePath && *prioritizePath) ? prioritizePath : path;
 
     //
     // never force a program from the Sandboxie home directory
@@ -1463,6 +1578,11 @@ _FX BOX *Process_CheckForceFolder(
     while (box) {
 
         if (Process_CheckForceFolderList(box->box, &box->ForceFolder, prefix_len, path)) {
+
+            if (Process_IsPrioritizedBreakoutMatch(box->box, breakout_name, breakout_path)) {
+                box = List_Next(box);
+                continue;
+            }
 
             if (alert) {
                 *IsAlert = 1;
@@ -1551,6 +1671,65 @@ _FX BOOLEAN Process_CheckForceProcessList(
     return FALSE;
 }
 
+static BOOLEAN Process_IsPathLikeBreakoutRule(const WCHAR *rule)
+{
+    return (rule && (wcschr(rule, L'\\') || wcschr(rule, L'/')));
+}
+
+static BOOLEAN Process_CheckBreakoutProcessList(
+    BOX *box, LIST* BreakoutProcess, const WCHAR* name, const WCHAR* path)
+{
+    ULONG path_lwr_len = 0;
+    WCHAR *path_lwr = NULL;
+
+    FORCE_ENTRY *entry = List_Head(BreakoutProcess);
+    while (entry) {
+
+        BOOLEAN match = FALSE;
+
+        if (entry->pat) {
+
+            // Ignore wildcard-only BreakoutProcess rules like "*.exe".
+            if (!Process_IsPathLikeBreakoutRule(entry->buf)) {
+                entry = List_Next(entry);
+                continue;
+            }
+
+            if (! path_lwr) {
+                path_lwr = Mem_AllocString(Driver_Pool, path);
+                if (path_lwr) {
+                    _wcslwr(path_lwr);
+                    path_lwr_len = wcslen(path_lwr);
+                }
+            }
+
+            if (path_lwr)
+                match = Pattern_Match(entry->pat, path_lwr, path_lwr_len);
+
+        } else {
+
+            if (Process_IsPathLikeBreakoutRule(entry->buf)) {
+                ULONG entry_len = entry->len;
+                if (entry_len == wcslen(path) && _wcsnicmp(entry->buf, path, entry_len) == 0)
+                    match = TRUE;
+            } else {
+                if (Process_MatchImage(box, entry->buf, 0, name, 1))
+                    match = TRUE;
+            }
+        }
+
+        if (match)
+            break;
+
+        entry = List_Next(entry);
+    }
+
+    if (path_lwr)
+        Mem_FreeString(path_lwr);
+
+    return (entry != NULL);
+}
+
 
 //---------------------------------------------------------------------------
 // Process_CheckForceProcess
@@ -1582,6 +1761,12 @@ _FX BOX *Process_CheckForceProcess(
     while (box) {
 
         if (Process_CheckForceProcessList(box->box, &box->ForceProcess, name, path)) {
+
+            if (Process_IsPrioritizedBreakoutMatch(box->box, name, path)) {
+                box = List_Next(box);
+                continue;
+            }
+
             if (alert) {
                 *IsAlert = 1;
                 return NULL;
@@ -1591,6 +1776,12 @@ _FX BOX *Process_CheckForceProcess(
         }
 
         if (ParentName && Process_CheckForceProcessList(box->box, &box->ForceChildren, ParentName, ParentPath) && _wcsicmp(name, L"Sandman.exe") != 0) { // except for sandman exe
+
+            if (Process_IsPrioritizedBreakoutMatch(box->box, name, path)) {
+                box = List_Next(box);
+                continue;
+            }
+
             if (alert) {
                 *IsAlert = 1;
                 return NULL;
@@ -1778,7 +1969,7 @@ _FX BOOLEAN Process_IsBreakoutProcess(
         
     Conf_AdjustUseCount(FALSE);
 
-    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName);
+    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName, ImagePath2);
     if (!IsBreakout) {
         const WCHAR *ptr;
         ULONG prefix_len;

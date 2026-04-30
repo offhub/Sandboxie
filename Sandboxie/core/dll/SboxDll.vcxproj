@@ -789,6 +789,7 @@
   <ItemGroup>
     <ClInclude Include="..\..\apps\com\common.h" />
     <ClInclude Include="..\..\common\arm64_asm.h" />
+    <ClInclude Include="..\..\common\breakout_match.h" />
     <ClInclude Include="..\..\common\defines.h" />
     <ClInclude Include="..\..\common\Detours\detours.h" />
     <ClInclude Include="..\..\common\Detours\detver.h" />

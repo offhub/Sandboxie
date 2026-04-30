@@ -31,6 +31,7 @@
 #include "core/drv/api_defs.h"
 #include "msgs/msgs.h"
 #include "common/str_util.h"
+#include "common/breakout_match.h"
 
 //---------------------------------------------------------------------------
 // Functions
@@ -143,6 +144,9 @@ static void Proc_ExitProcess(UINT ExitCode);
 static BOOLEAN Proc_CheckMailer(const WCHAR *ImagePath, BOOLEAN IsBoxedPath);
 
 static BOOLEAN Proc_IsSoftwareUpdateW(const WCHAR *path);
+
+static BOOLEAN Proc_CheckBreakoutProcessInList(
+    const WCHAR *imageName, const WCHAR *appPath, const WCHAR *boxname);
 
 //static BOOLEAN Proc_IsProcessRunning(const WCHAR *ImageToFind);
 
@@ -779,6 +783,19 @@ _FX const WCHAR* SbieDll_FindArgumentEnd(const WCHAR* arguments)
     return ptr;
 }
 
+static BOOLEAN Proc_CheckBreakoutProcessInList(
+    const WCHAR *imageName, const WCHAR *appPath, const WCHAR *boxname)
+{
+    ULONG appPathLen;
+
+    if (!imageName || !*imageName || !appPath || !*appPath)
+        return FALSE;
+
+    appPathLen = wcslen(appPath);
+
+    return Breakout_FindProcessMatch(boxname, imageName, appPath, appPathLen, NULL, 0, NULL) ? TRUE : FALSE;
+}
+
 
 //---------------------------------------------------------------------------
 // Proc_IsLikelyElectronProcess
@@ -985,7 +1002,21 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     SaveCurrentDirectory = lpCurrentDirectory;
 
-    lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
+    BOOLEAN is_breakout_candidate = FALSE;
+    if (lpApplicationName) {
+        const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
+        if (lpProgram && !Breakout_IsPathInHome(lpApplicationName)) {
+            // Breakout candidates must not inherit sandbox remapped CWD.
+            is_breakout_candidate = (Proc_CheckBreakoutProcessInList(lpProgram + 1, lpApplicationName, NULL)
+                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), NULL, L"BreakoutFolder"))
+                || (Dll_BoxName && (Proc_CheckBreakoutProcessInList(lpProgram + 1, lpApplicationName, Dll_BoxName)
+                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")));
+        }
+    }
+
+    // For normal launches, keep existing boxed CWD selection behavior.
+    if (!is_breakout_candidate)
+        lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
 
     if (!lpCurrentDirectory)
         lpCurrentDirectory = SaveCurrentDirectory;
@@ -1238,13 +1269,16 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     //
     // check if this is a break out candidate
+    // BreakoutProcess and BreakoutFolder entries may include optional "|BoxName" targets.
     //
 
     if(lpApplicationName) {
         const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
-        if (lpProgram) {
-            if (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
-                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder")) {
+        if (lpProgram && !Breakout_IsPathInHome(lpApplicationName)) {
+            if ((Proc_CheckBreakoutProcessInList(lpProgram + 1, lpApplicationName, NULL)
+                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder"))
+                || (Dll_BoxName && (Proc_CheckBreakoutProcessInList(lpProgram + 1, lpApplicationName, Dll_BoxName)
+                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")))) {
                 
                 const WCHAR* lpArguments = NULL;
                 if (lpCommandLine)
@@ -1320,11 +1354,37 @@ _FX BOOL Proc_CreateProcessInternalW(
                         *mybuff2 = L'\0';
                     }
 
-                    if (! lpCurrentDirectory) { // lpCurrentDirectory must not be NULL
-                        lpCurrentDirectory = Dll_Alloc(sizeof(WCHAR) * 8192);
-                        if (lpCurrentDirectory) {
-                            ((WCHAR*)lpCurrentDirectory)[0] = L'\0';
-                            RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, lpCurrentDirectory);
+                    BOOLEAN caller_has_explicit_dir = FALSE;
+                    if (SaveCurrentDirectory && ((const WCHAR*)SaveCurrentDirectory)[0] != L'\0')
+                        caller_has_explicit_dir = TRUE;
+
+                    // No explicit caller CWD -> use target EXE directory.
+                    // BreakoutUseTargetDir can force this even with explicit CWD.
+                    BOOLEAN use_target_dir = !caller_has_explicit_dir
+                        || SbieDll_GetSettingsForName_bool(NULL, lpProgram + 1, L"BreakoutUseTargetDir", FALSE);
+
+                    if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
+                        // lpCurrentDirectory must not be NULL
+                        WCHAR* breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
+                        if (breakout_dir) {
+                            breakout_dir[0] = L'\0';
+
+                            if (use_target_dir) {
+                                const WCHAR* last_sep = wcsrchr(lpApplicationName, L'\\');
+                                if (last_sep && last_sep > lpApplicationName) {
+                                    ULONG dir_len = (ULONG)(last_sep - lpApplicationName + 1);
+                                    if (dir_len < 8191) {
+                                        wmemcpy(breakout_dir, lpApplicationName, dir_len);
+                                        breakout_dir[dir_len] = L'\0';
+                                    }
+                                }
+                            }
+
+                            // Keep legacy fallback when target-dir extraction fails.
+                            if (breakout_dir[0] == L'\0')
+                                RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, breakout_dir);
+
+                            lpCurrentDirectory = breakout_dir;
                         }
                     }
 
