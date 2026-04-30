@@ -16,6 +16,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fixed box rename failing with "The parameter is incorrect" since 1.17.3, caused by multi-line section content being rejected by the new ContainsCRLF check in CIniFile::AddValue
 - fixed renamed sandbox not being re-selected in the UI after a successful rename
 - fixed sandboxed app tray icons not showing with `OpenWinClass=*` by proxying `Shell_NotifyIcon`; can be disabled with `UseShellNotifyIconProxy` (default enabled, supports `process` and `!process` selectors)
+- fixed track WS_EX_TOPMOST extended style, detect topmost state changes, and use appropriate HWND_TOPMOST vs HWND_TOP ordering to ensure correct border visibility and z-order when topmost status changes. [#5358](https://github.com/sandboxie-plus/Sandboxie/issues/5358)
 
 
 
