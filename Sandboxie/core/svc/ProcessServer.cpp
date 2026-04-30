@@ -37,6 +37,7 @@
 #include "core/drv/api_defs.h"
 #include <sddl.h>
 #include "sbieiniserver.h"
+#include <cwctype>
 #include <string>
 
 #define SECONDS(n64)            (((LONGLONG)n64) * 10000000L)
@@ -51,6 +52,135 @@ NTSYSCALLAPI NTSTATUS NTAPI NtGetNextThread(HANDLE ProcessHandle, HANDLE ThreadH
 
 NTSYSCALLAPI NTSTATUS NTAPI NtSuspendProcess(_In_ HANDLE ProcessHandle);
 NTSYSCALLAPI NTSTATUS NTAPI NtResumeProcess(_In_ HANDLE ProcessHandle);
+}
+
+static WCHAR* ProcessServer_FindBreakoutTargetSeparator(WCHAR* value)
+{
+    WCHAR* sep = wcschr(value, L'|');
+    if (!sep || sep <= value || !sep[1])
+        return NULL;
+
+    return sep;
+}
+
+static bool ProcessServer_WildcardMatchI(const WCHAR* pattern, const WCHAR* text)
+{
+    if (!pattern || !text)
+        return false;
+
+    while (*pattern) {
+        if (*pattern == L'*') {
+            while (*pattern == L'*')
+                ++pattern;
+            if (!*pattern)
+                return true;
+            while (*text) {
+                if (ProcessServer_WildcardMatchI(pattern, text))
+                    return true;
+                ++text;
+            }
+            return false;
+        }
+
+        if (!*text)
+            return false;
+
+        if (*pattern != L'?' && towlower(*pattern) != towlower(*text))
+            return false;
+
+        ++pattern;
+        ++text;
+    }
+
+    return *text == L'\0';
+}
+
+static bool ProcessServer_MatchBreakoutFolderRule(const WCHAR* rule, const WCHAR* appPath, ULONG appDirLen)
+{
+    if (!rule || !*rule || !appPath || !appDirLen)
+        return false;
+
+    size_t ruleLen = wcslen(rule);
+    while (ruleLen && rule[ruleLen - 1] == L'\\')
+        --ruleLen;
+
+    if (!ruleLen || !appDirLen)
+        return false;
+
+    if (wcschr(rule, L'*')) {
+        std::wstring ruleText(rule, ruleLen);
+        std::wstring pathLower(appPath, appDirLen);
+        for (size_t i = 0; i < pathLower.size(); ++i)
+            pathLower[i] = (WCHAR)towlower(pathLower[i]);
+
+        return ProcessServer_WildcardMatchI(ruleText.c_str(), pathLower.c_str());
+    }
+
+    if (ruleLen != appDirLen)
+        return false;
+
+    return (_wcsnicmp(rule, appPath, ruleLen) == 0);
+}
+
+static bool ProcessServer_GetBreakoutProcessTarget(const WCHAR* boxname, const WCHAR* imageName, WCHAR* outTarget, size_t outTargetCch)
+{
+    WCHAR buf[CONF_LINE_LEN];
+    ULONG index = 0;
+
+    while (1) {
+        NTSTATUS status = SbieApi_QueryConfAsIs(boxname, L"BreakoutProcess", index, buf, sizeof(buf) - sizeof(WCHAR));
+        ++index;
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_BUFFER_TOO_SMALL)
+                continue;
+            break;
+        }
+
+        WCHAR* sep = ProcessServer_FindBreakoutTargetSeparator(buf);
+        if (!sep)
+            continue;
+
+        *sep = L'\0';
+        if (_wcsicmp(buf, imageName) == 0) {
+            wcscpy_s(outTarget, outTargetCch, sep + 1);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool ProcessServer_GetBreakoutFolderTarget(const WCHAR* boxname, const WCHAR* appPath, ULONG appDirLen, WCHAR* outTarget, size_t outTargetCch)
+{
+    WCHAR buf[CONF_LINE_LEN];
+    ULONG index = 0;
+
+    while (1) {
+        NTSTATUS status = SbieApi_QueryConf(boxname, L"BreakoutFolder", index, buf, sizeof(buf) - 16 * sizeof(WCHAR));
+        ++index;
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_BUFFER_TOO_SMALL)
+                continue;
+            break;
+        }
+
+        WCHAR* value = buf;
+
+        WCHAR* sep = ProcessServer_FindBreakoutTargetSeparator(value);
+        if (!sep)
+            continue;
+
+        *sep = L'\0';
+        if (*value != L'*')
+            SbieDll_TranslateNtToDosPath(value);
+
+        if (ProcessServer_MatchBreakoutFolderRule(value, appPath, appDirLen)) {
+            wcscpy_s(outTarget, outTargetCch, sep + 1);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 //---------------------------------------------------------------------------
@@ -596,12 +726,15 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
 
                         //
                         // check if the process/directory is configured for breakout
-                        // if its a BreakoutProcess we must also test if the path is not in the sandbox itself
+                        // if its a BreakoutProcess or BreakoutFolder we must also test if the path is not in the sandbox itself
                         //
 
-                        if ((SbieDll_CheckStringInList(lpProgram + 1, boxname, L"BreakoutProcess")
-                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName))
-                            || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), boxname, L"BreakoutFolder")) {
+                        bool breakout_process = SbieDll_CheckStringInList(lpProgram + 1, boxname, L"BreakoutProcess")
+                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
+                        bool breakout_folder = SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), boxname, L"BreakoutFolder")
+                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
+
+                        if (breakout_process || breakout_folder) {
 
                             //
                             // this is a breakout process, it is allowed to leave the sandbox
@@ -614,38 +747,80 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                             // check if it should end up in another box
                             //
 
-                            WCHAR BoxName[BOXNAME_COUNT];
-                            int index = -1;
-                            while (1) {
-                                index = SbieApi_EnumBoxesEx(index, BoxName, TRUE);
-                                if (index == -1)
-                                    break;
-                                if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)BoxName, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
-                                    continue;
+                            WCHAR TargetBox[BOXNAME_COUNT] = { 0 };
+                            bool has_explicit_target = false;
 
-                                if (SbieDll_CheckStringInList(lpProgram + 1, BoxName, L"ForceProcess")
-                                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), BoxName, L"ForceFolder")) {
+                            if (breakout_process)
+                                has_explicit_target = ProcessServer_GetBreakoutProcessTarget(boxname, lpProgram + 1, TargetBox, BOXNAME_COUNT);
+
+                            if (!has_explicit_target && breakout_folder)
+                                has_explicit_target = ProcessServer_GetBreakoutFolderTarget(boxname, lpApplicationName, (ULONG)(lpProgram - lpApplicationName), TargetBox, BOXNAME_COUNT);
+
+                            if (has_explicit_target) {
+
+                                if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)TargetBox, (ULONG_PTR)sid, (ULONG_PTR)session_id))) {
+                                    lvl = 0;
+                                    err = ERROR_NOT_SUPPORTED;
+                                    goto end;
+                                }
+
+                                if (_wcsicmp(boxname, TargetBox) == 0) {
+                                    lvl = 0;
+                                    err = ERROR_NOT_SUPPORTED;
+                                    goto end;
+                                }
+
+                                BoxNameOrModelPid = (LONG_PTR)boxname;
+                                wcscpy(boxname, TargetBox);
+                            }
+
+                            if (BoxNameOrModelPid == 0) {
+                                WCHAR BoxName[BOXNAME_COUNT];
+                                int index = -1;
+                                
+                                //
+                                // check if source box prioritizes breakout over its own force rules
+                                //
+                                BOOLEAN prioritize_breakout = SbieApi_QueryConfBool(boxname, L"PrioritizeBreakoutOverForce", FALSE);
+                                
+                                while (1) {
+                                    index = SbieApi_EnumBoxesEx(index, BoxName, TRUE);
+                                    if (index == -1)
+                                        break;
+                                    if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)BoxName, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
+                                        continue;
 
                                     //
-                                    // check if the breakout process is supposed to end in the box it is trying to break out of
-                                    // and deny the breakout in that case, to take the normal process creation route
-                                    // 
-                                    // this happens when a break out is configured globally
+                                    // if PrioritizeBreakoutOverForce is set, skip the source box's own force rules
+                                    // but still allow other boxes to catch the process
                                     //
+                                    if (prioritize_breakout && _wcsicmp(boxname, BoxName) == 0)
+                                        continue;
 
-                                    if (_wcsicmp(boxname, BoxName) == 0) {
-                                        lvl = 0;
-                                        err = ERROR_NOT_SUPPORTED;
-                                        goto end;
+                                    if (SbieDll_CheckStringInList(lpProgram + 1, BoxName, L"ForceProcess")
+                                        || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), BoxName, L"ForceFolder")) {
+
+                                        //
+                                        // check if the breakout process is supposed to end in the box it is trying to break out of
+                                        // and deny the breakout in that case, to take the normal process creation route
+                                        //
+                                        // this happens when a break out is configured globally
+                                        //
+
+                                        if (_wcsicmp(boxname, BoxName) == 0) {
+                                            lvl = 0;
+                                            err = ERROR_NOT_SUPPORTED;
+                                            goto end;
+                                        }
+
+                                        //
+                                        // set other box
+                                        //
+
+                                        BoxNameOrModelPid = (LONG_PTR)boxname;
+                                        wcscpy(boxname, BoxName);
+                                        break;
                                     }
-
-                                    //
-                                    // set other box
-                                    //
-
-                                    BoxNameOrModelPid = (LONG_PTR)boxname;
-                                    wcscpy(boxname, BoxName);
-                                    break;
                                 }
                             }
                         }
