@@ -985,7 +985,21 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     SaveCurrentDirectory = lpCurrentDirectory;
 
-    lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
+    BOOLEAN is_breakout_candidate = FALSE;
+    if (lpApplicationName) {
+        const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
+        if (lpProgram) {
+            // Breakout candidates must not inherit sandbox remapped CWD.
+            is_breakout_candidate = (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
+                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), NULL, L"BreakoutFolder"))
+                || (Dll_BoxName && (SbieDll_CheckStringInList(lpProgram + 1, Dll_BoxName, L"BreakoutProcess")
+                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")));
+        }
+    }
+
+    // For normal launches, keep existing boxed CWD selection behavior.
+    if (!is_breakout_candidate)
+        lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
 
     if (!lpCurrentDirectory)
         lpCurrentDirectory = SaveCurrentDirectory;
@@ -1238,13 +1252,16 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     //
     // check if this is a break out candidate
+    // BreakoutProcess and BreakoutFolder entries may include optional "|BoxName" targets.
     //
 
     if(lpApplicationName) {
         const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
         if (lpProgram) {
-            if (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
-                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder")) {
+            if ((SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
+                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder"))
+                || (Dll_BoxName && (SbieDll_CheckStringInList(lpProgram + 1, Dll_BoxName, L"BreakoutProcess")
+                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")))) {
                 
                 const WCHAR* lpArguments = NULL;
                 if (lpCommandLine)
@@ -1320,11 +1337,37 @@ _FX BOOL Proc_CreateProcessInternalW(
                         *mybuff2 = L'\0';
                     }
 
-                    if (! lpCurrentDirectory) { // lpCurrentDirectory must not be NULL
-                        lpCurrentDirectory = Dll_Alloc(sizeof(WCHAR) * 8192);
-                        if (lpCurrentDirectory) {
-                            ((WCHAR*)lpCurrentDirectory)[0] = L'\0';
-                            RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, lpCurrentDirectory);
+                    BOOLEAN caller_has_explicit_dir = FALSE;
+                    if (SaveCurrentDirectory && ((const WCHAR*)SaveCurrentDirectory)[0] != L'\0')
+                        caller_has_explicit_dir = TRUE;
+
+                    // No explicit caller CWD -> use target EXE directory.
+                    // BreakoutUseTargetDir can force this even with explicit CWD.
+                    BOOLEAN use_target_dir = !caller_has_explicit_dir
+                        || SbieDll_GetSettingsForName_bool(NULL, lpProgram + 1, L"BreakoutUseTargetDir", FALSE);
+
+                    if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
+                        // lpCurrentDirectory must not be NULL
+                        WCHAR* breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
+                        if (breakout_dir) {
+                            breakout_dir[0] = L'\0';
+
+                            if (use_target_dir) {
+                                const WCHAR* last_sep = wcsrchr(lpApplicationName, L'\\');
+                                if (last_sep && last_sep > lpApplicationName) {
+                                    ULONG dir_len = (ULONG)(last_sep - lpApplicationName);
+                                    if (dir_len < 8191) {
+                                        wmemcpy(breakout_dir, lpApplicationName, dir_len);
+                                        breakout_dir[dir_len] = L'\0';
+                                    }
+                                }
+                            }
+
+                            // Keep legacy fallback when target-dir extraction fails.
+                            if (breakout_dir[0] == L'\0')
+                                RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, breakout_dir);
+
+                            lpCurrentDirectory = breakout_dir;
                         }
                     }
 
