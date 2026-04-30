@@ -11,6 +11,16 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Added
 - added workaround for SBIE2205 OpenDesktop when requesting default desktop
+- added optional target-box suffix support for breakout rules, enabling use as a Force alternative:
+  - `BreakoutProcess=program.exe|TargetBox`
+  - `BreakoutFolder=path_pattern|TargetBox`
+  - `BreakoutDocument=path_pattern|TargetBox`
+- added `BreakoutUseTargetDir` (supports global and `process,value` forms) to prefer the target executable directory as breakout CWD
+- added path pattern support for `BreakoutProcess`, enabling full-qualified-path matching like `C:\Program Files\app\*.exe` in addition to name-only matching
+
+### Changed
+- changed breakout handoff to support explicit target-box routing and improved wildcard folder rule matching with trailing backslash normalization for `BreakoutFolder`
+- changed force/breakout interaction so `PrioritizeBreakoutOverForce=y` skips source-box force capture for matching breakout rules while still allowing other boxes to force the process
 
 ### Fixed
 - fixed box rename failing with "The parameter is incorrect" since 1.17.3, caused by multi-line section content being rejected by the new ContainsCRLF check in CIniFile::AddValue
