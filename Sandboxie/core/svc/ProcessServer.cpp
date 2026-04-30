@@ -107,7 +107,7 @@ static bool ProcessServer_MatchBreakoutFolderRule(const WCHAR* rule, const WCHAR
     if (!ruleLen || !appDirLen)
         return false;
 
-    if (wcschr(rule, L'*')) {
+    if (wcschr(rule, L'*') || wcschr(rule, L'?')) {
         std::wstring ruleText(rule, ruleLen);
         std::wstring pathLower(appPath, appDirLen);
         for (size_t i = 0; i < pathLower.size(); ++i)
@@ -750,10 +750,12 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                             WCHAR TargetBox[BOXNAME_COUNT] = { 0 };
                             bool has_explicit_target = false;
 
+                            // Keep BreakoutProcess precedence over BreakoutFolder.
+                            // If process rule matches, only process-target lookup is allowed.
                             if (breakout_process)
                                 has_explicit_target = ProcessServer_GetBreakoutProcessTarget(boxname, lpProgram + 1, TargetBox, BOXNAME_COUNT);
 
-                            if (!has_explicit_target && breakout_folder)
+                            if (!breakout_process && breakout_folder)
                                 has_explicit_target = ProcessServer_GetBreakoutFolderTarget(boxname, lpApplicationName, (ULONG)(lpProgram - lpApplicationName), TargetBox, BOXNAME_COUNT);
 
                             if (has_explicit_target) {

@@ -985,21 +985,7 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     SaveCurrentDirectory = lpCurrentDirectory;
 
-    BOOLEAN is_breakout_candidate = FALSE;
-    if (lpApplicationName) {
-        const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
-        if (lpProgram) {
-            // Breakout candidates must not inherit sandbox remapped CWD.
-            is_breakout_candidate = (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
-                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), NULL, L"BreakoutFolder"))
-                || (Dll_BoxName && (SbieDll_CheckStringInList(lpProgram + 1, Dll_BoxName, L"BreakoutProcess")
-                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), Dll_BoxName, L"BreakoutFolder")));
-        }
-    }
-
-    // For normal launches, keep existing boxed CWD selection behavior.
-    if (!is_breakout_candidate)
-        lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
+    lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
 
     if (!lpCurrentDirectory)
         lpCurrentDirectory = SaveCurrentDirectory;
@@ -1346,9 +1332,12 @@ _FX BOOL Proc_CreateProcessInternalW(
                     BOOLEAN use_target_dir = !caller_has_explicit_dir
                         || SbieApi_QueryConfBool(NULL, L"BreakoutUseTargetDir", FALSE);
 
-                    if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
+                    void *breakout_current_directory = lpCurrentDirectory;
+                    WCHAR *breakout_dir = NULL;
+
+                    if (use_target_dir || !breakout_current_directory || ((const WCHAR*)breakout_current_directory)[0] == L'\0') {
                         // lpCurrentDirectory must not be NULL
-                        WCHAR* breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
+                        breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
                         if (breakout_dir) {
                             breakout_dir[0] = L'\0';
 
@@ -1367,7 +1356,7 @@ _FX BOOL Proc_CreateProcessInternalW(
                             if (breakout_dir[0] == L'\0')
                                 RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, breakout_dir);
 
-                            lpCurrentDirectory = breakout_dir;
+                            breakout_current_directory = breakout_dir;
                         }
                     }
 
@@ -1376,9 +1365,12 @@ _FX BOOL Proc_CreateProcessInternalW(
                         |   BELOW_NORMAL_PRIORITY_CLASS | IDLE_PRIORITY_CLASS
                         |   CREATE_UNICODE_ENVIRONMENT);
 
-                    ok = SbieDll_RunSandboxed(L"*UNBOXED*", mybuf, lpCurrentDirectory, crflags2, lpStartupInfo, lpProcessInformation);
+                    ok = SbieDll_RunSandboxed(L"*UNBOXED*", mybuf, breakout_current_directory, crflags2, lpStartupInfo, lpProcessInformation);
 
                     err = GetLastError();
+
+                    if (breakout_dir)
+                        Dll_Free(breakout_dir);
 
                     Dll_Free(mybuf);
 
