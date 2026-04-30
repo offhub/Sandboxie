@@ -120,8 +120,14 @@ static BOX *Process_CheckBoxPath(LIST *boxes, const WCHAR *path);
 static BOX *Process_CheckForceFolder(
     LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert);
 
+static BOOLEAN Process_CheckForceProcessList(
+    BOX *box, LIST* ForceProcess, const WCHAR* name, const WCHAR* path);
+
 static BOX *Process_CheckForceProcess(
     LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath);
+
+static BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *name, const WCHAR *path);
 
 static void Process_CheckAlertFolder(
 	LIST *boxes, const WCHAR *path, ULONG *IsAlert);
@@ -1419,6 +1425,53 @@ _FX BOOLEAN Process_CheckForceFolderList(
 
 
 //---------------------------------------------------------------------------
+// Process_IsPrioritizedBreakoutMatch
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *name, const WCHAR *path)
+{
+    BOOLEAN breakout_match = FALSE;
+    LIST BreakoutFolder;
+    LIST BreakoutProcess;
+    const WCHAR *ptr;
+    ULONG prefix_len;
+
+    if (!Conf_Get_Boolean(box->name, L"PrioritizeBreakoutOverForce", 0, FALSE))
+        return FALSE;
+
+    List_Init(&BreakoutFolder);
+    List_Init(&BreakoutProcess);
+
+    Conf_AdjustUseCount(TRUE);
+    Process_AddForceFolders(&BreakoutFolder, L"BreakoutFolder", box, box->name);
+    Process_AddForceFolders(&BreakoutProcess, L"BreakoutProcess", box, box->name);
+    Conf_AdjustUseCount(FALSE);
+
+    if (Process_CheckForceProcessList(box, &BreakoutProcess, name, path)) {
+        breakout_match = TRUE;
+        goto finish;
+    }
+
+    ptr = wcsrchr(path, L'\\');
+    if (ptr && ptr[1])
+        prefix_len = (ULONG)(ptr - path);
+    else
+        prefix_len = 0;
+
+    if (prefix_len && Process_CheckForceFolderList(box, &BreakoutFolder, prefix_len, path))
+        breakout_match = TRUE;
+
+finish:
+    Process_DeleteForceDataFolders(&BreakoutFolder);
+    Process_DeleteForceDataFolders(&BreakoutProcess);
+
+    return breakout_match;
+}
+
+
+//---------------------------------------------------------------------------
 // Process_CheckForceFolder
 //---------------------------------------------------------------------------
 
@@ -1427,6 +1480,7 @@ _FX BOX *Process_CheckForceFolder(
     LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert)
 {
     const WCHAR *ptr;
+    const WCHAR *name;
     ULONG prefix_len;
     FORCE_BOX *box;
 
@@ -1442,6 +1496,8 @@ _FX BOX *Process_CheckForceFolder(
 
     if (! prefix_len)
         return NULL;
+
+    name = ptr + 1;
 
     //
     // never force a program from the Sandboxie home directory
@@ -1463,6 +1519,11 @@ _FX BOX *Process_CheckForceFolder(
     while (box) {
 
         if (Process_CheckForceFolderList(box->box, &box->ForceFolder, prefix_len, path)) {
+
+            if (Process_IsPrioritizedBreakoutMatch(box->box, name, path)) {
+                box = List_Next(box);
+                continue;
+            }
 
             if (alert) {
                 *IsAlert = 1;
@@ -1582,6 +1643,12 @@ _FX BOX *Process_CheckForceProcess(
     while (box) {
 
         if (Process_CheckForceProcessList(box->box, &box->ForceProcess, name, path)) {
+
+            if (Process_IsPrioritizedBreakoutMatch(box->box, name, path)) {
+                box = List_Next(box);
+                continue;
+            }
+
             if (alert) {
                 *IsAlert = 1;
                 return NULL;
