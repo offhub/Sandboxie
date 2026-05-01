@@ -30,6 +30,11 @@
 #include "token.h"
 #include "common/pattern.h"
 #include "common/my_version.h"
+#define BREAKOUT_MATCH_NO_CRT
+#define BREAKOUT_MATCH_NO_QUERY_HELPERS
+#include "common/breakout_match.h"
+#undef BREAKOUT_MATCH_NO_CRT
+#undef BREAKOUT_MATCH_NO_QUERY_HELPERS
 
 
 //---------------------------------------------------------------------------
@@ -118,10 +123,44 @@ void Process_DeleteForceData(LIST *boxes);
 static BOX *Process_CheckBoxPath(LIST *boxes, const WCHAR *path);
 
 static BOX *Process_CheckForceFolder(
-    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert);
+    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert,
+    const WCHAR *prioritizeName, const WCHAR *prioritizePath);
+
+static BOOLEAN Process_CheckForceProcessList(
+    BOX *box, LIST* ForceProcess, const WCHAR* name, const WCHAR* path);
+
+static BOOLEAN Process_CheckBreakoutProcessList(
+    BOX *box, LIST* BreakoutProcess, const WCHAR* name, const WCHAR* path);
+
+static BOOLEAN Process_IsSelfTargetedBreakoutMatch(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path);
+
+static FORCE_BOX* Process_FindForceBoxByName(
+    LIST *boxes, const WCHAR *boxname);
+
+static BOOLEAN Process_GetMatchedBreakoutTarget(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path, WCHAR *outTarget, ULONG outTargetCch);
+
+static BOOLEAN Process_MatchBreakoutProcessRuleRaw(
+    BOX *box, const WCHAR *rule, const WCHAR *name, const WCHAR *path);
+
+static BOOLEAN Process_MatchBreakoutFolderRuleRaw(
+    BOX *box, const WCHAR *rule, const WCHAR *name, const WCHAR *path);
+
+static BOOLEAN Process_FindMatchingBreakoutFolderRule(
+    BOX *box, const WCHAR *name, const WCHAR *path, BOOLEAN requireTarget,
+    WCHAR *outTarget, ULONG outTargetCch);
+
+static int Process_BreakoutMatchImage(const WCHAR *pattern, const WCHAR *imageName, void *context);
+
+static WCHAR* Process_NormalizeBreakoutRulePath(
+    BOX *box, const WCHAR *rule, const WCHAR *setting, ULONG *out_len);
 
 static BOX *Process_CheckForceProcess(
     LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath);
+
+static BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path);
 
 static void Process_CheckAlertFolder(
 	LIST *boxes, const WCHAR *path, ULONG *IsAlert);
@@ -275,7 +314,7 @@ _FX BOX *Process_GetForcedStartBox(
         if (!box) {
 
             box = Process_CheckForceFolder(
-                        &boxes, ImagePath2, force_alert, &alert);
+                        &boxes, ImagePath2, force_alert, &alert, ParentName ? ParentName : ImageName, ImagePath2);
 
             if ((! box) && (! alert)) {
                 box = Process_CheckForceProcess(
@@ -284,12 +323,12 @@ _FX BOX *Process_GetForcedStartBox(
 
             if ((! box) && CurDir && !is_start_exe && (! alert)) {
                 box = Process_CheckForceFolder(
-                        &boxes, CurDir, force_alert, &alert);
+                    &boxes, CurDir, force_alert, &alert, ParentName ? ParentName : ImageName, ImagePath2);
             }
 
             if ((! box) && DocArg && !is_start_exe && (! alert)) {
                 box = Process_CheckForceFolder(
-                        &boxes, DocArg, force_alert, &alert);
+                    &boxes, DocArg, force_alert, &alert, ParentName ? ParentName : ImageName, ImagePath2);
             }
 
             if (box && (! Conf_Get_Boolean(NULL, L"AllowForceImmersive", 0, FALSE)) &&
@@ -333,7 +372,7 @@ _FX BOX *Process_GetForcedStartBox(
 			force_alert = FALSE;
 
 		if ((! box) && (alert != 1))
-			Process_CheckAlertFolder(&boxes, ImagePath2, &alert);
+            Process_CheckAlertFolder(&boxes, ImagePath2, &alert);
 
 		//
 		// for alerting we only care about the process path not about the working dir or command line
@@ -993,6 +1032,7 @@ _FX void Process_AddForceFolders(
     ULONG index2;
     const WCHAR *value;
     FORCE_ENTRY *folder;
+    const BOOLEAN breakout_setting = (_wcsicmp(Setting, L"BreakoutFolder") == 0 || _wcsicmp(Setting, L"BreakoutProcess") == 0);
 
     index2 = 0;
 
@@ -1000,11 +1040,46 @@ _FX void Process_AddForceFolders(
 
         WCHAR *expnd, *buf;
         ULONG buf_len;
+        WCHAR *value_copy;
+        WCHAR *value_norm;
+        ULONG value_norm_len;
 
         value = Conf_Get(section, Setting, index2);
         if (! value)
             break;
         ++index2;
+
+        value_copy = NULL;
+        if (breakout_setting) {
+            const WCHAR *sep = wcschr(value, L'|');
+            if (sep && sep > value && sep[1]) {
+                value_copy = Mem_AllocString(Driver_Pool, value);
+                if (!value_copy)
+                    continue;
+                value_copy[sep - value] = L'\0';
+                value = value_copy;
+            }
+
+            // Accept drive-relative wildcard forms like "C:*\firefox.exe"
+            // by normalizing to rooted DOS form "C:\*\firefox.exe".
+            value_norm = NULL;
+            value_norm_len = 0;
+            if (value[0] && value[1] == L':' && value[2] && value[2] != L'\\' && value[2] != L'/') {
+                ULONG value_len = (ULONG)wcslen(value);
+                value_norm_len = (value_len + 2) * sizeof(WCHAR);
+                value_norm = Mem_Alloc(Driver_Pool, value_norm_len);
+                if (value_norm) {
+                    value_norm[0] = value[0];
+                    value_norm[1] = L':';
+                    value_norm[2] = L'\\';
+                    wcscpy(value_norm + 3, value + 2);
+                    value = value_norm;
+                }
+            }
+        } else {
+            value_norm = NULL;
+            value_norm_len = 0;
+        }
 
         if (wcschr(value, L'\\') != NULL) { // folder, full_path or path_pattern
 
@@ -1060,6 +1135,11 @@ _FX void Process_AddForceFolders(
                 wcscpy(buf, value);
         }
 
+        if (value_copy)
+            Mem_FreeString(value_copy);
+        if (value_norm)
+            Mem_Free(value_norm, value_norm_len);
+
         if (! buf)
             continue;
 
@@ -1069,21 +1149,28 @@ _FX void Process_AddForceFolders(
             break;
         }
 
-        if (wcschr(buf, L'*')) {
+        if (wcschr(buf, L'*') || wcschr(buf, L'?')) {
 
             folder->pat =
                 Pattern_Create(box->expand_args->pool, buf, TRUE, 0);
 
-            Mem_Free(buf, buf_len);
-
             if (! folder->pat) {
+                Mem_Free(buf, buf_len);
                 Mem_Free(folder, sizeof(FORCE_ENTRY));
                 break;
             }
 
-            folder->buf_len = 0;
-            folder->len = 0;
-            folder->buf = NULL;
+            // Breakout wildcard rules need original text for path-like filtering.
+            if (breakout_setting) {
+                folder->buf_len = buf_len;
+                folder->len = wcslen(buf);
+                folder->buf = buf;
+            } else {
+                Mem_Free(buf, buf_len);
+                folder->buf_len = 0;
+                folder->len = 0;
+                folder->buf = NULL;
+            }
 
         } else {
 
@@ -1259,9 +1346,11 @@ _FX void Process_DeleteForceDataFolders(LIST* Folders)
 
 		List_Remove(Folders, folder);
 
-		if (folder->pat)
+        if (folder->pat) {
 			Pattern_Free(folder->pat);
-		else
+            if (folder->buf)
+                Mem_Free(folder->buf, folder->buf_len);
+        } else
 			Mem_Free(folder->buf, folder->buf_len);
 
 		Mem_Free(folder, sizeof(FORCE_ENTRY));
@@ -1419,14 +1508,58 @@ _FX BOOLEAN Process_CheckForceFolderList(
 
 
 //---------------------------------------------------------------------------
+// Process_IsPrioritizedBreakoutMatch
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Process_IsPrioritizedBreakoutMatch(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path)
+{
+    BOOLEAN breakout_match = FALSE;
+    LIST BreakoutProcess;
+
+    if (!Conf_Get_Boolean(box->name, L"PrioritizeBreakoutOverForce", 0, FALSE))
+        return FALSE;
+
+    List_Init(&BreakoutProcess);
+
+    Conf_AdjustUseCount(TRUE);
+    Process_AddForceFolders(&BreakoutProcess, L"BreakoutProcess", box, box->name);
+    Conf_AdjustUseCount(FALSE);
+
+    if (Process_CheckBreakoutProcessList(box, &BreakoutProcess, processName, path)) {
+        breakout_match = TRUE;
+        goto finish;
+    }
+
+    if (Process_FindMatchingBreakoutFolderRule(box, (folderScopeName && *folderScopeName) ? folderScopeName : processName, path, FALSE, NULL, 0))
+        breakout_match = TRUE;
+
+    // If the matching breakout rule explicitly targets this same box
+    // (rule|ThisBox), do not suppress this box's force capture.
+    if (breakout_match && Process_IsSelfTargetedBreakoutMatch(box, processName, folderScopeName, path))
+        breakout_match = FALSE;
+
+finish:
+    Process_DeleteForceDataFolders(&BreakoutProcess);
+
+    return breakout_match;
+}
+
+
+//---------------------------------------------------------------------------
 // Process_CheckForceFolder
 //---------------------------------------------------------------------------
 
 
 _FX BOX *Process_CheckForceFolder(
-    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert)
+    LIST *boxes, const WCHAR *path, BOOLEAN alert, ULONG *IsAlert,
+    const WCHAR *prioritizeName, const WCHAR *prioritizePath)
 {
     const WCHAR *ptr;
+    const WCHAR *name;
+    const WCHAR *folder_scope_name;
+    const WCHAR *breakout_path;
     ULONG prefix_len;
     FORCE_BOX *box;
 
@@ -1442,6 +1575,10 @@ _FX BOX *Process_CheckForceFolder(
 
     if (! prefix_len)
         return NULL;
+
+    name = ptr + 1;
+    folder_scope_name = (prioritizeName && *prioritizeName) ? prioritizeName : name;
+    breakout_path = (prioritizePath && *prioritizePath) ? prioritizePath : path;
 
     //
     // never force a program from the Sandboxie home directory
@@ -1463,6 +1600,29 @@ _FX BOX *Process_CheckForceFolder(
     while (box) {
 
         if (Process_CheckForceFolderList(box->box, &box->ForceFolder, prefix_len, path)) {
+
+            BOOLEAN prioritize_breakout = Conf_Get_Boolean(box->box->name, L"PrioritizeBreakoutOverForce", 0, FALSE);
+            BOOLEAN has_target_override = FALSE;
+            WCHAR target_box[BOXNAME_COUNT] = { 0 };
+
+            if (prioritize_breakout)
+                has_target_override = Process_GetMatchedBreakoutTarget(box->box, name, folder_scope_name, breakout_path, target_box, BOXNAME_COUNT);
+
+            if (has_target_override) {
+                FORCE_BOX *target = Process_FindForceBoxByName(boxes, target_box);
+                if (target) {
+                    if (alert) {
+                        *IsAlert = 1;
+                        return NULL;
+                    }
+                    return target->box;
+                }
+            }
+
+            if (prioritize_breakout && !has_target_override && Process_IsPrioritizedBreakoutMatch(box->box, name, folder_scope_name, breakout_path)) {
+                box = List_Next(box);
+                continue;
+            }
 
             if (alert) {
                 *IsAlert = 1;
@@ -1551,6 +1711,395 @@ _FX BOOLEAN Process_CheckForceProcessList(
     return FALSE;
 }
 
+static BOOLEAN Process_IsPathLikeBreakoutRule(const WCHAR *rule)
+{
+    return (rule && (wcschr(rule, L'\\') || wcschr(rule, L'/')));
+}
+
+static BOOLEAN Process_MatchBreakoutProcessRuleRaw(
+    BOX *box, const WCHAR *rule, const WCHAR *name, const WCHAR *path)
+{
+    BOOLEAN match = FALSE;
+
+    if (!rule || !*rule)
+        return FALSE;
+
+    if (Process_IsPathLikeBreakoutRule(rule)) {
+        WCHAR *norm = Process_NormalizeBreakoutRulePath(box, rule, L"BreakoutProcess", NULL);
+        const WCHAR *match_rule = norm ? norm : rule;
+
+        if (wcschr(rule, L'*') || wcschr(rule, L'?')) {
+            ULONG path_lwr_len = 0;
+            WCHAR *path_lwr = Mem_AllocString(Driver_Pool, path);
+            PATTERN *pat = Pattern_Create(box->expand_args->pool, match_rule, TRUE, 0);
+
+            if (path_lwr) {
+                _wcslwr(path_lwr);
+                path_lwr_len = wcslen(path_lwr);
+            }
+
+            if (pat && path_lwr)
+                match = Pattern_Match(pat, path_lwr, path_lwr_len);
+
+            if (pat)
+                Pattern_Free(pat);
+            if (path_lwr)
+                Mem_FreeString(path_lwr);
+        }
+        else {
+            ULONG rule_len = (ULONG)wcslen(match_rule);
+            if (rule_len == wcslen(path) && _wcsnicmp(match_rule, path, rule_len) == 0)
+                match = TRUE;
+        }
+
+        if (norm)
+            Mem_FreeString(norm);
+    }
+    else {
+        if (Process_MatchImage(box, rule, 0, name, 1))
+            match = TRUE;
+    }
+
+    return match;
+}
+
+static BOOLEAN Process_MatchBreakoutFolderRuleRaw(
+    BOX *box, const WCHAR *rule, const WCHAR *name, const WCHAR *path)
+{
+    const WCHAR *ptr;
+    ULONG prefix_len;
+    BOOLEAN match = FALSE;
+
+    if (!rule || !*rule)
+        return FALSE;
+
+    if (!Process_IsPathLikeBreakoutRule(rule))
+        return FALSE;
+
+    ptr = wcsrchr(path, L'\\');
+    if (ptr && ptr[1])
+        prefix_len = (ULONG)(ptr - path);
+    else
+        prefix_len = 0;
+
+    if (!prefix_len)
+        return FALSE;
+
+    WCHAR *norm = Process_NormalizeBreakoutRulePath(box, rule, L"BreakoutFolder", NULL);
+    const WCHAR *match_rule = norm ? norm : rule;
+
+    if (wcschr(match_rule, L'*') || wcschr(match_rule, L'?')) {
+        ULONG path_lwr_len = 0;
+        WCHAR *path_lwr = Mem_AllocString(Driver_Pool, path);
+        PATTERN *pat = Pattern_Create(box->expand_args->pool, match_rule, TRUE, 0);
+
+        if (path_lwr) {
+            _wcslwr(path_lwr);
+            path_lwr_len = wcslen(path_lwr);
+        }
+
+        if (pat && path_lwr)
+            match = Pattern_Match(pat, path_lwr, path_lwr_len);
+
+        if (!match && pat && path_lwr) {
+            path_lwr[prefix_len] = L'\0';
+            match = Pattern_Match(pat, path_lwr, wcslen(path_lwr));
+        }
+
+        if (pat)
+            Pattern_Free(pat);
+        if (path_lwr)
+            Mem_FreeString(path_lwr);
+    }
+    else {
+        ULONG rule_len = (ULONG)wcslen(match_rule);
+        while (rule_len && match_rule[rule_len - 1] == L'\\')
+            --rule_len;
+
+        if (rule_len && prefix_len >= rule_len &&
+            path[rule_len] == L'\\' &&
+            Box_NlsStrCmp(path, match_rule, rule_len) == 0) {
+            match = TRUE;
+        }
+    }
+
+    if (norm)
+        Mem_FreeString(norm);
+
+    return match;
+}
+
+static int Process_BreakoutMatchImage(const WCHAR *pattern, const WCHAR *imageName, void *context)
+{
+    BOX *box = (BOX *)context;
+    return Process_MatchImage(box, pattern, 0, imageName, 1) ? 1 : 0;
+}
+
+static BOOLEAN Process_FindMatchingBreakoutFolderRule(
+    BOX *box, const WCHAR *name, const WCHAR *path, BOOLEAN requireTarget,
+    WCHAR *outTarget, ULONG outTargetCch)
+{
+    ULONG index = 0;
+    const WCHAR *value;
+
+    if (outTarget && outTargetCch)
+        outTarget[0] = L'\0';
+
+    while (1) {
+        WCHAR *rule_copy;
+        WCHAR *rule;
+        WCHAR *sep;
+        const WCHAR *target = NULL;
+        BOOLEAN match;
+
+        value = Conf_Get(box->name, L"BreakoutFolder", index);
+        if (!value)
+            break;
+        ++index;
+
+        rule_copy = Mem_AllocString(Driver_Pool, value);
+        if (!rule_copy)
+            continue;
+
+        rule = Breakout_MatchImageScopeAndGetValue(rule_copy, name, Process_BreakoutMatchImage, box);
+        if (!rule) {
+            Mem_FreeString(rule_copy);
+            continue;
+        }
+
+        sep = Breakout_FindTargetSeparator(rule);
+        if (sep) {
+            *sep = L'\0';
+            target = sep + 1;
+        }
+        else if (requireTarget) {
+            Mem_FreeString(rule_copy);
+            continue;
+        }
+
+        match = Process_MatchBreakoutFolderRuleRaw(box, rule, name, path);
+        if (match) {
+            if (requireTarget && outTarget && outTargetCch && target) {
+                wcsncpy(outTarget, target, outTargetCch - 1);
+                outTarget[outTargetCch - 1] = L'\0';
+            }
+
+            Mem_FreeString(rule_copy);
+            return TRUE;
+        }
+
+        Mem_FreeString(rule_copy);
+    }
+
+    return FALSE;
+}
+
+static WCHAR* Process_NormalizeBreakoutRulePath(
+    BOX *box, const WCHAR *rule, const WCHAR *setting, ULONG *out_len)
+{
+    WCHAR *expnd;
+    WCHAR *tmp1;
+    WCHAR *tmp2;
+    WCHAR *buf;
+    ULONG buf_len;
+
+    if (!rule || !*rule || !wcschr(rule, L'\\')) {
+        buf = Mem_AllocString(Driver_Pool, rule ? rule : L"");
+        if (buf && out_len)
+            *out_len = (ULONG)((wcslen(buf) + 1) * sizeof(WCHAR));
+        return buf;
+    }
+
+    expnd = Conf_Expand(box->expand_args, rule, setting);
+    if (!expnd) {
+        buf = Mem_AllocString(Driver_Pool, rule);
+        if (buf && out_len)
+            *out_len = (ULONG)((wcslen(buf) + 1) * sizeof(WCHAR));
+        return buf;
+    }
+
+    buf_len = (ULONG)((wcslen(expnd) + 1) * sizeof(WCHAR));
+    tmp1 = Mem_Alloc(Driver_Pool, buf_len);
+    if (!tmp1) {
+        Mem_FreeString(expnd);
+        return NULL;
+    }
+
+    {
+        const WCHAR *src_ptr = expnd;
+        WCHAR *dst_ptr = tmp1;
+        while (*src_ptr) {
+            if (src_ptr[0] == L'\\' && src_ptr[1] == L'\\') {
+                ++src_ptr;
+                continue;
+            }
+            *dst_ptr = *src_ptr;
+            ++src_ptr;
+            ++dst_ptr;
+        }
+        *dst_ptr = L'\0';
+    }
+
+    tmp2 = File_TranslateReparsePoints(tmp1, Driver_Pool);
+    if (tmp2) {
+        Mem_Free(tmp1, buf_len);
+        buf = tmp2;
+        buf_len = (ULONG)((wcslen(buf) + 1) * sizeof(WCHAR));
+    }
+    else {
+        buf = tmp1;
+    }
+
+    Mem_FreeString(expnd);
+
+    if (out_len)
+        *out_len = buf_len;
+
+    return buf;
+}
+
+static FORCE_BOX* Process_FindForceBoxByName(
+    LIST *boxes, const WCHAR *boxname)
+{
+    FORCE_BOX *box = List_Head(boxes);
+    ULONG boxname_len;
+
+    if (!boxname || !*boxname)
+        return NULL;
+
+    boxname_len = (ULONG)((wcslen(boxname) + 1) * sizeof(WCHAR));
+
+    while (box) {
+        if (box->box->name_len == boxname_len && _wcsicmp(box->box->name, boxname) == 0)
+            return box;
+
+        box = List_Next(box);
+    }
+
+    return NULL;
+}
+
+static BOOLEAN Process_GetMatchedBreakoutTarget(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path, WCHAR *outTarget, ULONG outTargetCch)
+{
+    ULONG index = 0;
+    const WCHAR *value;
+
+    if (!outTarget || outTargetCch == 0)
+        return FALSE;
+
+    outTarget[0] = L'\0';
+
+    while (1) {
+        WCHAR *rule;
+        WCHAR *sep;
+        WCHAR *rule_copy;
+        ULONG rule_copy_len;
+
+        value = Conf_Get(box->name, L"BreakoutProcess", index);
+        if (!value)
+            break;
+        ++index;
+
+        sep = wcschr(value, L'|');
+        if (!sep || sep <= value || !sep[1])
+            continue;
+
+        rule_copy_len = ((ULONG)(sep - value) + 1) * sizeof(WCHAR);
+        rule_copy = Mem_Alloc(Driver_Pool, rule_copy_len);
+        if (!rule_copy)
+            continue;
+
+        wmemcpy(rule_copy, value, (ULONG)(sep - value));
+        rule_copy[sep - value] = L'\0';
+        rule = rule_copy;
+
+        if ((wcschr(rule, L'*') || wcschr(rule, L'?')) && !Process_IsPathLikeBreakoutRule(rule)) {
+            Mem_Free(rule_copy, rule_copy_len);
+            continue;
+        }
+
+        if (Process_MatchBreakoutProcessRuleRaw(box, rule, processName, path)) {
+            wcsncpy(outTarget, sep + 1, outTargetCch - 1);
+            outTarget[outTargetCch - 1] = L'\0';
+            Mem_Free(rule_copy, rule_copy_len);
+            return TRUE;
+        }
+
+        Mem_Free(rule_copy, rule_copy_len);
+    }
+
+    if (Process_FindMatchingBreakoutFolderRule(box, (folderScopeName && *folderScopeName) ? folderScopeName : processName, path, TRUE, outTarget, outTargetCch))
+        return TRUE;
+
+    return FALSE;
+}
+
+static BOOLEAN Process_IsSelfTargetedBreakoutMatch(
+    BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path)
+{
+    WCHAR target_box[BOXNAME_COUNT] = { 0 };
+
+    if (!Process_GetMatchedBreakoutTarget(box, processName, folderScopeName, path, target_box, BOXNAME_COUNT))
+        return FALSE;
+
+    return (_wcsicmp(target_box, box->name) == 0) ? TRUE : FALSE;
+}
+
+static BOOLEAN Process_CheckBreakoutProcessList(
+    BOX *box, LIST* BreakoutProcess, const WCHAR* name, const WCHAR* path)
+{
+    ULONG path_lwr_len = 0;
+    WCHAR *path_lwr = NULL;
+
+    FORCE_ENTRY *entry = List_Head(BreakoutProcess);
+    while (entry) {
+
+        BOOLEAN match = FALSE;
+
+        if (entry->pat) {
+
+            // Ignore wildcard-only BreakoutProcess rules like "*.exe".
+            if (!Process_IsPathLikeBreakoutRule(entry->buf)) {
+                entry = List_Next(entry);
+                continue;
+            }
+
+            if (! path_lwr) {
+                path_lwr = Mem_AllocString(Driver_Pool, path);
+                if (path_lwr) {
+                    _wcslwr(path_lwr);
+                    path_lwr_len = wcslen(path_lwr);
+                }
+            }
+
+            if (path_lwr)
+                match = Pattern_Match(entry->pat, path_lwr, path_lwr_len);
+
+        } else {
+
+            if (Process_IsPathLikeBreakoutRule(entry->buf)) {
+                ULONG entry_len = entry->len;
+                if (entry_len == wcslen(path) && _wcsnicmp(entry->buf, path, entry_len) == 0)
+                    match = TRUE;
+            } else {
+                if (Process_MatchImage(box, entry->buf, 0, name, 1))
+                    match = TRUE;
+            }
+        }
+
+        if (match)
+            break;
+
+        entry = List_Next(entry);
+    }
+
+    if (path_lwr)
+        Mem_FreeString(path_lwr);
+
+    return (entry != NULL);
+}
+
 
 //---------------------------------------------------------------------------
 // Process_CheckForceProcess
@@ -1582,6 +2131,31 @@ _FX BOX *Process_CheckForceProcess(
     while (box) {
 
         if (Process_CheckForceProcessList(box->box, &box->ForceProcess, name, path)) {
+
+            BOOLEAN prioritize_breakout = Conf_Get_Boolean(box->box->name, L"PrioritizeBreakoutOverForce", 0, FALSE);
+            BOOLEAN has_target_override = FALSE;
+            const WCHAR *folder_scope_name = (ParentName && *ParentName) ? ParentName : name;
+            WCHAR target_box[BOXNAME_COUNT] = { 0 };
+
+            if (prioritize_breakout)
+                has_target_override = Process_GetMatchedBreakoutTarget(box->box, name, folder_scope_name, path, target_box, BOXNAME_COUNT);
+
+            if (has_target_override) {
+                FORCE_BOX *target = Process_FindForceBoxByName(boxes, target_box);
+                if (target) {
+                    if (alert) {
+                        *IsAlert = 1;
+                        return NULL;
+                    }
+                    return target->box;
+                }
+            }
+
+            if (prioritize_breakout && !has_target_override && Process_IsPrioritizedBreakoutMatch(box->box, name, folder_scope_name, path)) {
+                box = List_Next(box);
+                continue;
+            }
+
             if (alert) {
                 *IsAlert = 1;
                 return NULL;
@@ -1591,6 +2165,31 @@ _FX BOX *Process_CheckForceProcess(
         }
 
         if (ParentName && Process_CheckForceProcessList(box->box, &box->ForceChildren, ParentName, ParentPath) && _wcsicmp(name, L"Sandman.exe") != 0) { // except for sandman exe
+
+            BOOLEAN prioritize_breakout = Conf_Get_Boolean(box->box->name, L"PrioritizeBreakoutOverForce", 0, FALSE);
+            BOOLEAN has_target_override = FALSE;
+            const WCHAR *folder_scope_name = ParentName;
+            WCHAR target_box[BOXNAME_COUNT] = { 0 };
+
+            if (prioritize_breakout)
+                has_target_override = Process_GetMatchedBreakoutTarget(box->box, name, folder_scope_name, path, target_box, BOXNAME_COUNT);
+
+            if (has_target_override) {
+                FORCE_BOX *target = Process_FindForceBoxByName(boxes, target_box);
+                if (target) {
+                    if (alert) {
+                        *IsAlert = 1;
+                        return NULL;
+                    }
+                    return target->box;
+                }
+            }
+
+            if (prioritize_breakout && !has_target_override && Process_IsPrioritizedBreakoutMatch(box->box, name, folder_scope_name, path)) {
+                box = List_Next(box);
+                continue;
+            }
+
             if (alert) {
                 *IsAlert = 1;
                 return NULL;
@@ -1644,7 +2243,6 @@ _FX void Process_CheckAlertFolder(
     while (box) {
 
         if (Process_CheckForceFolderList(box->box, &box->AlertFolder, prefix_len, path)) {
-
             *IsAlert = 1;
 			return;
         }
@@ -1725,7 +2323,6 @@ _FX BOOLEAN Process_IsBreakoutProcess(
     BOX *box, const WCHAR *ImagePath)
 {
     NTSTATUS status;
-    LIST BreakoutFolder;
     LIST BreakoutProcess;
     WCHAR *ImagePath2 = L"";
     ULONG ImagePath2_len;
@@ -1767,33 +2364,18 @@ _FX BOOLEAN Process_IsBreakoutProcess(
     // init breakout presets
     //
 
-    List_Init(&BreakoutFolder);
     List_Init(&BreakoutProcess);
 
     Conf_AdjustUseCount(TRUE);
-
-    Process_AddForceFolders(&BreakoutFolder, L"BreakoutFolder", box, box->name);
 
     Process_AddForceProcesses(&BreakoutProcess, L"BreakoutProcess", box->name);
         
     Conf_AdjustUseCount(FALSE);
 
-    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName);
-    if (!IsBreakout) {
-        const WCHAR *ptr;
-        ULONG prefix_len;
+    IsBreakout = Process_CheckForceProcessList(box, &BreakoutProcess, ImageName, ImagePath2);
+    if (!IsBreakout)
+        IsBreakout = Process_FindMatchingBreakoutFolderRule(box, ImageName, ImagePath2, FALSE, NULL, 0);
 
-        ptr = wcsrchr(ImagePath2, L'\\');
-        if (ptr && ptr[1])
-            prefix_len = (ULONG)(ptr - ImagePath2);
-        else
-            prefix_len = 0;
-
-        if (prefix_len > 0)
-            IsBreakout = Process_CheckForceFolderList(box, &BreakoutFolder, prefix_len, ImagePath2);
-    }
-
-    Process_DeleteForceDataFolders(&BreakoutFolder);
     Process_DeleteForceDataProcesses(&BreakoutProcess);
 
 finish:

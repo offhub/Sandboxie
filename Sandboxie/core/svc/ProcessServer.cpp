@@ -37,20 +37,61 @@
 #include "core/drv/api_defs.h"
 #include <sddl.h>
 #include "sbieiniserver.h"
-#include <string>
+#include "common/breakout_match.h"
 
 #define SECONDS(n64)            (((LONGLONG)n64) * 10000000L)
 #define MINUTES(n64)            (SECONDS(n64) * 60)
 
 extern "C"
 {
-
 WINBASEAPI BOOL WINAPI QueryFullProcessImageNameW(HANDLE hProcess, DWORD dwFlags, LPWSTR lpExeName, PDWORD lpdwSize);
 
 NTSYSCALLAPI NTSTATUS NTAPI NtGetNextThread(HANDLE ProcessHandle, HANDLE ThreadHandle, ACCESS_MASK DesiredAccess, ULONG HandleAttributes, ULONG Flags, PHANDLE NewThreadHandle);
 
 NTSYSCALLAPI NTSTATUS NTAPI NtSuspendProcess(_In_ HANDLE ProcessHandle);
 NTSYSCALLAPI NTSTATUS NTAPI NtResumeProcess(_In_ HANDLE ProcessHandle);
+}
+
+static bool ProcessServer_CheckBreakoutProcessMatch(const WCHAR* boxname, const WCHAR* imageName, const WCHAR* appPath, ULONG appPathLen)
+{
+    return Breakout_FindProcessMatch(boxname, imageName, appPath, appPathLen, NULL, 0, NULL) ? true : false;
+}
+
+static int ProcessServer_BreakoutMatchImage(const WCHAR* pattern, const WCHAR* imageName, void* context)
+{
+    return SbieDll_MatchImage(pattern, imageName, NULL) ? 1 : 0;
+}
+
+static void ProcessServer_AdjustBreakoutFolderRule(WCHAR* value, void* context)
+{
+    Breakout_TrimTrailingBackslashes(value);
+    if (*value != L'*')
+        SbieDll_TranslateNtToDosPath(value);
+}
+
+static bool ProcessServer_CheckBreakoutFolderMatch(const WCHAR* boxname, const WCHAR* imageName, const WCHAR* appPath, ULONG appDirLen)
+{
+    return Breakout_CheckFolderMatchFromConf(
+        boxname, imageName, appPath, appDirLen, 1,
+        ProcessServer_BreakoutMatchImage, NULL,
+        ProcessServer_AdjustBreakoutFolderRule, NULL) ? true : false;
+}
+
+static bool ProcessServer_GetBreakoutProcessTarget(const WCHAR* boxname, const WCHAR* imageName, const WCHAR* appPath, ULONG appPathLen, WCHAR* outTarget, size_t outTargetCch)
+{
+    int hasTarget = 0;
+    if (!Breakout_FindProcessMatch(boxname, imageName, appPath, appPathLen, outTarget, outTargetCch, &hasTarget))
+        return false;
+
+    return hasTarget ? true : false;
+}
+
+static bool ProcessServer_GetBreakoutFolderTarget(const WCHAR* boxname, const WCHAR* imageName, const WCHAR* appPath, ULONG appDirLen, WCHAR* outTarget, size_t outTargetCch)
+{
+    return Breakout_GetFolderTargetFromConf(
+        boxname, imageName, appPath, appDirLen, outTarget, outTargetCch,
+        ProcessServer_BreakoutMatchImage, NULL,
+        ProcessServer_AdjustBreakoutFolderRule, NULL) ? true : false;
 }
 
 //---------------------------------------------------------------------------
@@ -592,20 +633,39 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                 if (ptr) {
                     *ptr = L'\0'; // end cmd where lpApplicationName ends
                     WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
-                    if (lpProgram) {
+                    if (lpProgram && !Breakout_IsPathInHome(lpApplicationName)) {
+                        WCHAR CallerImagePath[MAX_PATH] = { 0 };
+                        DWORD CallerImagePathLen = MAX_PATH;
+                        const WCHAR* callerProgram = NULL;
 
-                        //
+                        if (QueryFullProcessImageNameW(CallerProcessHandle, 0, CallerImagePath, &CallerImagePathLen)) {
+                            callerProgram = wcsrchr(CallerImagePath, L'\\');
+                            if (callerProgram && callerProgram[1])
+                                ++callerProgram;
+                            else
+                                callerProgram = NULL;
+                        }
+
+                        const WCHAR* folderScopeImage = callerProgram ? callerProgram : (lpProgram + 1);
+
                         // check if the process/directory is configured for breakout
-                        // if its a BreakoutProcess we must also test if the path is not in the sandbox itself
+                        // if its a BreakoutProcess or BreakoutFolder we must also test if the path is not in the sandbox itself
                         //
 
-                        if ((SbieDll_CheckStringInList(lpProgram + 1, boxname, L"BreakoutProcess")
-                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName))
-                            || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), boxname, L"BreakoutFolder")) {
+                        bool breakout_process = ProcessServer_CheckBreakoutProcessMatch(boxname, lpProgram + 1, lpApplicationName, (ULONG)wcslen(lpApplicationName))
+                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
+                        bool breakout_folder = ProcessServer_CheckBreakoutFolderMatch(boxname, folderScopeImage, lpApplicationName, (ULONG)(lpProgram - lpApplicationName))
+                            && IsHostPath((HANDLE)(ULONG_PTR)CallerPid, lpApplicationName);
+
+                        if (breakout_process || breakout_folder) {
 
                             //
                             // this is a breakout process, it is allowed to leave the sandbox
                             //
+
+                            WCHAR SourceBox[BOXNAME_COUNT];
+                            wcscpy(SourceBox, boxname);
+                            BOOLEAN prioritize_breakout = SbieApi_QueryConfBool(SourceBox, L"PrioritizeBreakoutOverForce", FALSE);
 
                             BoxNameOrModelPid = 0;
                             FilterHandles = TRUE;
@@ -614,40 +674,81 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                             // check if it should end up in another box
                             //
 
-                            WCHAR BoxName[BOXNAME_COUNT];
-                            int index = -1;
-                            while (1) {
-                                index = SbieApi_EnumBoxesEx(index, BoxName, TRUE);
-                                if (index == -1)
-                                    break;
-                                if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)BoxName, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
-                                    continue;
+                            WCHAR TargetBox[BOXNAME_COUNT] = { 0 };
+                            bool has_explicit_target = false;
+                            bool explicit_target_invalid = false;
 
-                                if (SbieDll_CheckStringInList(lpProgram + 1, BoxName, L"ForceProcess")
-                                    || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), BoxName, L"ForceFolder")) {
+                            // Keep BreakoutProcess precedence over BreakoutFolder.
+                            // If process rule matches, only process-target lookup is allowed.
+                            if (prioritize_breakout && breakout_process)
+                                has_explicit_target = ProcessServer_GetBreakoutProcessTarget(boxname, lpProgram + 1, lpApplicationName, wcslen(lpApplicationName), TargetBox, BOXNAME_COUNT);
 
-                                    //
-                                    // check if the breakout process is supposed to end in the box it is trying to break out of
-                                    // and deny the breakout in that case, to take the normal process creation route
-                                    // 
-                                    // this happens when a break out is configured globally
-                                    //
+                            if (prioritize_breakout && !breakout_process && breakout_folder)
+                                has_explicit_target = ProcessServer_GetBreakoutFolderTarget(boxname, folderScopeImage, lpApplicationName, (ULONG)(lpProgram - lpApplicationName), TargetBox, BOXNAME_COUNT);
 
-                                    if (_wcsicmp(boxname, BoxName) == 0) {
-                                        lvl = 0;
-                                        err = ERROR_NOT_SUPPORTED;
-                                        goto end;
-                                    }
+                            if (has_explicit_target) {
 
-                                    //
-                                    // set other box
-                                    //
+                                if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)TargetBox, (ULONG_PTR)sid, (ULONG_PTR)session_id))) {
+                                    explicit_target_invalid = true;
+                                    has_explicit_target = false;
+                                }
 
+                                if (has_explicit_target && _wcsicmp(SourceBox, TargetBox) == 0) {
+                                    explicit_target_invalid = true;
+                                    has_explicit_target = false;
+                                }
+
+                                if (has_explicit_target) {
                                     BoxNameOrModelPid = (LONG_PTR)boxname;
-                                    wcscpy(boxname, BoxName);
-                                    break;
+                                    wcscpy(boxname, TargetBox);
                                 }
                             }
+
+                            if (BoxNameOrModelPid == 0) {
+                                WCHAR BoxName[BOXNAME_COUNT];
+                                int index = -1;
+                                
+                                while (1) {
+                                    index = SbieApi_EnumBoxesEx(index, BoxName, TRUE);
+                                    if (index == -1)
+                                        break;
+                                    if (!NT_SUCCESS(SbieApi_Call(API_IS_BOX_ENABLED, 3, (ULONG_PTR)BoxName, (ULONG_PTR)sid, (ULONG_PTR)session_id)))
+                                        continue;
+
+                                    //
+                                    // if PrioritizeBreakoutOverForce is set, skip the source box's own force rules
+                                    // but still allow other boxes to catch the process
+                                    //
+                                    if (prioritize_breakout && !explicit_target_invalid && _wcsicmp(SourceBox, BoxName) == 0)
+                                        continue;
+
+                                    if (SbieDll_CheckStringInList(lpProgram + 1, BoxName, L"ForceProcess")
+                                        || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName), BoxName, L"ForceFolder")) {
+
+                                        //
+                                        // check if the breakout process is supposed to end in the box it is trying to break out of
+                                        // and deny the breakout in that case, to take the normal process creation route
+                                        //
+                                        // this happens when a break out is configured globally
+                                        //
+
+                                        if (_wcsicmp(boxname, BoxName) == 0) {
+                                            lvl = 0;
+                                            err = ERROR_NOT_SUPPORTED;
+                                            goto end;
+                                        }
+
+                                        //
+                                        // set other box
+                                        //
+
+                                        BoxNameOrModelPid = (LONG_PTR)boxname;
+                                        wcscpy(boxname, BoxName);
+                                        break;
+                                    }
+                                }
+                            }
+
                         }
                     }
                     // restore cmd
