@@ -31,6 +31,7 @@
 #include "core/drv/api_defs.h"
 #include "msgs/msgs.h"
 #include "common/str_util.h"
+#include "common/breakout_match.h"
 
 //---------------------------------------------------------------------------
 // Functions
@@ -143,6 +144,19 @@ static void Proc_ExitProcess(UINT ExitCode);
 static BOOLEAN Proc_CheckMailer(const WCHAR *ImagePath, BOOLEAN IsBoxedPath);
 
 static BOOLEAN Proc_IsSoftwareUpdateW(const WCHAR *path);
+
+static BOOLEAN Proc_CheckBreakoutProcessInList(
+    const WCHAR *imageName, const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted);
+
+static BOOLEAN Proc_CheckBreakoutFolderInList(
+    const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted);
+
+static BOOLEAN Proc_IsBreakoutCandidate(
+    const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted);
+
+static int Proc_BreakoutMatchImage(const WCHAR *pattern, const WCHAR *imageName, void *context);
+
+static void Proc_AdjustBreakoutFolderRule(WCHAR *value, void *context);
 
 //static BOOLEAN Proc_IsProcessRunning(const WCHAR *ImageToFind);
 
@@ -779,6 +793,98 @@ _FX const WCHAR* SbieDll_FindArgumentEnd(const WCHAR* arguments)
     return ptr;
 }
 
+static BOOLEAN Proc_CheckBreakoutProcessInList(
+    const WCHAR *imageName, const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted)
+{
+    WCHAR buf[CONF_LINE_LEN];
+    ULONG index = 0;
+    ULONG appPathLen;
+
+    if (!imageName || !*imageName || !appPath || !*appPath)
+        return FALSE;
+
+    appPathLen = wcslen(appPath);
+
+    while (1) {
+        NTSTATUS status = SbieApi_QueryConf(boxname, L"BreakoutProcess", index, buf, sizeof(buf) - 16 * sizeof(WCHAR));
+        WCHAR *sep;
+        WCHAR *value = buf;
+
+        ++index;
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_BUFFER_TOO_SMALL)
+                continue;
+            break;
+        }
+
+        sep = Breakout_FindTargetSeparator(value);
+        if (sep) {
+            if (!allowTargeted)
+                continue;
+            *sep = L'\0';
+        }
+
+        if (*value != L'*' && Breakout_RuleLooksLikePath(value))
+            SbieDll_TranslateNtToDosPath(value);
+
+        if (Breakout_MatchProcessRule(value, imageName, appPath, appPathLen))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN Proc_CheckBreakoutFolderInList(
+    const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted)
+{
+    const WCHAR *lpProgram;
+    ULONG appDirLen;
+
+    if (!appPath || !*appPath)
+        return FALSE;
+
+    lpProgram = wcsrchr(appPath, L'\\');
+    if (!lpProgram || lpProgram <= appPath)
+        return FALSE;
+
+    appDirLen = (ULONG)(lpProgram - appPath);
+
+    // Use the calling process image (Dll_ImageName) for image-scope matching.
+    // The caller is the parent launching the target, so folder scope must
+    // reflect who is launching, not what is being launched.
+    return Breakout_CheckFolderMatchFromConf(
+        boxname, Dll_ImageName, appPath, appDirLen, allowTargeted,
+        Proc_BreakoutMatchImage, NULL, Proc_AdjustBreakoutFolderRule, NULL) ? TRUE : FALSE;
+}
+
+static int Proc_BreakoutMatchImage(const WCHAR *pattern, const WCHAR *imageName, void *context)
+{
+    return SbieDll_MatchImage(pattern, imageName, NULL) ? 1 : 0;
+}
+
+static void Proc_AdjustBreakoutFolderRule(WCHAR *value, void *context)
+{
+    Breakout_TrimTrailingBackslashes(value);
+    if (*value != L'*')
+        SbieDll_TranslateNtToDosPath(value);
+}
+
+static BOOLEAN Proc_IsBreakoutCandidate(
+    const WCHAR *appPath, const WCHAR *boxname, BOOLEAN allowTargeted)
+{
+    const WCHAR *lpProgram;
+
+    if (!appPath || !*appPath)
+        return FALSE;
+
+    lpProgram = wcsrchr(appPath, L'\\');
+    if (!lpProgram || Breakout_IsPathInHome(appPath))
+        return FALSE;
+
+    return (Proc_CheckBreakoutProcessInList(lpProgram + 1, appPath, boxname, allowTargeted)
+        || Proc_CheckBreakoutFolderInList(appPath, boxname, allowTargeted));
+}
+
 
 //---------------------------------------------------------------------------
 // Proc_IsLikelyElectronProcess
@@ -985,7 +1091,13 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     SaveCurrentDirectory = lpCurrentDirectory;
 
-    lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
+    BOOLEAN allow_targeted_breakout = Config_GetSettingsForImageName_bool(L"PrioritizeBreakoutOverForce", FALSE);
+    BOOLEAN is_breakout_candidate = Proc_IsBreakoutCandidate(lpApplicationName, NULL, allow_targeted_breakout)
+        || (Dll_BoxName && Proc_IsBreakoutCandidate(lpApplicationName, Dll_BoxName, allow_targeted_breakout));
+
+    // For normal launches, keep existing boxed CWD selection behavior.
+    if (!is_breakout_candidate)
+        lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
 
     if (!lpCurrentDirectory)
         lpCurrentDirectory = SaveCurrentDirectory;
@@ -1238,13 +1350,30 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     //
     // check if this is a break out candidate
+    // BreakoutProcess and BreakoutFolder entries may include optional "|BoxName" targets.
     //
 
     if(lpApplicationName) {
+        BOOLEAN allow_targeted_breakout = Config_GetSettingsForImageName_bool(L"PrioritizeBreakoutOverForce", FALSE);
         const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
-        if (lpProgram) {
-            if (SbieDll_CheckStringInList(lpProgram + 1, NULL, L"BreakoutProcess")
-                || SbieDll_CheckPatternInList(lpApplicationName, (ULONG)(lpProgram - lpApplicationName),  NULL, L"BreakoutFolder")) {
+        
+        // Check if current (parent) process was forced by ForceChildren
+        // If so and PrioritizeBreakoutOverForce is not set, block breakout
+        BOOLEAN caller_forced_by_children = FALSE;
+        if (Dll_BoxName) {
+            ULONG caller_flags = (ULONG)SbieApi_QueryProcessInfo(GetCurrentProcess(), 0);
+            if (caller_flags & SBIE_FLAG_FORCED_CHILD_PROCESS) {
+                // Check per-box setting
+                BOOLEAN prioritize_breakout = Config_GetSettingsForImageName_bool(L"PrioritizeBreakoutOverForce", FALSE);
+                if (!prioritize_breakout) {
+                    caller_forced_by_children = TRUE;
+                }
+            }
+        }
+
+        if (!caller_forced_by_children &&
+            (Proc_IsBreakoutCandidate(lpApplicationName, NULL, allow_targeted_breakout)
+            || (Dll_BoxName && Proc_IsBreakoutCandidate(lpApplicationName, Dll_BoxName, allow_targeted_breakout)))) {
                 
                 const WCHAR* lpArguments = NULL;
                 if (lpCommandLine)
@@ -1320,11 +1449,37 @@ _FX BOOL Proc_CreateProcessInternalW(
                         *mybuff2 = L'\0';
                     }
 
-                    if (! lpCurrentDirectory) { // lpCurrentDirectory must not be NULL
-                        lpCurrentDirectory = Dll_Alloc(sizeof(WCHAR) * 8192);
-                        if (lpCurrentDirectory) {
-                            ((WCHAR*)lpCurrentDirectory)[0] = L'\0';
-                            RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, lpCurrentDirectory);
+                    BOOLEAN caller_has_explicit_dir = FALSE;
+                    if (SaveCurrentDirectory && ((const WCHAR*)SaveCurrentDirectory)[0] != L'\0')
+                        caller_has_explicit_dir = TRUE;
+
+                    // No explicit caller CWD -> use target EXE directory.
+                    // BreakoutUseTargetDir can force this even with explicit CWD.
+                    BOOLEAN use_target_dir = !caller_has_explicit_dir
+                        || SbieDll_GetSettingsForName_bool(NULL, lpProgram + 1, L"BreakoutUseTargetDir", FALSE);
+
+                    if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
+                        // lpCurrentDirectory must not be NULL
+                        WCHAR* breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
+                        if (breakout_dir) {
+                            breakout_dir[0] = L'\0';
+
+                            if (use_target_dir) {
+                                const WCHAR* last_sep = wcsrchr(lpApplicationName, L'\\');
+                                if (last_sep && last_sep > lpApplicationName) {
+                                    ULONG dir_len = (ULONG)(last_sep - lpApplicationName + 1);
+                                    if (dir_len < 8191) {
+                                        wmemcpy(breakout_dir, lpApplicationName, dir_len);
+                                        breakout_dir[dir_len] = L'\0';
+                                    }
+                                }
+                            }
+
+                            // Keep legacy fallback when target-dir extraction fails.
+                            if (breakout_dir[0] == L'\0')
+                                RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, breakout_dir);
+
+                            lpCurrentDirectory = breakout_dir;
                         }
                     }
 
@@ -1347,7 +1502,6 @@ _FX BOOL Proc_CreateProcessInternalW(
                         goto finish;
                 }
             }
-        }
     }
 
     //

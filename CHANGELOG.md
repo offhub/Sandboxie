@@ -7,6 +7,25 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.17.6 / 5.72.6] - 2026-05-??
+
+### Added
+- added optional target-box suffix support for breakout rules, enabling use as a Force alternative:
+  - `BreakoutProcess=program.exe|TargetBox`
+  - `BreakoutFolder=path_pattern|TargetBox`
+  - `BreakoutDocument=path_pattern|TargetBox`
+- added `BreakoutUseTargetDir` (supports global and `process,value` forms) to prefer the target executable directory as breakout CWD
+- added path pattern support for `BreakoutProcess`, enabling full-qualified-path matching like `C:\Program Files\app\*.exe` in addition to name-only matching
+  - warning: avoid using purely wildcard patterns such as `*`, `*.exe`, or `C:\*.exe` as these match all processes or all executables and can significantly reduce sandboxing protection; always include a specific directory prefix to limit the scope of the rule
+
+### Changed
+- changed breakout handoff to support explicit target-box routing and improved wildcard folder rule matching with trailing backslash normalization for `BreakoutFolder`
+- changed force/breakout interaction so `PrioritizeBreakoutOverForce=y` skips source-box `ForceProcess`/`ForceFolder`/`ForceChildren` capture for matching breakout rules while still allowing other boxes to force the process
+  - note: when `BreakoutProcess` uses path-based rules, `ForceFolder` or wildcard `ForceProcess` rules can still force unmatched child processes spawned by a breakout-launched parent
+- changed ForceChildren-origin propagation to persist across child process inheritance and model-pid starts (including PCA restart path), enabling consistent breakout arbitration after restart
+
+
+  
 ## [1.17.5 / 5.72.5] - 2026-05-02
 
 ### Added

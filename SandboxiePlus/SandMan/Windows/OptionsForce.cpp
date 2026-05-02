@@ -53,6 +53,8 @@ void COptionsWindow::LoadForced()
 	foreach(const QString& Value, m_pBox->GetTextList("BreakoutDocumentDisabled", m_Template))
 		AddBreakoutEntry(Value, (int)eText, true);
 
+	ui.chkPrioritizeBreakoutOverForce->setChecked(m_pBox->GetBool("PrioritizeBreakoutOverForce", false));
+
 	LoadForcedTmpl();
 	LoadBreakoutTmpl();
 
@@ -236,6 +238,7 @@ void COptionsWindow::SaveForced()
 	WriteTextList("BreakoutFolderDisabled", BreakoutFolderDisabled);
 	WriteTextList("BreakoutDocument", BreakoutDocument);
 	WriteTextList("BreakoutDocumentDisabled", BreakoutDocumentDisabled);
+	WriteAdvancedCheck(ui.chkPrioritizeBreakoutOverForce, "PrioritizeBreakoutOverForce", "y", "");
 
 	m_ForcedChanged = false;
 }
@@ -251,11 +254,26 @@ void COptionsWindow::OnForceProg()
 	OnForcedChanged();
 }
 
+// Returns true if the rule (before optional |TargetBox suffix) ends with only a
+// wildcard or wildcard+extension, indicating a potentially broad match pattern.
+static bool IsBreakoutRuleBroad(const QString& Value)
+{
+	QString RulePart = Value.split("|").first();
+	QString BaseName = RulePart.contains("\\") ? RulePart.split("\\").last() : RulePart;
+	return BaseName.startsWith("*");
+}
+
 void COptionsWindow::OnBreakoutProg()
 {
 	QString Value = SelectProgram();
 	if (Value.isEmpty())
 		return;
+	if (IsBreakoutRuleBroad(Value)) {
+		if (QMessageBox::warning(this, "Sandboxie-Plus",
+			tr("The specified BreakoutProcess rule \"%1\" uses a broad wildcard pattern and may cause unintended processes to break out of the sandbox.\nAre you sure you want to add this rule?").arg(Value),
+			QDialogButtonBox::Yes, QDialogButtonBox::No) != QDialogButtonBox::Yes)
+			return;
+	}
 	AddBreakoutEntry(Value, (int)eProcess);
 	OnForcedChanged();
 }
@@ -420,7 +438,18 @@ void COptionsWindow::OnForcedChanged(QTreeWidgetItem *pItem, int)
 	OnForcedChanged();
 }
 
-void COptionsWindow::OnBreakoutChanged(QTreeWidgetItem *pItem, int) 
+void COptionsWindow::OnBreakoutChanged(QTreeWidgetItem *pItem, int Column)
 {
+	// Warn when a rule is edited inline and results in a broad wildcard pattern.
+	if (Column == 1) {
+		int type = pItem->data(0, Qt::UserRole).toInt();
+		if (type == eProcess || type == ePath) {
+			QString Value = pItem->data(1, Qt::UserRole).toString();
+			if (IsBreakoutRuleBroad(Value)) {
+				QMessageBox::warning(this, "Sandboxie-Plus",
+					tr("The breakout rule \"%1\" uses a broad wildcard pattern and may cause unintended processes to break out of the sandbox.").arg(Value));
+			}
+		}
+	}
 	OnForcedChanged();
 }
