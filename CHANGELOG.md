@@ -84,14 +84,20 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fixed parsing logic for `ClosedClsid` and `ClosedRT` settings [#5263](https://github.com/sandboxie-plus/Sandboxie/pull/5263)
 - FIXED SECURITY ISSUE ID-32: EditPassword Hash Entropy Loss, new passwords will be salted SHA-256 and Base64-encoded
   - Note: the fix only takes effect when the password is being set, existing passwords remain weak
+- FIXED SECURITY ISSUE ID-33
 - fixed Local Denial of Service (DoS) Vulnerability Exploitable by Sandboxed Process CVE-2026-32603 (reported by sammy12342)
-- fixed Sandboxie-Plus EditAdminOnly Bypass via INI CRLF Injection (reported by sammy12342)
-- fixed issues with GetRawInputDeviceInfoSlave (reported by sammy12342)
-- fixed an issue with RunSbieCtrl (reported by Yanchon918s)
-- fixed name validation in ProcessServer handlers (reported by Yanchon918s)
-- fixed parameter validation in NamedPipeServer (reported by Yanchon918s)
-- fixed file integrity issues with updater (reported by sammy12342)
-
+- FIXED SECURITY ISSUE ID-34
+- fixed Sandboxie-Plus EditAdminOnly Bypass via INI CRLF Injection CVE-2026-34458 (reported by sammy12342)
+- FIXED SECURITY ISSUE ID-35
+- fixed issues with GetRawInputDeviceInfoSlave CVE-2026-34459 (reported by sammy12342)
+- FIXED SECURITY ISSUE ID-36
+- fixed an issue with RunSbieCtrl CVE-2026-34461 (reported by Yanchon918s)
+- FIXED SECURITY ISSUE ID-37
+- fixed name validation in ProcessServer handlers CVE-2026-34462 (reported by Yanchon918s)
+- FIXED SECURITY ISSUE ID-38
+- fixed parameter validation in NamedPipeServer CVE-2026-34464 (reported by Yanchon918s)
+- FIXED SECURITY ISSUE ID-39
+- fixed Local Privilege Escalation via TOCTOU in UpdUtil Addon Installation CVE-2026-34596 (reported by sammy12342)
 
 
 ## [1.17.2 / 5.72.2] - 2026-02-18
