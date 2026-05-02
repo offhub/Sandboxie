@@ -1133,10 +1133,12 @@ _FX BOOLEAN Process_NotifyProcess_Create(
     BOOLEAN parent_was_start_exe = FALSE;
     BOOLEAN parent_had_rights_dropped = FALSE;
     BOOLEAN parent_was_image_from_box = FALSE;
+    BOOLEAN parent_was_forced_by_children = FALSE;
     BOOLEAN process_is_forced = FALSE;
     BOOLEAN add_process_to_job = FALSE;
 	BOOLEAN create_terminated = FALSE;
     BOOLEAN bHostInject = FALSE;
+    BOOLEAN forced_by_children = FALSE;
     KIRQL irql;
 
     //
@@ -1260,6 +1262,9 @@ _FX BOOLEAN Process_NotifyProcess_Create(
                     if (parent_proc->image_from_box)
                         parent_was_image_from_box = TRUE;
 
+                    if (parent_proc->forced_by_children)
+                        parent_was_forced_by_children = TRUE;
+
                 } else
                     create_terminated = TRUE;
 
@@ -1327,7 +1332,11 @@ _FX BOOLEAN Process_NotifyProcess_Create(
             if (breakout_box)
                 pSidString = breakout_box->sid;
 #endif
-            box = Process_GetForcedStartBox(ProcessId, ParentId, ImagePath, &bHostInject, pSidString);
+            box = Process_GetForcedStartBox(ProcessId, ParentId, ImagePath, &bHostInject, pSidString, &forced_by_children);
+
+            // Inherit forced_by_children flag from parent if parent was forced by ForceChildren
+            if (parent_was_forced_by_children)
+                forced_by_children = TRUE;
 
             if (box == (BOX *)-1) {
 
@@ -1438,6 +1447,8 @@ _FX BOOLEAN Process_NotifyProcess_Create(
             new_proc->parent_was_start_exe = parent_was_start_exe;
             new_proc->rights_dropped = parent_had_rights_dropped;
             new_proc->forced_process = process_is_forced;
+            // Inherit forced_by_children flag from parent if not already set
+            new_proc->forced_by_children = forced_by_children || parent_was_forced_by_children;
 
             if (! bHostInject) {
 

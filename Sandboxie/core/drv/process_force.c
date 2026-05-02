@@ -157,7 +157,7 @@ static WCHAR* Process_NormalizeBreakoutRulePath(
     BOX *box, const WCHAR *rule, const WCHAR *setting, ULONG *out_len);
 
 static BOX *Process_CheckForceProcess(
-    LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath);
+    LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath, BOOLEAN *pForcedByChildren);
 
 static BOOLEAN Process_IsPrioritizedBreakoutMatch(
     BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path);
@@ -180,7 +180,7 @@ static BOOLEAN Process_CheckMoTW(const WCHAR *path);
 
 
 _FX BOX *Process_GetForcedStartBox(
-    HANDLE ProcessId, HANDLE ParentId, const WCHAR *ImagePath, BOOLEAN* pHostInject, const WCHAR *pSidString)
+    HANDLE ProcessId, HANDLE ParentId, const WCHAR *ImagePath, BOOLEAN* pHostInject, const WCHAR *pSidString, BOOLEAN *pForcedByChildren)
 {
     NTSTATUS status;
     ULONG SessionId;
@@ -208,6 +208,8 @@ _FX BOX *Process_GetForcedStartBox(
     WCHAR* ParentPath = NULL;
 
     check_force = TRUE;
+    if (pForcedByChildren)
+        *pForcedByChildren = FALSE;
 
     //
     // get process object to access SID string, session ID and PEB data
@@ -318,7 +320,7 @@ _FX BOX *Process_GetForcedStartBox(
 
             if ((! box) && (! alert)) {
                 box = Process_CheckForceProcess(
-                    &boxes, ImageName, ImagePath2, force_alert, &alert, ParentName, ParentPath);
+                    &boxes, ImageName, ImagePath2, force_alert, &alert, ParentName, ParentPath, pForcedByChildren);
             }
 
             if ((! box) && CurDir && !is_start_exe && (! alert)) {
@@ -362,6 +364,8 @@ _FX BOX *Process_GetForcedStartBox(
                     if (cur_box->box->name_len == boxname_len
                         && _wcsicmp(cur_box->box->name, boxname) == 0) {
                         box = cur_box->box;
+                        if (pForcedByChildren)
+                            *pForcedByChildren = TRUE;
                         break;
                     }
                 }
@@ -2107,9 +2111,12 @@ static BOOLEAN Process_CheckBreakoutProcessList(
 
 
 _FX BOX *Process_CheckForceProcess(
-    LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath)
+    LIST *boxes, const WCHAR *name, const WCHAR* path, BOOLEAN alert, ULONG *IsAlert, const WCHAR *ParentName, const WCHAR *ParentPath, BOOLEAN *pForcedByChildren)
 {
     FORCE_BOX *box;
+
+    if (pForcedByChildren)
+        *pForcedByChildren = FALSE;
 
     //
     // never force a program from the Sandboxie home directory
@@ -2177,6 +2184,8 @@ _FX BOX *Process_CheckForceProcess(
             if (has_target_override) {
                 FORCE_BOX *target = Process_FindForceBoxByName(boxes, target_box);
                 if (target) {
+                    if (pForcedByChildren)
+                        *pForcedByChildren = TRUE;
                     if (alert) {
                         *IsAlert = 1;
                         return NULL;
@@ -2194,6 +2203,9 @@ _FX BOX *Process_CheckForceProcess(
                 *IsAlert = 1;
                 return NULL;
             }
+
+            if (pForcedByChildren)
+                *pForcedByChildren = TRUE;
 
             return box->box;
         }

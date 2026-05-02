@@ -1356,8 +1356,24 @@ _FX BOOL Proc_CreateProcessInternalW(
     if(lpApplicationName) {
         BOOLEAN allow_targeted_breakout = SbieApi_QueryConfBool(NULL, L"PrioritizeBreakoutOverForce", FALSE);
         const WCHAR* lpProgram = wcsrchr(lpApplicationName, L'\\');
-        if (Proc_IsBreakoutCandidate(lpApplicationName, NULL, allow_targeted_breakout)
-            || (Dll_BoxName && Proc_IsBreakoutCandidate(lpApplicationName, Dll_BoxName, allow_targeted_breakout))) {
+        
+        // Check if current (parent) process was forced by ForceChildren
+        // If so and PrioritizeBreakoutOverForce is not set, block breakout
+        BOOLEAN caller_forced_by_children = FALSE;
+        if (Dll_BoxName) {
+            ULONG caller_flags = (ULONG)SbieApi_QueryProcessInfo(GetCurrentProcess(), 0);
+            if (caller_flags & SBIE_FLAG_FORCED_CHILD_PROCESS) {
+                // Check per-box setting
+                BOOLEAN prioritize_breakout = SbieApi_QueryConfBool(Dll_BoxName, L"PrioritizeBreakoutOverForce", FALSE);
+                if (!prioritize_breakout) {
+                    caller_forced_by_children = TRUE;
+                }
+            }
+        }
+
+        if (!caller_forced_by_children &&
+            (Proc_IsBreakoutCandidate(lpApplicationName, NULL, allow_targeted_breakout)
+            || (Dll_BoxName && Proc_IsBreakoutCandidate(lpApplicationName, Dll_BoxName, allow_targeted_breakout)))) {
                 
                 const WCHAR* lpArguments = NULL;
                 if (lpCommandLine)

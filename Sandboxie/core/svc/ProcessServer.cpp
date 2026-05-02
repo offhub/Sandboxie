@@ -666,6 +666,14 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                             WCHAR SourceBox[BOXNAME_COUNT];
                             wcscpy(SourceBox, boxname);
                             BOOLEAN prioritize_breakout = SbieApi_QueryConfBool(SourceBox, L"PrioritizeBreakoutOverForce", FALSE);
+                            ULONG CallerProcessFlags = (ULONG)SbieApi_QueryProcessInfo((HANDLE)(ULONG_PTR)CallerPid, 0);
+
+                            // Keep ForceChildren-forced callers boxed unless breakout is explicitly prioritized.
+                            if (!prioritize_breakout && (CallerProcessFlags & SBIE_FLAG_FORCED_CHILD_PROCESS)) {
+                                lvl = 0;
+                                err = ERROR_NOT_SUPPORTED;
+                                goto end;
+                            }
 
                             BoxNameOrModelPid = 0;
                             FilterHandles = TRUE;
@@ -702,6 +710,14 @@ MSG_HEADER *ProcessServer::RunSandboxedHandler(MSG_HEADER *msg)
                                     BoxNameOrModelPid = (LONG_PTR)boxname;
                                     wcscpy(boxname, TargetBox);
                                 }
+                            }
+
+                            // If an explicit breakout target is configured but invalid,
+                            // deny breakout and take the normal boxed process creation route.
+                            if (explicit_target_invalid) {
+                                lvl = 0;
+                                err = ERROR_NOT_SUPPORTED;
+                                goto end;
                             }
 
                             if (BoxNameOrModelPid == 0) {
