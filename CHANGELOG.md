@@ -7,7 +7,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
-## [1.17.5 / 5.72.5] - 2026-04-??
+## [1.17.5 / 5.72.5] - 2026-05-02
 
 ### Added
 - added workaround for SBIE2205 OpenDesktop when requesting default desktop
