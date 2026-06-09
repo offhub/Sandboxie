@@ -1305,10 +1305,9 @@ void ServiceServer::RunUacSlave3(
         if (BoxName[0]){
 
             errlvl = 0x89;
-            hProcess = NULL;
-            SbieApi_OpenProcess(&hProcess, idProcess);
-            if (! hProcess)
-                SetLastError(ERROR_ACCESS_DENIED);
+            hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE |
+                                   PROCESS_VM_OPERATION | PROCESS_DUP_HANDLE,
+                                   FALSE, (ULONG)(ULONG_PTR)idProcess);
 
         } else {
 
