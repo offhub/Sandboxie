@@ -5,6 +5,7 @@
 #include "../MiscHelpers/Common/TreeItemModel.h"
 #include "../MiscHelpers/Common/Common.h"
 #include "SettingsWindow.h"
+#include "../../../Sandboxie/common/recovery_wildcard.h"
 
 
 #if defined(Q_OS_WIN)
@@ -12,6 +13,271 @@
 #include <QAbstractNativeEventFilter>
 #include <dbt.h>
 #endif
+
+
+namespace {
+
+bool IsPathSeparator(QChar ch)
+{
+	return ch == '\\' || ch == '/';
+}
+
+bool IsFullPathPattern(const QString& pattern)
+{
+	return (!pattern.isEmpty() && IsPathSeparator(pattern.at(0))) ||
+		(pattern.length() > 1 && pattern.at(1) == ':');
+}
+
+bool IsNtNamespacePath(const QString& path)
+{
+	return path.startsWith('\\') && !path.startsWith("\\\\");
+}
+
+int OrdinalWCharEqual(WCHAR leftChar, WCHAR rightChar)
+{
+	return CompareStringOrdinal(&leftChar, 1, &rightChar, 1, TRUE) == CSTR_EQUAL;
+}
+
+QString NormalizePath(QString path)
+{
+	path.replace('/', '\\');
+	return path;
+}
+
+int SkipPathComponents(const QString& path, int start, int count)
+{
+	int pos = start;
+	while (count > 0) {
+		while (pos < path.length() && IsPathSeparator(path.at(pos)))
+			++pos;
+		if (pos >= path.length())
+			return path.length();
+		while (pos < path.length() && !IsPathSeparator(path.at(pos)))
+			++pos;
+		--count;
+	}
+
+	if (pos < path.length() && IsPathSeparator(path.at(pos)))
+		++pos;
+	return pos;
+}
+
+int RelativeMatchStart(const QString& path)
+{
+	if (path.length() > 1 && path.at(1) == ':')
+		return path.length() > 2 && IsPathSeparator(path.at(2)) ? 3 : 2;
+
+	if (path.length() > 1 && IsPathSeparator(path.at(0)) &&
+		IsPathSeparator(path.at(1)))
+		return SkipPathComponents(path, 2, 2);
+
+	if (path.startsWith("\\??\\UNC\\", Qt::CaseInsensitive))
+		return SkipPathComponents(path, 8, 2);
+
+	int start = -1;
+	if (path.startsWith("\\Device\\LanmanRedirector\\", Qt::CaseInsensitive))
+		start = 25;
+	else if (path.startsWith("\\Device\\Mup\\;LanmanRedirector\\", Qt::CaseInsensitive))
+		start = 30;
+	else if (path.startsWith("\\Device\\Mup\\DfsClient\\", Qt::CaseInsensitive))
+		start = 22;
+	else if (path.startsWith("\\Device\\Mup\\;hgfs\\", Qt::CaseInsensitive))
+		return SkipPathComponents(path, 18, 1);
+	else if (path.startsWith("\\Device\\Mup\\", Qt::CaseInsensitive))
+		start = 12;
+	else if (path.startsWith('\\'))
+		return SkipPathComponents(path, 1, 2);
+	else
+		return 0;
+
+	while (start < path.length() && path.at(start) == ';')
+		start = SkipPathComponents(path, start, 1);
+	return SkipPathComponents(path, start, 2);
+}
+
+QString NormalizeIgnorePattern(QString pattern)
+{
+	pattern = NormalizePath(pattern);
+	if (pattern.endsWith('\\'))
+		pattern.chop(1);
+	return pattern;
+}
+
+QString GetDosPatternAlias(const QString& pattern, QString* ntPattern)
+{
+	if (!IsFullPathPattern(pattern))
+		return QString();
+	if ((pattern.length() > 1 && pattern.at(1) == ':') ||
+		pattern.startsWith("\\\\"))
+		return pattern;
+
+	bool converted = false;
+	QString dosPattern = NormalizePath(theAPI->Nt2DosPath(pattern, &converted));
+	if (IsNtNamespacePath(dosPattern) &&
+		dosPattern.compare(pattern, Qt::CaseInsensitive) != 0)
+		*ntPattern = dosPattern;
+
+	const QString dosDevicePrefix = "\\??\\";
+	const QString uncDevicePrefix = "\\??\\UNC\\";
+	if (dosPattern.startsWith(uncDevicePrefix, Qt::CaseInsensitive))
+		dosPattern = "\\\\" + dosPattern.mid(uncDevicePrefix.length());
+	else if (dosPattern.startsWith(dosDevicePrefix, Qt::CaseInsensitive))
+		dosPattern.remove(0, dosDevicePrefix.length());
+
+	const QString redirectorPrefix = "\\Device\\LanmanRedirector\\";
+	if (dosPattern.startsWith(redirectorPrefix, Qt::CaseInsensitive)) {
+		QString uncPath = dosPattern.mid(redirectorPrefix.length());
+		while (uncPath.startsWith(';')) {
+			const int separator = uncPath.indexOf('\\');
+			if (separator == -1)
+				return QString();
+			uncPath.remove(0, separator + 1);
+		}
+		dosPattern = "\\\\" + uncPath;
+	}
+
+	if (converted || (dosPattern.length() > 1 && dosPattern.at(1) == ':') ||
+		dosPattern.startsWith("\\\\"))
+		return dosPattern;
+	return QString();
+}
+
+QString ResolveNtCandidatePath(const QString& path)
+{
+	const QString normalizedPath = NormalizePath(path);
+	if (IsNtNamespacePath(normalizedPath))
+		return normalizedPath;
+
+	int rootLength = 0;
+	if (normalizedPath.length() > 1 && normalizedPath.at(1) == ':')
+		rootLength = normalizedPath.length() > 2 &&
+			IsPathSeparator(normalizedPath.at(2)) ? 3 : 2;
+	else if (normalizedPath.startsWith("\\\\"))
+		rootLength = SkipPathComponents(normalizedPath, 2, 2);
+	else
+		return QString();
+
+	QString ntRoot = NormalizePath(
+		theAPI->ResolveAbsolutePath(normalizedPath.left(rootLength)));
+	if (!IsNtNamespacePath(ntRoot)) {
+		const QString ntPath = NormalizePath(
+			theAPI->ResolveAbsolutePath(normalizedPath));
+		return IsNtNamespacePath(ntPath) ? ntPath : QString();
+	}
+
+	const QString suffix = normalizedPath.mid(rootLength);
+	if (suffix.isEmpty())
+		return ntRoot;
+	if (!ntRoot.endsWith('\\'))
+		ntRoot.append('\\');
+	return ntRoot + suffix;
+}
+
+bool WildcardMatchWhole(const QString& pattern, const QString& text, bool relative,
+	QVector<quint8>& rows)
+{
+	const size_t textLen = static_cast<size_t>(text.length());
+	const size_t rowsRequired = (textLen + 1) * 2;
+	rows.resize(static_cast<int>(rowsRequired));
+
+	const size_t matchStart = relative
+		? static_cast<size_t>(RelativeMatchStart(text))
+		: static_cast<size_t>(0);
+
+	const WCHAR* patternText = reinterpret_cast<const WCHAR*>(pattern.utf16());
+	const WCHAR* candidateText = reinterpret_cast<const WCHAR*>(text.utf16());
+
+	return Sbie_WildcardMatchWholeCoreW(
+		patternText,
+		candidateText,
+		textLen,
+		matchStart,
+		reinterpret_cast<unsigned char*>(rows.data()),
+		rowsRequired,
+		OrdinalWCharEqual) != 0;
+}
+
+bool LiteralIgnoreMatch(const QString& pattern, const QString& text)
+{
+	const wchar_t* patternText = reinterpret_cast<const wchar_t*>(pattern.utf16());
+	const wchar_t* candidateText = reinterpret_cast<const wchar_t*>(text.utf16());
+	const size_t patternLength = static_cast<size_t>(pattern.length());
+
+	if (_wcsnicmp(patternText, candidateText, patternLength) == 0) {
+		if (text.length() == pattern.length() ||
+			(text.length() > pattern.length() && text.at(pattern.length()) == '\\'))
+			return true;
+	}
+
+	if (text.length() >= pattern.length()) {
+		candidateText += text.length() - pattern.length();
+		if (_wcsicmp(patternText, candidateText) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+bool IgnorePatternMatch(const QString& pattern, bool hasWildcard,
+	const QString& text, bool relative, QVector<quint8>& rows)
+{
+	if (pattern.isEmpty() || text.isEmpty())
+		return false;
+	return hasWildcard
+		? WildcardMatchWhole(pattern, text, relative, rows)
+		: LiteralIgnoreMatch(pattern, text);
+}
+
+}
+
+bool CRecoveryWindow::IsFileIgnored(const CSandBoxPtr& pBox, const QString& diskPath, const QString& boxedPath)
+{
+	if (pBox.isNull())
+		return false;
+	if (!pBox->GetBool("UseAutoRecoverIgnoreForQuick", true, true, true))
+		return false;
+
+	const QStringList patterns = pBox->GetTextList("AutoRecoverIgnore", true, true, true);
+	if (patterns.isEmpty())
+		return false;
+
+	const QString ntPath = ResolveNtCandidatePath(diskPath);
+	QVector<quint8> scratch;
+
+	for (const QString& configuredPattern : patterns) {
+		SIgnorePattern pattern;
+		pattern.Pattern = NormalizeIgnorePattern(configuredPattern);
+		if (pattern.Pattern.isEmpty())
+			continue;
+
+		pattern.HasWildcard = pattern.Pattern.contains('*') || pattern.Pattern.contains('?');
+		pattern.FullPath = IsFullPathPattern(pattern.Pattern);
+		if (pattern.FullPath) {
+			pattern.DosPattern = GetDosPatternAlias(pattern.Pattern, &pattern.NtPattern);
+			const QString& boxedSource = pattern.DosPattern.isEmpty()
+				? pattern.Pattern : pattern.DosPattern;
+			pattern.BoxedPattern = theAPI->GetBoxedPath(pBox.data(), boxedSource);
+		}
+
+		const bool relative = !pattern.FullPath;
+		if (IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
+				diskPath, relative, scratch) ||
+			IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
+				ntPath, relative, scratch) ||
+			IgnorePatternMatch(pattern.NtPattern, pattern.HasWildcard,
+				ntPath, relative, scratch))
+			return true;
+
+		if (pattern.FullPath) {
+			if (IgnorePatternMatch(pattern.DosPattern, pattern.HasWildcard,
+					diskPath, false, scratch) ||
+				IgnorePatternMatch(pattern.BoxedPattern, pattern.HasWildcard,
+					boxedPath, false, scratch))
+				return true;
+		}
+	}
+	return false;
+}
 
 
 CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidget *parent)
@@ -57,6 +323,15 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	m_bTargetsChanged = false;
 	m_bReloadPending = false;
 	m_DeleteSnapshots = false;
+	m_UnfilteredFileCount = 0;
+	m_IgnoredFileCount = 0;
+
+	m_UseIgnoreForQuick = true;
+	m_IgnorePatternsBuilt = false;
+
+	ui.chkShowAll->setTristate(m_bImmediate);
+	ui.chkShowIgnored->setChecked(false);
+	UpdateShowIgnoredState();
 
 	QStyle* pStyle = QStyleFactory::create("windows");
 	ui.treeFiles->setStyle(pStyle);
@@ -94,7 +369,8 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	connect(ui.treeFiles, SIGNAL(doubleClicked(const QModelIndex&)), this, SLOT(OnRecover()));
 
 	connect(ui.btnAddFolder, SIGNAL(clicked(bool)), this, SLOT(OnAddFolder()));
-	connect(ui.chkShowAll, SIGNAL(clicked(bool)), this, SLOT(FindFiles()));
+	connect(ui.chkShowAll, SIGNAL(stateChanged(int)), this, SLOT(OnShowAllChanged(int)));
+	connect(ui.chkShowIgnored, SIGNAL(clicked(bool)), this, SLOT(FindFiles()));
 	connect(ui.btnRefresh, SIGNAL(clicked(bool)), this, SLOT(FindFiles()));
 	connect(ui.btnRecover, SIGNAL(clicked(bool)), this, SLOT(OnRecover()));
 	connect(ui.btnDelete, SIGNAL(clicked(bool)), this, SLOT(OnDelete()));
@@ -123,16 +399,22 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 		m_pFileModel->SetColumnEnabled(i, true);
 
 
-	foreach(const QString& NtFolder, m_pBox->GetTextList("RecoverFolder", true, true)) 
+	foreach(const QString& NtFolder, m_pBox->GetTextList("RecoverFolder", true, true, true))
 	{
 		QString RecFolder = theAPI->ResolveAbsolutePath(NtFolder);
 
 		bool bOk;
 		QString Folder = theAPI->Nt2DosPath(RecFolder, &bOk);
-		if(bOk)
+		if(!bOk && RecFolder.left(11).compare("\\Device\\Mup", Qt::CaseInsensitive) == 0)
+			Folder = "\\" + RecFolder.mid(11);
+
+		if (!Folder.isEmpty() && (bOk ||
+			RecFolder.left(11).compare("\\Device\\Mup", Qt::CaseInsensitive) == 0)) {
 			m_RecoveryFolders.append(Folder);
-		else if(RecFolder.left(11) == "\\Device\\Mup")
-			m_RecoveryFolders.append("\\" + RecFolder.mid(11));
+			m_RecoveryNtFolders.insert(Folder,
+				IsNtNamespacePath(RecFolder) ? NormalizePath(RecFolder) :
+				ResolveNtCandidatePath(Folder));
+		}
 	}
 
 	ui.cmbRecover->addItem(tr("Original location"), 0);
@@ -185,6 +467,7 @@ void CRecoveryWindow::OnAddFolder()
 		return;
 
 	m_RecoveryFolders.append(Folder);
+	m_RecoveryNtFolders.insert(Folder, ResolveNtCandidatePath(Folder));
 	m_pBox->AppendText("RecoverFolder", Folder);
 
 	FindFiles(Folder);
@@ -268,11 +551,24 @@ void CRecoveryWindow::OnDeleteEverything()
 	OnDeleteAll();
 }
 
+void CRecoveryWindow::OnShowAllChanged(int state)
+{
+	Q_UNUSED(state);
+	UpdateShowIgnoredState();
+	FindFiles();
+}
+
 void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 {
-	ui.chkShowAll->setTristate(true);
+	if (m_bImmediate)
+		ui.chkShowAll->setTristate(true);
+	m_NewFiles.insert(FilePath);
+
 	if (m_FileMap.isEmpty()) {
+		const bool hadSignalsBlocked = ui.chkShowAll->blockSignals(true);
 		ui.chkShowAll->setCheckState(Qt::PartiallyChecked);
+		ui.chkShowAll->blockSignals(hadSignalsBlocked);
+		UpdateShowIgnoredState();
 
 		QMenu* pCloseMenu = new QMenu(ui.btnClose);
 		pCloseMenu->addAction(tr("Close until all programs stop in this box"), this, SLOT(OnCloseUntil()));
@@ -280,8 +576,6 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 		ui.btnClose->setPopupMode(QToolButton::MenuButtonPopup);
 		ui.btnClose->setMenu(pCloseMenu);
 	}
-
-	m_NewFiles.insert(FilePath);
 
 	if (m_FileMap.isEmpty())
 		FindFiles();
@@ -295,6 +589,8 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 int CRecoveryWindow::FindFiles()
 {
 	m_bReloadPending = false;
+	m_IgnoredFileCount = 0;
+	ReloadIgnoreSettings();
 	if (!m_NewFiles.isEmpty()) {
 		ui.lblInfo->setText(tr("There are %1 new files available to recover.").arg(m_NewFiles.count()));
 	}
@@ -305,18 +601,19 @@ int CRecoveryWindow::FindFiles()
 
 	m_FileMap.clear();
 	int Count = 0;
+	int UnfilteredCount = 0;
 
 	if (ui.chkShowAll->checkState() == Qt::Checked)
 	{
 		//for(char drive = 'A'; drive <= 'Z'; drive++)
 		QDir Dir(m_pBox->GetFileRoot() + "\\drive\\");
 		foreach(const QFileInfo & Info, Dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
-			Count += FindBoxFiles("\\drive\\" + Info.fileName());
+			Count += FindBoxFiles("\\drive\\" + Info.fileName(), &UnfilteredCount);
 
 		if (m_pBox->GetBool("SeparateUserFolders", true, true)) {
-			Count += FindBoxFiles("\\user\\current");
-			Count += FindBoxFiles("\\user\\all");
-			Count += FindBoxFiles("\\user\\public");
+			Count += FindBoxFiles("\\user\\current", &UnfilteredCount);
+			Count += FindBoxFiles("\\user\\all", &UnfilteredCount);
+			Count += FindBoxFiles("\\user\\public", &UnfilteredCount);
 		}
 
 		//Count += FindBoxFiles("\\share");
@@ -324,20 +621,23 @@ int CRecoveryWindow::FindFiles()
 		foreach(const QFileInfo & InfoSrv, DirSvr.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
 			QDir DirPub(m_pBox->GetFileRoot() + "\\share\\" + InfoSrv.fileName());
 			foreach(const QFileInfo & InfoPub, DirPub.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
-				Count += FindBoxFiles("\\share\\" + InfoSrv.fileName() + "\\" + InfoPub.fileName());
+				Count += FindBoxFiles("\\share\\" + InfoSrv.fileName() + "\\" +
+					InfoPub.fileName(), &UnfilteredCount);
 		}
 	}
 	else
 	{
 		foreach(const QString & Folder, m_RecoveryFolders)
-			Count += FindFiles(Folder);
+			Count += FindFiles(Folder, &UnfilteredCount);
 	}
+	m_UnfilteredFileCount = UnfilteredCount;
 
 	if (m_bImmediate && m_FileMap.isEmpty())
 		this->close();
 
 	m_pFileModel->Sync(m_FileMap);
 	ui.treeFiles->expandAll();
+	UpdateShowIgnoredState();
 	
 	if(m_bImmediate)
 		SelectFiles();
@@ -402,24 +702,115 @@ SelectFile:
 	}
 }
 
-int CRecoveryWindow::FindFiles(const QString& Folder)
+void CRecoveryWindow::ReloadIgnoreSettings()
+{
+	m_UseIgnoreForQuick = m_pBox->GetBool(
+		"UseAutoRecoverIgnoreForQuick", true, true, true);
+	m_IgnorePatternsBuilt = false;
+	m_AutoRecoverIgnorePatterns.clear();
+	m_IgnoreMatchScratch.clear();
+
+	if (ShouldFilterIgnoredFiles())
+		BuildIgnorePatterns();
+}
+
+void CRecoveryWindow::UpdateShowIgnoredState()
+{
+	const bool enableShowIgnored =
+		(ui.chkShowAll->checkState() == Qt::Unchecked) &&
+		(m_IgnoredFileCount > 0 || ui.chkShowIgnored->isChecked());
+	ui.chkShowIgnored->setEnabled(enableShowIgnored);
+}
+
+bool CRecoveryWindow::ShouldFilterIgnoredFiles() const
+{
+	if (!m_UseIgnoreForQuick)
+		return false;
+	if (ui.chkShowAll->checkState() != Qt::Unchecked)
+		return false;
+	if (ui.chkShowIgnored->isChecked())
+		return false;
+	return true;
+}
+
+void CRecoveryWindow::BuildIgnorePatterns()
+{
+	if (m_IgnorePatternsBuilt)
+		return;
+
+	const QStringList patterns = m_pBox->GetTextList(
+		"AutoRecoverIgnore", true, true, true);
+	m_AutoRecoverIgnorePatterns.clear();
+	for (const QString& configuredPattern : patterns) {
+		SIgnorePattern pattern;
+		pattern.Pattern = NormalizeIgnorePattern(configuredPattern);
+		if (pattern.Pattern.isEmpty())
+			continue;
+
+		pattern.HasWildcard = pattern.Pattern.contains('*') || pattern.Pattern.contains('?');
+		pattern.FullPath = IsFullPathPattern(pattern.Pattern);
+		if (pattern.FullPath) {
+			pattern.DosPattern =
+				GetDosPatternAlias(pattern.Pattern, &pattern.NtPattern);
+			const QString& boxedSource = pattern.DosPattern.isEmpty()
+				? pattern.Pattern : pattern.DosPattern;
+			pattern.BoxedPattern =
+				theAPI->GetBoxedPath(m_pBox.data(), boxedSource);
+		}
+
+		m_AutoRecoverIgnorePatterns.append(pattern);
+	}
+	m_IgnorePatternsBuilt = true;
+}
+
+bool CRecoveryWindow::IsExcludedByIgnorePatterns(const QString& diskPath,
+	const QString& ntPath, const QString& boxedPath)
+{
+	for (const SIgnorePattern& pattern : m_AutoRecoverIgnorePatterns) {
+		const bool relative = !pattern.FullPath;
+		if (IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
+				diskPath, relative, m_IgnoreMatchScratch) ||
+			IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
+				ntPath, relative, m_IgnoreMatchScratch) ||
+			IgnorePatternMatch(pattern.NtPattern, pattern.HasWildcard,
+				ntPath, relative, m_IgnoreMatchScratch))
+			return true;
+
+		if (pattern.FullPath) {
+			if (IgnorePatternMatch(pattern.DosPattern, pattern.HasWildcard,
+					diskPath, false, m_IgnoreMatchScratch) ||
+				IgnorePatternMatch(pattern.BoxedPattern, pattern.HasWildcard,
+					boxedPath, false, m_IgnoreMatchScratch))
+				return true;
+		}
+	}
+	return false;
+}
+
+int CRecoveryWindow::FindFiles(const QString& Folder, int* pUnfilteredCount)
 {
 	//int Count = 0;
 	//foreach(const QString & Path, theAPI->GetBoxedPath(m_pBox, Folder))
 	//	Count += FindFiles(Folder, Path, Folder);
 	//return Count;
-	return FindFiles(theAPI->GetBoxedPath(m_pBox.data(), Folder), Folder, Folder).first;
+	return FindFiles(theAPI->GetBoxedPath(m_pBox.data(), Folder), Folder,
+		m_RecoveryNtFolders.value(Folder), Folder, QString(),
+		pUnfilteredCount).first;
 }
 
-int CRecoveryWindow::FindBoxFiles(const QString& Folder)
+int CRecoveryWindow::FindBoxFiles(const QString& Folder, int* pUnfilteredCount)
 {
 	QString RealFolder = theAPI->GetRealPath(m_pBox.data(), m_pBox->GetFileRoot() + Folder);
 	if (RealFolder.isEmpty())
 		return 0;
-	return FindFiles(m_pBox->GetFileRoot() + Folder, RealFolder, RealFolder).first;
+	return FindFiles(m_pBox->GetFileRoot() + Folder, RealFolder,
+		ResolveNtCandidatePath(RealFolder), RealFolder, QString(),
+		pUnfilteredCount).first;
 }
 
-QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder, const QString& RealFolder, const QString& Name, const QString& ParentID)
+QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder,
+	const QString& RealFolder, const QString& NtFolder, const QString& Name,
+	const QString& ParentID, int* pUnfilteredCount)
 {
 	int Count = 0;
 	quint64 Size = 0;
@@ -435,8 +826,23 @@ QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder, const
 		if (Info.isFile())
 		{
 			QString RealPath = RealFolder + Path.mid(BoxedFolder.length());
+			QString NtPath;
+			if (!NtFolder.isEmpty())
+				NtPath = NtFolder + Path.mid(BoxedFolder.length());
 
-			if (!m_NewFiles.contains(RealPath) && ui.chkShowAll->checkState() == Qt::PartiallyChecked)
+			if (pUnfilteredCount)
+				++*pUnfilteredCount;
+
+			if (ShouldFilterIgnoredFiles()) {
+				BuildIgnorePatterns();
+				if (IsExcludedByIgnorePatterns(RealPath, NtPath, Path)) {
+					++m_IgnoredFileCount;
+					continue;
+				}
+			}
+
+			if (m_bImmediate && ui.chkShowAll->checkState() == Qt::PartiallyChecked &&
+				!m_NewFiles.contains(RealPath))
 				continue;
 
 			Count++;
@@ -455,7 +861,10 @@ QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder, const
 		}
 		else
 		{
-			auto CountSize = FindFiles(Path, RealFolder + "\\" + Name, Name, RealFolder);
+			const QString NtPath = NtFolder.isEmpty()
+				? QString() : NtFolder + "\\" + Name;
+			auto CountSize = FindFiles(Path, RealFolder + "\\" + Name,
+				NtPath, Name, RealFolder, pUnfilteredCount);
 			Count += CountSize.first;
 			Size += CountSize.second;
 		}
