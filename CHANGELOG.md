@@ -10,6 +10,8 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Changed
 - updated bundled ImDisk driver to 3.0.3
 
+### Fixed
+- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
 
 
 
@@ -25,8 +27,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fix Suppress logs for expected non-user SIDs [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
 - SbieSvc.exe: SBIE2218/2219 error when run program as administrator [#5417](https://github.com/sandboxie-plus/Sandboxie/issues/5417)
 - fixed explorer.exe crashes in Application Compartment when Huorong Security is installed [#5423](https://github.com/sandboxie-plus/Sandboxie/issues/5423)
-
-
 
 
 

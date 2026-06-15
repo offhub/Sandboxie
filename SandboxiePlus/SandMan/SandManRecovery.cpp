@@ -10,6 +10,9 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 		auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
 
 		if (!pBoxEx->m_pRecoveryWnd) {
+			if (CRecoveryWindow::IsFileIgnored(pBox, FilePath, BoxPath))
+				return;
+
 			pBoxEx->m_pRecoveryWnd = new CRecoveryWindow(pBox, true, this);
 			connect(this, SIGNAL(Closed()), pBoxEx->m_pRecoveryWnd, SLOT(close()));
 			connect(pBoxEx->m_pRecoveryWnd, &CRecoveryWindow::Closed, [pBoxEx]() {
@@ -51,7 +54,8 @@ bool CSandMan::OpenRecovery(const CSandBoxPtr& pBox, bool& DeleteSnapshots, bool
 
 	CRecoveryWindow* pRecoveryWnd = pBoxEx->m_pRecoveryWnd = new CRecoveryWindow(pBox, false, this);
 	connect(this, SIGNAL(Closed()), pBoxEx->m_pRecoveryWnd, SLOT(close()));
-	if (pBoxEx->m_pRecoveryWnd->FindFiles() == 0 && bCloseEmpty) {
+	pBoxEx->m_pRecoveryWnd->FindFiles();
+	if (pBoxEx->m_pRecoveryWnd->GetUnfilteredFileCount() == 0 && bCloseEmpty) {
 		delete pBoxEx->m_pRecoveryWnd;
 		pBoxEx->m_pRecoveryWnd = NULL;
 		return true;
