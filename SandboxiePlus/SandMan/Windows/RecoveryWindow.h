@@ -119,6 +119,10 @@ protected:
 	QVector<quint8> m_IgnoreMatchScratch;
 	bool m_IgnorePatternsBuilt;
 
+	static QList<SIgnorePattern> LoadIgnorePatterns(const CSandBoxPtr& pBox);
+	static bool MatchIgnorePatterns(const QList<SIgnorePattern>& patterns,
+		const QString& diskPath, const QString& ntPath,
+		const QString& boxedPath, QVector<quint8>& scratch);
 	void ReloadIgnoreSettings();
 	void BuildIgnorePatterns();
 	void UpdateShowIgnoredState();

@@ -237,46 +237,14 @@ bool CRecoveryWindow::IsFileIgnored(const CSandBoxPtr& pBox, const QString& disk
 	if (!pBox->GetBool("UseAutoRecoverIgnoreForQuick", true, true, true))
 		return false;
 
-	const QStringList patterns = pBox->GetTextList("AutoRecoverIgnore", true, true, true);
-	if (patterns.isEmpty())
+	const QString ntPath = ResolveNtCandidatePath(diskPath);
+	const QList<SIgnorePattern> ignorePatterns = LoadIgnorePatterns(pBox);
+	if (ignorePatterns.isEmpty())
 		return false;
 
-	const QString ntPath = ResolveNtCandidatePath(diskPath);
 	QVector<quint8> scratch;
-
-	for (const QString& configuredPattern : patterns) {
-		SIgnorePattern pattern;
-		pattern.Pattern = NormalizeIgnorePattern(configuredPattern);
-		if (pattern.Pattern.isEmpty())
-			continue;
-
-		pattern.HasWildcard = pattern.Pattern.contains('*') || pattern.Pattern.contains('?');
-		pattern.FullPath = IsFullPathPattern(pattern.Pattern);
-		if (pattern.FullPath) {
-			pattern.DosPattern = GetDosPatternAlias(pattern.Pattern, &pattern.NtPattern);
-			const QString& boxedSource = pattern.DosPattern.isEmpty()
-				? pattern.Pattern : pattern.DosPattern;
-			pattern.BoxedPattern = theAPI->GetBoxedPath(pBox.data(), boxedSource);
-		}
-
-		const bool relative = !pattern.FullPath;
-		if (IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
-				diskPath, relative, scratch) ||
-			IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
-				ntPath, relative, scratch) ||
-			IgnorePatternMatch(pattern.NtPattern, pattern.HasWildcard,
-				ntPath, relative, scratch))
-			return true;
-
-		if (pattern.FullPath) {
-			if (IgnorePatternMatch(pattern.DosPattern, pattern.HasWildcard,
-					diskPath, false, scratch) ||
-				IgnorePatternMatch(pattern.BoxedPattern, pattern.HasWildcard,
-					boxedPath, false, scratch))
-				return true;
-		}
-	}
-	return false;
+	return MatchIgnorePatterns(
+		ignorePatterns, diskPath, ntPath, boxedPath, scratch);
 }
 
 
@@ -750,49 +718,69 @@ void CRecoveryWindow::BuildIgnorePatterns()
 	if (m_IgnorePatternsBuilt)
 		return;
 
-	const QStringList patterns = m_pBox->GetTextList(
-		"AutoRecoverIgnore", true, true, true);
-	m_AutoRecoverIgnorePatterns.clear();
-	for (const QString& configuredPattern : patterns) {
-		SIgnorePattern pattern;
-		pattern.Pattern = NormalizeIgnorePattern(configuredPattern);
-		if (pattern.Pattern.isEmpty())
-			continue;
-
-		pattern.HasWildcard = pattern.Pattern.contains('*') || pattern.Pattern.contains('?');
-		pattern.FullPath = IsFullPathPattern(pattern.Pattern);
-		if (pattern.FullPath) {
-			pattern.DosPattern =
-				GetDosPatternAlias(pattern.Pattern, &pattern.NtPattern);
-			const QString& boxedSource = pattern.DosPattern.isEmpty()
-				? pattern.Pattern : pattern.DosPattern;
-			pattern.BoxedPattern =
-				theAPI->GetBoxedPath(m_pBox.data(), boxedSource);
-		}
-
-		m_AutoRecoverIgnorePatterns.append(pattern);
-	}
+	m_AutoRecoverIgnorePatterns = LoadIgnorePatterns(m_pBox);
 	m_IgnorePatternsBuilt = true;
 }
 
 bool CRecoveryWindow::IsExcludedByIgnorePatterns(const QString& diskPath,
 	const QString& ntPath, const QString& boxedPath)
 {
-	for (const SIgnorePattern& pattern : m_AutoRecoverIgnorePatterns) {
+	return MatchIgnorePatterns(
+		m_AutoRecoverIgnorePatterns, diskPath, ntPath,
+		boxedPath, m_IgnoreMatchScratch);
+}
+
+QList<CRecoveryWindow::SIgnorePattern> CRecoveryWindow::LoadIgnorePatterns(
+	const CSandBoxPtr& pBox)
+{
+	QList<SIgnorePattern> ignorePatterns;
+	if (pBox.isNull())
+		return ignorePatterns;
+
+	const QStringList patterns = pBox->GetTextList(
+		"AutoRecoverIgnore", true, true, true);
+	for (const QString& configuredPattern : patterns) {
+		SIgnorePattern pattern;
+		pattern.Pattern = NormalizeIgnorePattern(configuredPattern);
+		if (pattern.Pattern.isEmpty())
+			continue;
+
+		pattern.HasWildcard =
+			pattern.Pattern.contains('*') || pattern.Pattern.contains('?');
+		pattern.FullPath = IsFullPathPattern(pattern.Pattern);
+		if (pattern.FullPath) {
+			pattern.DosPattern =
+				GetDosPatternAlias(pattern.Pattern, &pattern.NtPattern);
+			const QString& boxedSource = pattern.DosPattern.isEmpty()
+				? pattern.Pattern : pattern.DosPattern;
+			pattern.BoxedPattern = theAPI->GetBoxedPath(pBox.data(), boxedSource);
+		}
+
+		ignorePatterns.append(pattern);
+	}
+
+	return ignorePatterns;
+}
+
+bool CRecoveryWindow::MatchIgnorePatterns(
+	const QList<SIgnorePattern>& patterns, const QString& diskPath,
+	const QString& ntPath, const QString& boxedPath, QVector<quint8>& scratch)
+{
+	for (const SIgnorePattern& pattern : patterns) {
 		const bool relative = !pattern.FullPath;
 		if (IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
-				diskPath, relative, m_IgnoreMatchScratch) ||
+				diskPath, relative, scratch) ||
 			IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
-				ntPath, relative, m_IgnoreMatchScratch) ||
+				ntPath, relative, scratch) ||
 			IgnorePatternMatch(pattern.NtPattern, pattern.HasWildcard,
-				ntPath, relative, m_IgnoreMatchScratch))
+				ntPath, relative, scratch))
 			return true;
 
 		if (pattern.FullPath) {
 			if (IgnorePatternMatch(pattern.DosPattern, pattern.HasWildcard,
-					diskPath, false, m_IgnoreMatchScratch) ||
+					diskPath, false, scratch) ||
 				IgnorePatternMatch(pattern.BoxedPattern, pattern.HasWildcard,
-					boxedPath, false, m_IgnoreMatchScratch))
+					boxedPath, false, scratch))
 				return true;
 		}
 	}
