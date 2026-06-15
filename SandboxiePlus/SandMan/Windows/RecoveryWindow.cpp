@@ -718,7 +718,7 @@ void CRecoveryWindow::UpdateShowIgnoredState()
 {
 	const bool enableShowIgnored =
 		(ui.chkShowAll->checkState() == Qt::Unchecked) &&
-		(m_IgnoredFileCount > 0);
+		(m_IgnoredFileCount > 0 || ui.chkShowIgnored->isChecked());
 	ui.chkShowIgnored->setEnabled(enableShowIgnored);
 }
 
