@@ -5,11 +5,23 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.17.10 / 5.72.10] - 2026-06-??
+
+### Added
+- added wildcard support for `RecoverFolder` and `AutoRecoverIgnore` patterns (`*`, `?`, `**`), matching across NT, DOS, and network-alias path forms in both DLL and SandMan [#3761](https://github.com/sandboxie-plus/Sandboxie/issues/3761) [#5318](https://github.com/sandboxie-plus/Sandboxie/issues/5318)
+- added `UseAutoRecoverIgnoreForQuick=[y|n]` to apply `AutoRecoverIgnore` patterns to the Quick Recovery window (default: enabled) [#5278](https://github.com/sandboxie-plus/Sandboxie/issues/5278)
+
+### Fixed
+- fixed NT device path (`\Device\LanmanRedirector\...`) shown in popup notification instead of UNC form, causing garbled display and wrong recovery target [#711](https://github.com/sandboxie-plus/Sandboxie/issues/711)
+- fixed "Close until all programs stop" permanently suspending recovery when clicked while no processes are running
+- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
+
+
+
 ## [1.17.9 / 5.72.9] - 2026-06-15
 
 ### Changed
 - updated bundled ImDisk driver to 3.0.3
-
 
 
 
@@ -25,8 +37,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fix Suppress logs for expected non-user SIDs [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
 - SbieSvc.exe: SBIE2218/2219 error when run program as administrator [#5417](https://github.com/sandboxie-plus/Sandboxie/issues/5417)
 - fixed explorer.exe crashes in Application Compartment when Huorong Security is installed [#5423](https://github.com/sandboxie-plus/Sandboxie/issues/5423)
-
-
 
 
 
@@ -48,7 +58,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fixed EditorSettings fuzzy matching not applied, showing few/no completion entries, and table cell highlighting not updating
 - fixed Error enumerating and deleting folder. [#5406](https://github.com/sandboxie-plus/Sandboxie/issues/5406)
 - fixed black box import/export when 'ProtectAdminOnly=y' (default) and SandMan does not run as admin
-
 
 
 
