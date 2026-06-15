@@ -5,6 +5,7 @@
 #include "../MiscHelpers/Common/TreeItemModel.h"
 #include "../MiscHelpers/Common/Common.h"
 #include "SettingsWindow.h"
+#include "../../../Sandboxie/common/recovery_wildcard.h"
 
 
 #if defined(Q_OS_WIN)
@@ -32,10 +33,8 @@ bool IsNtNamespacePath(const QString& path)
 	return path.startsWith('\\') && !path.startsWith("\\\\");
 }
 
-bool OrdinalCharEqual(QChar left, QChar right)
+int OrdinalWCharEqual(WCHAR leftChar, WCHAR rightChar)
 {
-	const WCHAR leftChar = left.unicode();
-	const WCHAR rightChar = right.unicode();
 	return CompareStringOrdinal(&leftChar, 1, &rightChar, 1, TRUE) == CSTR_EQUAL;
 }
 
@@ -177,61 +176,25 @@ QString ResolveNtCandidatePath(const QString& path)
 bool WildcardMatchWhole(const QString& pattern, const QString& text, bool relative,
 	QVector<quint8>& rows)
 {
-	const int rowSize = text.length() + 1;
-	rows.fill(0, rowSize * 2);
-	quint8* previous = rows.data();
-	quint8* current = previous + rowSize;
-	if (relative) {
-		const int matchStart = RelativeMatchStart(text);
-		previous[matchStart] = 1;
-		for (int textIndex = matchStart + 1; textIndex < rowSize; ++textIndex) {
-			if (IsPathSeparator(text.at(textIndex - 1)))
-				previous[textIndex] = 1;
-		}
-	}
-	else
-		previous[0] = 1;
+	const size_t textLen = static_cast<size_t>(text.length());
+	const size_t rowsRequired = (textLen + 1) * 2;
+	rows.resize(static_cast<int>(rowsRequired));
 
-	for (int patternIndex = 0; patternIndex < pattern.length(); ++patternIndex) {
-		memset(current, 0, rowSize);
-		const QChar token = pattern.at(patternIndex);
+	const size_t matchStart = relative
+		? static_cast<size_t>(RelativeMatchStart(text))
+		: static_cast<size_t>(0);
 
-		if (token == '*' && patternIndex + 1 < pattern.length() && pattern.at(patternIndex + 1) == '*') {
-			++patternIndex;
-			for (int textIndex = 1; textIndex < rowSize; ++textIndex) {
-				if (!IsPathSeparator(text.at(textIndex - 1))) {
-					if (previous[textIndex - 1] &&
-						(textIndex == 1 || IsPathSeparator(text.at(textIndex - 2))))
-						current[textIndex] = 1;
-					else
-						current[textIndex] = current[textIndex - 1];
-				}
-			}
-			for (int textIndex = 1; textIndex < text.length(); ++textIndex) {
-				if (!IsPathSeparator(text.at(textIndex)))
-					current[textIndex] = 0;
-			}
-		}
-		else if (token == '*') {
-			current[0] = previous[0];
-			for (int textIndex = 1; textIndex < rowSize; ++textIndex)
-				current[textIndex] = previous[textIndex] || current[textIndex - 1];
-		}
-		else {
-			for (int textIndex = 1; textIndex < rowSize; ++textIndex) {
-				const QChar textChar = text.at(textIndex - 1);
-				if ((token == '?' && !IsPathSeparator(textChar)) ||
-					OrdinalCharEqual(token, textChar))
-					current[textIndex] = previous[textIndex - 1];
-			}
-		}
+	const WCHAR* patternText = reinterpret_cast<const WCHAR*>(pattern.utf16());
+	const WCHAR* candidateText = reinterpret_cast<const WCHAR*>(text.utf16());
 
-		quint8* swap = previous;
-		previous = current;
-		current = swap;
-	}
-
-	return previous[text.length()] != 0;
+	return Sbie_WildcardMatchWholeCoreW(
+		patternText,
+		candidateText,
+		textLen,
+		matchStart,
+		reinterpret_cast<unsigned char*>(rows.data()),
+		rowsRequired,
+		OrdinalWCharEqual) != 0;
 }
 
 bool LiteralIgnoreMatch(const QString& pattern, const QString& text)

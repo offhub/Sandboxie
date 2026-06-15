@@ -22,6 +22,8 @@
 //
 //---------------------------------------------------------------------------
 
+#include "common/recovery_wildcard.h"
+
 
 //---------------------------------------------------------------------------
 // Functions
@@ -37,6 +39,7 @@ static void File_InitRecoverList(
 static int File_WildcardMatchWholeI(
     const WCHAR *pattern, const WCHAR *text, BOOLEAN relative,
     UCHAR *rows, SIZE_T rows_size);
+static int File_WildcardCharEqualI(WCHAR pattern_ch, WCHAR text_ch);
 static int File_WildcardMatchI(
     const WCHAR *pattern, const WCHAR *text,
     UCHAR *rows, SIZE_T rows_size);
@@ -324,76 +327,26 @@ static int File_WildcardMatchWholeI(
     const WCHAR *pattern, const WCHAR *text, BOOLEAN relative,
     UCHAR *rows, SIZE_T rows_size)
 {
-    SIZE_T index;
-    SIZE_T match_start;
     SIZE_T text_len;
-    UCHAR *previous;
-    UCHAR *current;
-    UCHAR *swap;
-    WCHAR token;
-    int matched;
+    SIZE_T match_start;
 
     text_len = wcslen(text);
-    if (! rows || rows_size < (text_len + 1) * 2)
-        return 0;
-
-    previous = rows;
-    current = rows + text_len + 1;
-    ZeroMemory(rows, (text_len + 1) * 2);
     if (relative) {
         match_start = File_GetRelativeMatchStart(text);
-        previous[match_start] = 1;
-        for (index = match_start + 1; index <= text_len; ++index) {
-            if (File_IsPathSeparator(text[index - 1]))
-                previous[index] = 1;
-        }
-    } else
-        previous[0] = 1;
-
-    while (*pattern) {
-
-        ZeroMemory(current, text_len + 1);
-        token = *pattern++;
-
-        if (token == L'*' && *pattern == L'*') {
-            ++pattern;
-            for (index = 1; index <= text_len; ++index) {
-                if (! File_IsPathSeparator(text[index - 1])) {
-                    if (previous[index - 1] &&
-                            (index == 1 ||
-                                File_IsPathSeparator(text[index - 2])))
-                        current[index] = 1;
-                    else
-                        current[index] = current[index - 1];
-                }
-            }
-            for (index = 1; index < text_len; ++index) {
-                if (! File_IsPathSeparator(text[index]))
-                    current[index] = 0;
-            }
-
-        } else if (token == L'*') {
-            current[0] = previous[0];
-            for (index = 1; index <= text_len; ++index)
-                current[index] = previous[index] || current[index - 1];
-
-        } else {
-            for (index = 1; index <= text_len; ++index) {
-                if ((token == L'?' &&
-                        ! File_IsPathSeparator(text[index - 1])) ||
-                        Dll_NlsStrCmp(
-                            &token, text + index - 1, 1) == 0)
-                    current[index] = previous[index - 1];
-            }
-        }
-
-        swap = previous;
-        previous = current;
-        current = swap;
+    } else {
+        match_start = 0;
     }
 
-    matched = previous[text_len] != 0;
-    return matched;
+    return Sbie_WildcardMatchWholeCoreW(
+        pattern, text, text_len, match_start,
+        (unsigned char *)rows, rows_size,
+        File_WildcardCharEqualI);
+}
+
+
+static int File_WildcardCharEqualI(WCHAR pattern_ch, WCHAR text_ch)
+{
+    return Dll_NlsStrCmp(&pattern_ch, &text_ch, 1) == 0;
 }
 
 

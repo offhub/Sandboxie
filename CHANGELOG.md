@@ -5,13 +5,20 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.17.10 / 5.72.10] - 2026-06-??
+
+### Added
+- added shared wildcard matching rules for file recovery (`*`, `?`, `**`) across DLL and SandMan, and added recovery window checkbox behavior to control ignored-file visibility
+
+### Fixed
+- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
+
+
+
 ## [1.17.9 / 5.72.9] - 2026-06-15
 
 ### Changed
 - updated bundled ImDisk driver to 3.0.3
-
-### Fixed
-- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
 
 
 
@@ -48,7 +55,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fixed EditorSettings fuzzy matching not applied, showing few/no completion entries, and table cell highlighting not updating
 - fixed Error enumerating and deleting folder. [#5406](https://github.com/sandboxie-plus/Sandboxie/issues/5406)
 - fixed black box import/export when 'ProtectAdminOnly=y' (default) and SandMan does not run as admin
-
 
 
 
