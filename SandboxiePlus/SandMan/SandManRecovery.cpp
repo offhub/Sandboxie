@@ -9,8 +9,15 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 	{
 		auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
 
+		QString EffectiveFilePath = FilePath;
+		if (!BoxPath.isEmpty()) {
+			QString RealPath = theAPI->GetRealPath(pBox.data(), BoxPath);
+			if (!RealPath.isEmpty())
+				EffectiveFilePath = RealPath;
+		}
+
 		if (!pBoxEx->m_pRecoveryWnd) {
-			if (CRecoveryWindow::IsFileIgnored(pBox, FilePath, BoxPath))
+			if (CRecoveryWindow::IsFileIgnored(pBox, EffectiveFilePath, BoxPath))
 				return;
 
 			pBoxEx->m_pRecoveryWnd = new CRecoveryWindow(pBox, true, this);
@@ -19,7 +26,7 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 				pBoxEx->m_pRecoveryWnd = NULL;
 				});
 
-			pBoxEx->m_pRecoveryWnd->AddFile(FilePath, BoxPath); // Note: this may invoke close if nothing is found
+			pBoxEx->m_pRecoveryWnd->AddFile(EffectiveFilePath, BoxPath); // Note: this may invoke close if nothing is found
 			if (pBoxEx->m_pRecoveryWnd) { // if it isn't closed, show it
 				pBoxEx->m_pRecoveryWnd->setModal(true);
 				CSandMan::SafeShow(pBoxEx->m_pRecoveryWnd);
@@ -34,7 +41,7 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 			//		});
 			//}
 
-			pBoxEx->m_pRecoveryWnd->AddFile(FilePath, BoxPath);
+			pBoxEx->m_pRecoveryWnd->AddFile(EffectiveFilePath, BoxPath);
 		}
 
 	}

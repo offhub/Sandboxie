@@ -562,7 +562,19 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 {
 	if (m_bImmediate)
 		ui.chkShowAll->setTristate(true);
-	m_NewFiles.insert(FilePath);
+
+	// Resolve the real (host-visible) path from BoxPath so it matches what
+	// FindFiles produces via GetRealPath. The raw FilePath may arrive in NT
+	// form (e.g. \Device\LanmanRedirector\...) while FindFiles yields UNC
+	// form (\\server\share\...), causing m_NewFiles.contains() to fail and
+	// the immediate-recovery window to close immediately.
+	QString RealFilePath;
+	if (!BoxPath.isEmpty())
+		RealFilePath = theAPI->GetRealPath(m_pBox.data(), BoxPath);
+	if (RealFilePath.isEmpty())
+		RealFilePath = FilePath;
+
+	m_NewFiles.insert(RealFilePath);
 
 	if (m_FileMap.isEmpty()) {
 		const bool hadSignalsBlocked = ui.chkShowAll->blockSignals(true);
