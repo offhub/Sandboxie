@@ -17,6 +17,18 @@
 
 namespace {
 
+// Device prefix constants -- keep in sync with file_recovery.c globals:
+//   File_Redirector        L"\\Device\\LanmanRedirector\\"
+//   File_MupRedir          L"\\Device\\Mup\\;LanmanRedirector\\"
+//   File_DfsClientRedir    L"\\Device\\Mup\\DfsClient\\"
+//   File_HgfsRedir         L"\\Device\\Mup\\;hgfs\\"
+//   File_Mup               L"\\Device\\Mup\\"
+static const QString kRedirector     = QStringLiteral("\\Device\\LanmanRedirector\\");
+static const QString kMupSemiRedir   = QStringLiteral("\\Device\\Mup\\;LanmanRedirector\\");
+static const QString kDfsClientRedir = QStringLiteral("\\Device\\Mup\\DfsClient\\");
+static const QString kHgfsRedir      = QStringLiteral("\\Device\\Mup\\;hgfs\\");
+static const QString kMup            = QStringLiteral("\\Device\\Mup\\");
+
 bool IsPathSeparator(QChar ch)
 {
 	return ch == '\\' || ch == '/';
@@ -75,16 +87,16 @@ int RelativeMatchStart(const QString& path)
 		return SkipPathComponents(path, 8, 2);
 
 	int start = -1;
-	if (path.startsWith("\\Device\\LanmanRedirector\\", Qt::CaseInsensitive))
-		start = 25;
-	else if (path.startsWith("\\Device\\Mup\\;LanmanRedirector\\", Qt::CaseInsensitive))
-		start = 30;
-	else if (path.startsWith("\\Device\\Mup\\DfsClient\\", Qt::CaseInsensitive))
-		start = 22;
-	else if (path.startsWith("\\Device\\Mup\\;hgfs\\", Qt::CaseInsensitive))
-		return SkipPathComponents(path, 18, 1);
-	else if (path.startsWith("\\Device\\Mup\\", Qt::CaseInsensitive))
-		start = 12;
+	if (path.startsWith(kRedirector, Qt::CaseInsensitive))
+		start = kRedirector.length();
+	else if (path.startsWith(kMupSemiRedir, Qt::CaseInsensitive))
+		start = kMupSemiRedir.length();
+	else if (path.startsWith(kDfsClientRedir, Qt::CaseInsensitive))
+		start = kDfsClientRedir.length();
+	else if (path.startsWith(kHgfsRedir, Qt::CaseInsensitive))
+		return SkipPathComponents(path, kHgfsRedir.length(), 1);
+	else if (path.startsWith(kMup, Qt::CaseInsensitive))
+		start = kMup.length();
 	else if (path.startsWith('\\'))
 		return SkipPathComponents(path, 1, 2);
 	else
@@ -124,9 +136,8 @@ QString GetDosPatternAlias(const QString& pattern, QString* ntPattern)
 	else if (dosPattern.startsWith(dosDevicePrefix, Qt::CaseInsensitive))
 		dosPattern.remove(0, dosDevicePrefix.length());
 
-	const QString redirectorPrefix = "\\Device\\LanmanRedirector\\";
-	if (dosPattern.startsWith(redirectorPrefix, Qt::CaseInsensitive)) {
-		QString uncPath = dosPattern.mid(redirectorPrefix.length());
+	if (dosPattern.startsWith(kRedirector, Qt::CaseInsensitive)) {
+		QString uncPath = dosPattern.mid(kRedirector.length());
 		while (uncPath.startsWith(';')) {
 			const int separator = uncPath.indexOf('\\');
 			if (separator == -1)
@@ -772,8 +783,9 @@ bool CRecoveryWindow::MatchIgnorePatterns(
 				diskPath, relative, scratch) ||
 			IgnorePatternMatch(pattern.Pattern, pattern.HasWildcard,
 				ntPath, relative, scratch) ||
-			IgnorePatternMatch(pattern.NtPattern, pattern.HasWildcard,
-				ntPath, relative, scratch))
+			(!pattern.NtPattern.isEmpty() && IgnorePatternMatch(
+				pattern.NtPattern, pattern.HasWildcard,
+				ntPath, relative, scratch)))
 			return true;
 
 		if (pattern.FullPath) {
