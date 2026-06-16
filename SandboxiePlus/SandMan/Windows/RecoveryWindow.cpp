@@ -1186,7 +1186,8 @@ void CRecoveryWindow::OnCount(quint32 fileCount, quint32 folderCount, quint64 to
 
 void CRecoveryWindow::OnCloseUntil()
 {
-	m_pBox.objectCast<CSandBoxPlus>()->SetSuspendRecovery();
+	if (m_pBox->GetActiveProcessCount() > 0)
+		m_pBox.objectCast<CSandBoxPlus>()->SetSuspendRecovery();
 	close();
 }
 

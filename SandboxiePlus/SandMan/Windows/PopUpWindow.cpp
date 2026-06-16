@@ -5,6 +5,7 @@
 #include "../MiscHelpers/Common/Common.h"
 #include "../MiscHelpers/Common/Settings.h"
 #include "../SbiePlusAPI.h"
+#include "RecoveryWindow.h"
 
 bool CPopUpWindow__DarkMode = false;
 
@@ -383,6 +384,9 @@ void CPopUpWindow::SendPromptResult(CPopUpPrompt* pEntry, int retval)
 
 void CPopUpWindow::AddFileToRecover(const QString& FilePath, QString BoxPath, const CSandBoxPtr& pBox, quint32 ProcessId)
 {
+	if (CRecoveryWindow::IsFileIgnored(pBox, FilePath, BoxPath))
+		return;
+
 	CBoxedProcessPtr pProcess = theAPI->GetProcessById(ProcessId);
 
 	QString Message = tr("%1 is eligible for quick recovery from %2.\nThe file was written by: %3")
