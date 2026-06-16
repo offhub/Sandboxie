@@ -74,10 +74,11 @@ protected:
 	void		closeEvent(QCloseEvent *e);
 
 	int			FindFiles(const QString& Folder, int* pUnfilteredCount = NULL);
-	int			FindBoxFiles(const QString& Folder, int* pUnfilteredCount = NULL);
+	int			FindBoxFiles(const QString& Folder, int* pUnfilteredCount = NULL, bool bWildcardOnly = false);
+	int			FindWildcardRecoverFiles(int* pUnfilteredCount = NULL);
 	QPair<int, quint64> FindFiles(const QString& BoxedFolder, const QString& RealFolder,
 		const QString& NtFolder, const QString& Name, const QString& ParentID = QString(),
-		int* pUnfilteredCount = NULL);
+		int* pUnfilteredCount = NULL, bool bWildcardOnly = false);
 
 	struct SRecItem {
 		QString FullPath;
@@ -92,9 +93,11 @@ protected:
 
 	QMap<QVariant, QVariantMap> m_FileMap;
 	QSet<QString> m_NewFiles;
+	QMap<QString, QString> m_NewFileBoxPaths;
 
 	QStringList m_RecoveryFolders;
 	QMap<QString, QString> m_RecoveryNtFolders;
+	QStringList m_WildcardRecoverFolders;
 
 	CRecoveryCounter* m_pCounter;
 
@@ -127,6 +130,8 @@ protected:
 	void BuildIgnorePatterns();
 	void UpdateShowIgnoredState();
 	bool ShouldFilterIgnoredFiles() const;
+	bool IsInWildcardRecoverFolders(const QString& diskPath, const QString& ntPath,
+		const QString& boxedPath);
 	bool IsExcludedByIgnorePatterns(const QString& diskPath, const QString& ntPath,
 		const QString& boxedPath);
 

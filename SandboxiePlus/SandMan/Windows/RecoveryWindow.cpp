@@ -56,6 +56,32 @@ QString NormalizePath(QString path)
 	return path;
 }
 
+QString PathFileName(QString path)
+{
+	path = NormalizePath(path);
+	while (path.endsWith('\\') || path.endsWith('/'))
+		path.chop(1);
+
+	const int separator = path.lastIndexOf('\\');
+	return separator >= 0 ? path.mid(separator + 1) : path;
+}
+
+QString PathParent(QString path)
+{
+	path = NormalizePath(path);
+	while (path.length() > 1 && path.endsWith('\\'))
+		path.chop(1);
+
+	const int separator = path.lastIndexOf('\\');
+	if (separator < 0)
+		return QString();
+	if (separator == 0)
+		return path.left(1);
+	if (separator == 2 && path.length() > 1 && path.at(1) == ':')
+		return path.left(3);
+	return path.left(separator);
+}
+
 int SkipPathComponents(const QString& path, int start, int count)
 {
 	int pos = start;
@@ -239,6 +265,26 @@ bool IgnorePatternMatch(const QString& pattern, bool hasWildcard,
 		: LiteralIgnoreMatch(pattern, text);
 }
 
+bool RecoverFolderPatternMatch(const QString& pattern, const QString& text,
+	QVector<quint8>& rows)
+{
+	if (pattern.isEmpty() || text.isEmpty())
+		return false;
+
+	const bool relative = !IsFullPathPattern(pattern);
+	if (WildcardMatchWhole(pattern, text, relative, rows))
+		return true;
+
+	const int matchStart = relative ? RelativeMatchStart(text) : 0;
+	for (int end = text.length() - 1; end > matchStart; --end) {
+		if (IsPathSeparator(text.at(end)) &&
+			WildcardMatchWhole(pattern, text.left(end), relative, rows))
+			return true;
+	}
+
+	return false;
+}
+
 }
 
 bool CRecoveryWindow::IsFileIgnored(const CSandBoxPtr& pBox, const QString& diskPath, const QString& boxedPath)
@@ -380,6 +426,12 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 
 	foreach(const QString& NtFolder, m_pBox->GetTextList("RecoverFolder", true, true, true))
 	{
+		// Wildcard entries are not directory scan roots.
+		if (NtFolder.contains('*') || NtFolder.contains('?')) {
+			m_WildcardRecoverFolders.append(NormalizeIgnorePattern(NtFolder));
+			continue;
+		}
+
 		QString RecFolder = theAPI->ResolveAbsolutePath(NtFolder);
 
 		bool bOk;
@@ -554,6 +606,8 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 		RealFilePath = FilePath;
 
 	m_NewFiles.insert(RealFilePath);
+	if (!BoxPath.isEmpty())
+		m_NewFileBoxPaths.insert(RealFilePath, BoxPath);
 
 	if (m_FileMap.isEmpty()) {
 		const bool hadSignalsBlocked = ui.chkShowAll->blockSignals(true);
@@ -575,6 +629,42 @@ void CRecoveryWindow::AddFile(const QString& FilePath, const QString& BoxPath)
 		m_bReloadPending = true;
 		QTimer::singleShot(500, this, SLOT(FindFiles()));
 	}
+}
+
+static bool AddFileToModel(
+	QMap<QVariant, QVariantMap>& fileMap, QFileIconProvider& iconProvider,
+	const QString& diskPath, const QString& boxPath)
+{
+	QFileInfo boxInfo(boxPath);
+	if (!boxInfo.exists())
+		return false;
+
+	const QString parentPath = PathParent(diskPath);
+	const QString parentBoxPath = PathParent(boxPath);
+	if (!parentPath.isEmpty() && !fileMap.contains(parentPath)) {
+		QVariantMap RecFolder;
+		RecFolder["ID"] = parentPath;
+		RecFolder["ParentID"] = QString();
+		RecFolder["FileName"] = parentPath;
+		RecFolder["FileSize"] = FormatSize(0);
+		RecFolder["DiskPath"] = parentPath;
+		RecFolder["BoxPath"] = parentBoxPath;
+		RecFolder["Icon"] = iconProvider.icon(QFileIconProvider::Folder);
+		RecFolder["IsDir"] = true;
+		fileMap.insert(parentPath, RecFolder);
+	}
+
+	QVariantMap RecFile;
+	RecFile["ID"] = diskPath;
+	RecFile["ParentID"] = parentPath;
+	RecFile["FileName"] = PathFileName(diskPath);
+	RecFile["FileSize"] = FormatSize(boxInfo.size());
+	RecFile["DiskPath"] = diskPath;
+	RecFile["BoxPath"] = boxPath;
+	RecFile["Icon"] = iconProvider.icon(boxInfo);
+	RecFile["IsDir"] = false;
+	fileMap.insert(diskPath, RecFile);
+	return true;
 }
 
 int CRecoveryWindow::FindFiles()
@@ -620,6 +710,24 @@ int CRecoveryWindow::FindFiles()
 	{
 		foreach(const QString & Folder, m_RecoveryFolders)
 			Count += FindFiles(Folder, &UnfilteredCount);
+	}
+	if (!m_WildcardRecoverFolders.isEmpty() &&
+		ui.chkShowAll->checkState() != Qt::Checked) {
+		if (m_bImmediate &&
+			ui.chkShowAll->checkState() == Qt::PartiallyChecked) {
+			foreach (const QString& path, m_NewFiles) {
+				if (m_FileMap.contains(path))
+					continue;
+				const QString boxPath = m_NewFileBoxPaths.value(path);
+				if (!boxPath.isEmpty() &&
+					AddFileToModel(m_FileMap, m_IconProvider, path, boxPath)) {
+					++Count;
+					++UnfilteredCount;
+				}
+			}
+		}
+		else
+			Count += FindWildcardRecoverFiles(&UnfilteredCount);
 	}
 	m_UnfilteredFileCount = UnfilteredCount;
 
@@ -711,6 +819,12 @@ void CRecoveryWindow::UpdateShowIgnoredState()
 		(ui.chkShowAll->checkState() == Qt::Unchecked) &&
 		(m_IgnoredFileCount > 0 || ui.chkShowIgnored->isChecked());
 	ui.chkShowIgnored->setEnabled(enableShowIgnored);
+
+	if (enableShowIgnored && m_IgnoredFileCount > 0)
+		ui.chkShowIgnored->setToolTip(
+			tr("%1 file(s) hidden by AutoRecoverIgnore").arg(m_IgnoredFileCount));
+	else
+		ui.chkShowIgnored->setToolTip(QString());
 }
 
 bool CRecoveryWindow::ShouldFilterIgnoredFiles() const
@@ -722,6 +836,33 @@ bool CRecoveryWindow::ShouldFilterIgnoredFiles() const
 	if (ui.chkShowIgnored->isChecked())
 		return false;
 	return true;
+}
+
+bool CRecoveryWindow::IsInWildcardRecoverFolders(const QString& diskPath,
+	const QString& ntPath, const QString& boxedPath)
+{
+	QVector<quint8> scratch;
+
+	foreach (const QString& pattern, m_WildcardRecoverFolders) {
+		if (RecoverFolderPatternMatch(pattern, diskPath, scratch) ||
+			RecoverFolderPatternMatch(pattern, ntPath, scratch))
+			return true;
+
+		QString ntPattern;
+		const QString dosPattern = GetDosPatternAlias(pattern, &ntPattern);
+		if ((!ntPattern.isEmpty() &&
+				RecoverFolderPatternMatch(ntPattern, ntPath, scratch)) ||
+			(!dosPattern.isEmpty() &&
+				RecoverFolderPatternMatch(dosPattern, diskPath, scratch)))
+			return true;
+
+		const QString boxedSource = dosPattern.isEmpty() ? pattern : dosPattern;
+		const QString boxedPattern = theAPI->GetBoxedPath(m_pBox.data(), boxedSource);
+		if (RecoverFolderPatternMatch(boxedPattern, boxedPath, scratch))
+			return true;
+	}
+
+	return false;
 }
 
 void CRecoveryWindow::BuildIgnorePatterns()
@@ -810,19 +951,45 @@ int CRecoveryWindow::FindFiles(const QString& Folder, int* pUnfilteredCount)
 		pUnfilteredCount).first;
 }
 
-int CRecoveryWindow::FindBoxFiles(const QString& Folder, int* pUnfilteredCount)
+int CRecoveryWindow::FindBoxFiles(const QString& Folder, int* pUnfilteredCount,
+	bool bWildcardOnly)
 {
 	QString RealFolder = theAPI->GetRealPath(m_pBox.data(), m_pBox->GetFileRoot() + Folder);
 	if (RealFolder.isEmpty())
 		return 0;
 	return FindFiles(m_pBox->GetFileRoot() + Folder, RealFolder,
 		ResolveNtCandidatePath(RealFolder), RealFolder, QString(),
-		pUnfilteredCount).first;
+		pUnfilteredCount, bWildcardOnly).first;
+}
+
+int CRecoveryWindow::FindWildcardRecoverFiles(int* pUnfilteredCount)
+{
+	int Count = 0;
+
+	QDir Dir(m_pBox->GetFileRoot() + "\\drive\\");
+	foreach(const QFileInfo & Info, Dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+		Count += FindBoxFiles("\\drive\\" + Info.fileName(), pUnfilteredCount, true);
+
+	if (m_pBox->GetBool("SeparateUserFolders", true, true)) {
+		Count += FindBoxFiles("\\user\\current", pUnfilteredCount, true);
+		Count += FindBoxFiles("\\user\\all", pUnfilteredCount, true);
+		Count += FindBoxFiles("\\user\\public", pUnfilteredCount, true);
+	}
+
+	QDir DirSvr(m_pBox->GetFileRoot() + "\\share\\");
+	foreach(const QFileInfo & InfoSrv, DirSvr.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+		QDir DirPub(m_pBox->GetFileRoot() + "\\share\\" + InfoSrv.fileName());
+		foreach(const QFileInfo & InfoPub, DirPub.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+			Count += FindBoxFiles("\\share\\" + InfoSrv.fileName() + "\\" +
+				InfoPub.fileName(), pUnfilteredCount, true);
+	}
+
+	return Count;
 }
 
 QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder,
 	const QString& RealFolder, const QString& NtFolder, const QString& Name,
-	const QString& ParentID, int* pUnfilteredCount)
+	const QString& ParentID, int* pUnfilteredCount, bool bWildcardOnly)
 {
 	int Count = 0;
 	quint64 Size = 0;
@@ -841,6 +1008,10 @@ QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder,
 			QString NtPath;
 			if (!NtFolder.isEmpty())
 				NtPath = NtFolder + Path.mid(BoxedFolder.length());
+
+			if (bWildcardOnly && (m_FileMap.contains(RealPath) ||
+					!IsInWildcardRecoverFolders(RealPath, NtPath, Path)))
+				continue;
 
 			if (pUnfilteredCount)
 				++*pUnfilteredCount;
@@ -876,7 +1047,7 @@ QPair<int, quint64>	CRecoveryWindow::FindFiles(const QString& BoxedFolder,
 			const QString NtPath = NtFolder.isEmpty()
 				? QString() : NtFolder + "\\" + Name;
 			auto CountSize = FindFiles(Path, RealFolder + "\\" + Name,
-				NtPath, Name, RealFolder, pUnfilteredCount);
+				NtPath, Name, RealFolder, pUnfilteredCount, bWildcardOnly);
 			Count += CountSize.first;
 			Size += CountSize.second;
 		}

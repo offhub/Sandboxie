@@ -5,16 +5,16 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 	if (pBox.isNull() || pBox.objectCast<CSandBoxPlus>()->IsRecoverySuspended() || IsDisableRecovery())
 		return;
 
+	QString EffectiveFilePath = FilePath;
+	if (!BoxPath.isEmpty()) {
+		QString RealPath = theAPI->GetRealPath(pBox.data(), BoxPath);
+		if (!RealPath.isEmpty())
+			EffectiveFilePath = RealPath;
+	}
+
 	if (theConf->GetBool("Options/InstantRecovery", true))
 	{
 		auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
-
-		QString EffectiveFilePath = FilePath;
-		if (!BoxPath.isEmpty()) {
-			QString RealPath = theAPI->GetRealPath(pBox.data(), BoxPath);
-			if (!RealPath.isEmpty())
-				EffectiveFilePath = RealPath;
-		}
 
 		if (!pBoxEx->m_pRecoveryWnd) {
 			if (CRecoveryWindow::IsFileIgnored(pBox, EffectiveFilePath, BoxPath))
@@ -46,7 +46,7 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 
 	}
 	else
-		m_pPopUpWindow->AddFileToRecover(FilePath, BoxPath, pBox, ProcessId);
+		m_pPopUpWindow->AddFileToRecover(EffectiveFilePath, BoxPath, pBox, ProcessId);
 }
 
 bool CSandMan::OpenRecovery(const CSandBoxPtr& pBox, bool& DeleteSnapshots, bool bCloseEmpty)
