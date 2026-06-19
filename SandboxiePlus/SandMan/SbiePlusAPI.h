@@ -90,6 +90,8 @@ public:
 
 	virtual SB_STATUS		ImBoxMount(const QString& Password = QString(), int iProtect = 0, bool bAutoUnmount = false) { BeginModifyingBox(); SB_STATUS Status = CSandBox::ImBoxMount(Password, iProtect, bAutoUnmount); ConnectEndSlot(Status); return Status; }
 	virtual SB_STATUS		ImBoxUnmount()						{ BeginModifyingBox(); SB_STATUS Status = CSandBox::ImBoxUnmount(); if(!Status.IsError()) m_Mount.clear(); ConnectEndSlot(Status); return Status; }
+	void					BeginExternalModification();
+	void					EndExternalModification();
 
 	virtual bool			IsEmpty() const;
 

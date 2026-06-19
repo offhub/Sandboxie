@@ -216,8 +216,10 @@ public slots:
 	void				OnCancelAsync();
 
 	void				OnBoxAdded(const CSandBoxPtr& pBox);
+	void				OnBoxRemoved(const CSandBoxPtr& pBox);
 	void				OnBoxOpened(const CSandBoxPtr& pBox);
 	void				OnBoxClosed(const CSandBoxPtr& pBox);
+	void				OnBoxMountChanged();
 	void				OnBoxCleaned(CSandBoxPlus* pBoxEx);
 
 	void				OnStartMenuChanged();
@@ -480,7 +482,20 @@ private:
 	bool				m_StartMenuUpdatePending;
 	quint64				m_LastCheckInternetMs;
 	bool				m_bHasInternet;
+
+	// Throttled timer cadence timestamps (staggered on construction)
+	quint64				m_LastReloadBoxesMs;
+	quint64				m_LastUpdateProcessesMs;
+	quint64				m_LastImBoxQueryMs;
+	quint64				m_LastForceProcessDisabledMs;
+	quint64				m_LastMonitoringStatusMs;
+	quint64				m_LastImageMountRefreshMs;
+	bool				m_bForceProcessDisabledCached;
+	bool				m_bMonitoringCached;
+	int					m_iTimerTickCounter;
+
 public:
+	bool				m_bBoxMenuDirty;        // true when tray/box menu needs rebuild
 	QMap<QString, QPair<QString, QIcon>> m_TrayIconCache; // boxName -> (configKey, icon)
 	bool				m_ThemeUpdatePending;
 	QString				m_DefaultStyle;

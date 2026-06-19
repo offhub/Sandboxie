@@ -542,6 +542,16 @@ void CSandBoxPlus::ConnectEndSlot(const SB_PROGRESS& Status)
 		EndModifyingBox();
 }
 
+void CSandBoxPlus::BeginExternalModification()
+{
+	BeginModifyingBox();
+}
+
+void CSandBoxPlus::EndExternalModification()
+{
+	EndModifyingBox();
+}
+
 void CSandBoxPlus::BeginModifyingBox()
 {
 	//

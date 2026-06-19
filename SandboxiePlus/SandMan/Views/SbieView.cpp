@@ -22,6 +22,9 @@
 #include "../Windows/RenameSandboxDialog.h"
 #include "../BoxTransfer.h"
 
+#include <QtConcurrent>
+#include <QScrollBar>
+
 #include "qt_windows.h"
 #include "qwindowdefs_win.h"
 #include <shellapi.h>
@@ -35,6 +38,7 @@ CSbieView::CSbieView(QWidget* parent) : CPanelView(parent)
 	m_HoldExpand = false;
 	m_MoveBatchPending = false;
 	m_MoveBatchChanged = false;
+	m_LastScrollMs = 0;
 
 	m_pSbieModel = new CSbieModel(this);
 	m_pSbieModel->SetTree(true);
@@ -65,6 +69,12 @@ CSbieView::CSbieView(QWidget* parent) : CPanelView(parent)
 		m_pSbieTree->restoreState(Columns);
 
 	m_pSbieTree->setModel(m_pSortProxy);
+	connect(m_pSbieTree->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) {
+		m_LastScrollMs = QDateTime::currentMSecsSinceEpoch();
+	});
+	connect(m_pSbieTree->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this](int) {
+		m_LastScrollMs = QDateTime::currentMSecsSinceEpoch();
+	});
 
 	bool bShowResColumns = theConf->GetBool("Options/ShowResourceColumns", true);
 	if (!bShowResColumns) {
@@ -157,6 +167,11 @@ CSbieView::CSbieView(QWidget* parent) : CPanelView(parent)
 CSbieView::~CSbieView()
 {
 	SaveState();
+}
+
+bool CSbieView::IsRecentlyScrolled(quint64 now, int graceMs) const
+{
+	return m_LastScrollMs != 0 && now - m_LastScrollMs <= (quint64)graceMs;
 }
 
 void CSbieView::SaveState()
@@ -1768,10 +1783,36 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 	}
 	else if (Action == m_pMenuUnmount)
 	{
+		// Unmount is the slowest user-triggered operation: TerminateAll
+		// kills every process in the box via the driver, then ImBoxUnmount
+		// detaches the volume. Offload to a background thread so the UI
+		// doesn't freeze; the SvcLock state machine serializes CallServer
+		// and the QWaitCondition makes background threads sleep politely.
+		QPointer<CSbieView> guard(this);
 		foreach(const CSandBoxPtr& pBox, SandBoxes) {
 			auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
-			pBoxEx->TerminateAll();
-			Results.append(pBox->ImBoxUnmount());
+			if (!pBoxEx)
+				continue;
+			pBoxEx->BeginExternalModification();
+			QtConcurrent::run([pBox, pBoxEx, guard]() {
+				SB_STATUS st = pBox->TerminateAll();
+				if (!st.IsError())
+					st = pBoxEx->CSandBox::ImBoxUnmount();
+
+				QMetaObject::invokeMethod(QCoreApplication::instance(), [pBoxEx, guard, st]() {
+					if (!guard) {
+						pBoxEx->EndExternalModification();
+						return;
+					}
+					if (!st.IsError())
+						pBoxEx->CSandBox::UpdateDetails();
+					pBoxEx->EndExternalModification();
+					if (st.IsError())
+						theGUI->CheckResults(QList<SB_STATUS>() << st, guard);
+					theGUI->m_bBoxMenuDirty = true;
+					guard->Refresh();
+				}, Qt::QueuedConnection);
+			});
 		}
 	}
 	else if (Action == m_pMenuRecover)

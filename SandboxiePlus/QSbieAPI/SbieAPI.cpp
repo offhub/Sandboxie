@@ -103,10 +103,13 @@ struct SSbieAPI
 
 	HMODULE SbieMsgDll;
 
-	mutable volatile LONG   SvcLock;
+	mutable LONG			SvcLock;
 	mutable MSG_HEADER*		SvcReq;
 	mutable CSbieAPI::SScopedVoid* SvcRpl;
 	mutable SB_STATUS		SvcStatus;
+
+	mutable QWaitCondition	SvcDoneCondition;   // signaled when helper finishes request
+	mutable QWaitCondition	SvcIdleCondition;   // signaled when SvcLock returns to IDLE
 };
 
 #define SVC_OP_STATE_IDLE	0
@@ -115,6 +118,12 @@ struct SSbieAPI
 #define SVC_OP_STATE_EXEC	3
 #define SVC_OP_STATE_DONE	4
 #define SVC_OP_STATE_EVAL	5
+
+// SvcLock is protected by m_ThreadMutex. CallServer owns
+// IDLE -> PREP -> START and EVAL -> IDLE. The helper thread owns
+// START -> EXEC -> DONE. START can be cancelled by CallServer before
+// the helper thread takes ownership. EXEC must complete in the helper
+// because it may still use the caller-owned request and reply storage.
 
 quint64 FILETIME2ms(quint64 fileTime)
 {
@@ -389,7 +398,13 @@ SB_STATUS CSbieAPI::Disconnect()
 	if (!IsConnected())
 		return SB_OK;
 
+	m_ThreadMutex.lock();
 	m_bTerminate = true;
+	m_ThreadWait.wakeAll();
+	m->SvcIdleCondition.wakeAll();
+	m->SvcDoneCondition.wakeAll();
+	m_ThreadMutex.unlock();
+
 	if (!wait(10 * 1000))
 		terminate();
 
@@ -713,15 +728,27 @@ void CSbieAPI::run()
 	if(m_bWithQueue)
 		CSbieAPI__QueueCreate(m, m->QueueName, &EventHandle);
 
-	while (!m_bTerminate)
+	for (;;)
 	{
 		int Done = 0;
 
-		if (InterlockedCompareExchange(&m->SvcLock, SVC_OP_STATE_EXEC, SVC_OP_STATE_START) == SVC_OP_STATE_START)
+		m_ThreadMutex.lock();
+		bool Terminate = m_bTerminate;
+		bool RunSvcRequest = (!Terminate && m->SvcLock == SVC_OP_STATE_START);
+		if (RunSvcRequest)
+			m->SvcLock = SVC_OP_STATE_EXEC;
+		m_ThreadMutex.unlock();
+		if (Terminate)
+			break;
+
+		if (RunSvcRequest)
 		{
 			m->SvcStatus = CSbieAPI__CallServer(m, m->SvcReq, m->SvcRpl);
 
-			InterlockedExchange(&m->SvcLock, SVC_OP_STATE_DONE);
+			m_ThreadMutex.lock();
+			m->SvcLock = SVC_OP_STATE_DONE;
+			m->SvcDoneCondition.wakeAll();  // wake the CallServer waiter
+			m_ThreadMutex.unlock();
 
 			Done++;
 		}
@@ -749,7 +776,8 @@ void CSbieAPI::run()
 				Idle++;
 
 			m_ThreadMutex.lock();
-			m_ThreadWait.wait(&m_ThreadMutex, 10 * Idle);
+			if (!m_bTerminate && m->SvcLock != SVC_OP_STATE_START)
+				m_ThreadWait.wait(&m_ThreadMutex, 10 * Idle);
 			m_ThreadMutex.unlock();
 		}
 	}
@@ -761,37 +789,67 @@ void CSbieAPI::run()
 SB_STATUS CSbieAPI::CallServer(void* req, SScopedVoid* prpl) const
 {
 	//
-	// Note: Once we open a port to the server from a threat the service will remember it we can't reconnect after disconnection
-	//			So for every new connection we need a new threat, we achieve this by letting our monitor threat issue all requests
+	// Note: Once a thread opens a port to the server, the service remembers it and we can't reconnect after disconnection.
+	//			So every new connection needs a new thread. We achieve this by letting our monitor thread issue all requests.
 	// 
-	//		 As of Sbie build 5.50.5 the SbieCvc properly handles reconnection attempts so this mechanism is no longer necessary
-	// 	     However for the queue mechanism we need the communication to be still handled by the helper thread
+	//		 As of Sbie build 5.50.5, SbieSvc properly handles reconnection attempts so this mechanism is no longer necessary.
+	// 	     However for the queue mechanism, the helper thread still has to handle the communication.
 	//
 
-	while (InterlockedCompareExchange(&m->SvcLock, SVC_OP_STATE_PREP, SVC_OP_STATE_IDLE) != SVC_OP_STATE_IDLE)
-		QThread::usleep(100);
+	// Acquire lock: sleep on condition instead of busy-polling
+	m_ThreadMutex.lock();
+	while (m->SvcLock != SVC_OP_STATE_IDLE) {
+		if (m_bTerminate) {
+			m_ThreadMutex.unlock();
+			return SB_ERR(STATUS_CANCELLED);
+		}
+		m->SvcIdleCondition.wait(&m_ThreadMutex);
+	}
+
+	if (m_bTerminate) {
+		m_ThreadMutex.unlock();
+		return SB_ERR(STATUS_CANCELLED);
+	}
+
+	m->SvcLock = SVC_OP_STATE_PREP;
 
 	m->SvcReq = (MSG_HEADER*)req;
 	m->SvcRpl = prpl;
 	m->SvcStatus = SB_OK;
 
-	InterlockedExchange(&m->SvcLock, SVC_OP_STATE_START);
+	m->SvcLock = SVC_OP_STATE_START;
 
-	// Wake threat imminetly
-	m_ThreadMutex.lock();
+	// Wake the helper thread immediately
 	m_ThreadWait.wakeAll();
 	m_ThreadMutex.unlock();
 
 	// worker: SVC_OP_STATE_START -> SVC_OP_STATE_EXEC -> SVC_OP_STATE_DONE
 
-	while (InterlockedCompareExchange(&m->SvcLock, SVC_OP_STATE_EVAL, SVC_OP_STATE_DONE) != SVC_OP_STATE_DONE)
-		QThread::usleep(100);
+	// Wait for helper to finish: sleep on condition instead of busy-polling.
+	// Once the helper takes START -> EXEC, it owns SvcReq/SvcRpl and must publish DONE.
+	// Cancellation is only safe while the request is still START.
+	m_ThreadMutex.lock();
+	while (m->SvcLock != SVC_OP_STATE_DONE) {
+		if (m_bTerminate && m->SvcLock == SVC_OP_STATE_START) {
+			m->SvcStatus = SB_ERR(STATUS_CANCELLED);
+			m->SvcLock = SVC_OP_STATE_DONE;
+			break;
+		}
+		m->SvcDoneCondition.wait(&m_ThreadMutex);
+	}
+	m->SvcLock = SVC_OP_STATE_EVAL;
+	m_ThreadMutex.unlock();
 
 	m->SvcReq = NULL;
 	m->SvcRpl = NULL;
 	SB_STATUS Status = m->SvcStatus;
 
-	InterlockedExchange(&m->SvcLock, SVC_OP_STATE_IDLE);
+	m_ThreadMutex.lock();
+	m->SvcLock = SVC_OP_STATE_IDLE;
+
+	// Wake the next caller waiting to acquire the lock
+	m->SvcIdleCondition.wakeAll();
+	m_ThreadMutex.unlock();
 
 	return Status;
 }

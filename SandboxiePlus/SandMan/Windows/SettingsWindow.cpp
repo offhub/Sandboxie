@@ -596,6 +596,7 @@ CSettingsWindow::CSettingsWindow(QWidget* parent)
 	connect(ui.chkColorIcons, SIGNAL(stateChanged(int)), this, SLOT(OnChangeGUI()));
 	connect(ui.chkOverlayIcons, SIGNAL(stateChanged(int)), this, SLOT(OnChangeGUI()));
 	connect(ui.chkHideCore, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
+	connect(ui.chkPauseRefreshOnInteraction, SIGNAL(stateChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.cmbGrouping, SIGNAL(currentIndexChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.cmbLaunchMonitor, SIGNAL(currentIndexChanged(int)), this, SLOT(OnOptChanged()));
 	connect(ui.cmbNonMainLaunchMonitor, SIGNAL(currentIndexChanged(int)), this, SLOT(OnOptChanged()));
@@ -1379,6 +1380,7 @@ void CSettingsWindow::LoadSettings()
 	ui.chkColorIcons->setChecked(theConf->GetBool("Options/ColorBoxIcons", false));
 	ui.chkOverlayIcons->setChecked(theConf->GetBool("Options/UseOverlayIcons", true));
 	ui.chkHideCore->setChecked(theConf->GetBool("Options/HideSbieProcesses", false));
+	ui.chkPauseRefreshOnInteraction->setChecked(theConf->GetBool("Options/PauseRefreshOnInteraction", true));
 	ui.cmbGrouping->setCurrentIndex(theConf->GetInt("Options/BoxGroupHandling", 0));
 	
 
@@ -1957,6 +1959,7 @@ void CSettingsWindow::SaveSettings()
 	theConf->SetValue("Options/ColorBoxIcons", ui.chkColorIcons->isChecked());
 	theConf->SetValue("Options/UseOverlayIcons", ui.chkOverlayIcons->isChecked());
 	theConf->SetValue("Options/HideSbieProcesses", ui.chkHideCore->isChecked());
+	theConf->SetValue("Options/PauseRefreshOnInteraction", ui.chkPauseRefreshOnInteraction->isChecked());
 	theConf->SetValue("Options/BoxGroupHandling", ui.cmbGrouping->currentIndex());
 
 	CIniHighlighter::ClearLanguageCache();

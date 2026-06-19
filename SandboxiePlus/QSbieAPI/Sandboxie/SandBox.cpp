@@ -130,11 +130,14 @@ CSandBox::~CSandBox()
 
 void CSandBox::UpdateDetails()
 {
+	QString oldMount = m_Mount;
+
 	if (GetBool("UseRamDisk") || GetBool("UseFileImage"))
 	{
 		auto res = m_pAPI->ImBoxQuery(m_RegPath);
 		if (res.IsError()) {
 			m_Mount.clear();
+			if (!oldMount.isEmpty()) emit MountStatusChanged();
 			return;
 		}
 		QVariantMap Info = res.GetValue();
@@ -142,6 +145,9 @@ void CSandBox::UpdateDetails()
 	}
 	else if(!m_Mount.isEmpty())
 		m_Mount.clear();
+
+	if (oldMount != m_Mount)
+		emit MountStatusChanged();
 }
 
 void CSandBox::SetBoxPaths(const QString& FilePath, const QString& RegPath, const QString& IpcPath)

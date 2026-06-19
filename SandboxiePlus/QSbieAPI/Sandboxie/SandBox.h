@@ -97,6 +97,9 @@ public:
 
 	class CSbieAPI*					Api() { return m_pAPI; }
 
+signals:
+	void						MountStatusChanged();
+
 protected:
 	friend class CBoxedProcess;
 	friend class CSbieAPI;

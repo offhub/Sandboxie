@@ -45,6 +45,7 @@ public:
 
 	virtual QTreeViewEx*		GetTree() { return m_pSbieTree; }
 	CSbieModel*					GetSbieModel() { return m_pSbieModel; }
+	bool						IsRecentlyScrolled(quint64 now, int graceMs) const;
 
 	virtual QList<CSandBoxPtr>	GetSelectedBoxes();
 	virtual QList<CBoxedProcessPtr>	GetSelectedProcesses();
@@ -256,6 +257,7 @@ private:
 	bool					m_MoveBatchChanged;
 	QStringList				m_MoveBatchFocusBoxes;
 	QStringList				m_MoveBatchFocusNames;
+	quint64					m_LastScrollMs;
 
 	QList<CSandBoxPtr>		m_CurSandBoxes;
 	QList<CBoxedProcessPtr>	m_CurProcesses;

@@ -496,12 +496,30 @@ CSandMan::CSandMan(QWidget *parent)
 	m_LastCheckInternetMs = 0;
 	m_bHasInternet = true;
 
+	// Throttled-timer cadence: stagger initial fire so heavy phases
+	// don't all land on the same tick boundary.
+	{
+		quint64 now = QDateTime::currentMSecsSinceEpoch();
+		m_LastReloadBoxesMs    = now;
+		m_LastUpdateProcessesMs = now  + 1000;   // +1 s
+		m_LastImBoxQueryMs     = now  + 2000;   // +2 s
+		m_LastForceProcessDisabledMs = 0;
+		m_LastMonitoringStatusMs = 0;
+		m_LastImageMountRefreshMs = now;
+	}
+	m_bForceProcessDisabledCached = false;
+	m_bMonitoringCached = false;
+	m_iTimerTickCounter = 0;
+
+	m_bBoxMenuDirty = true; // first open will build the menu
+
 	m_ImDiskReady = true;
 
 	theAPI = new CSbiePlusAPI(this);
 	connect(theAPI, SIGNAL(StatusChanged()), this, SLOT(OnStatusChanged()));
 
 	connect(theAPI, SIGNAL(BoxAdded(const CSandBoxPtr&)), this, SLOT(OnBoxAdded(const CSandBoxPtr&)));
+	connect(theAPI, SIGNAL(BoxRemoved(const CSandBoxPtr&)), this, SLOT(OnBoxRemoved(const CSandBoxPtr&)));
 	connect(theAPI, SIGNAL(BoxOpened(const CSandBoxPtr&)), this, SLOT(OnBoxOpened(const CSandBoxPtr&)));
 	connect(theAPI, SIGNAL(BoxClosed(const CSandBoxPtr&)), this, SLOT(OnBoxClosed(const CSandBoxPtr&)));
 	connect(theAPI, SIGNAL(BoxCleaned(CSandBoxPlus*)), this, SLOT(OnBoxCleaned(CSandBoxPlus*)));
@@ -2180,27 +2198,97 @@ void CSandMan::timerEvent(QTimerEvent* pEvent)
 	if (pEvent->timerId() != m_uTimerID)
 		return;
 
+	// Throttle constants (ms)
+	// Tune these to balance responsiveness vs CPU / IOCTL load.
+	// In minimized (tray-only) mode cadences are relaxed because the
+	// tree view is hidden; tray-icon freshness is preserved by the
+	// still-running (but throttled) UpdateProcesses.
+	const int kReloadVisibleMs   = 1000;   // visible: every  1 s
+	const int kReloadMinimizedMs = 5000;   // minimized: every  5 s
+	const int kProcVisibleMs     = 1000;   // visible: every  1 s
+	const int kProcMinimizedMs   = 2000;   // minimized: every  2 s
+	const int kImDiskVisibleMs   = 1000;   // visible: every  1 s
+	const int kImDiskMinimizedMs = 30000;  // minimized: every 30 s
+	const int kStatusVisibleMs   = 1000;   // visible: every  1 s
+	const int kStatusMinimizedMs = 5000;   // minimized: every  5 s
+	const int kMountVisibleMs    = 5000;   // visible: every  5 s
+	const int kMountMinimizedMs  = 30000;  // minimized: every 30 s
+	const int kInteractionGraceMs = 1000;
+
+	// Set to true to emit per-phase timing via qDebug().
+	// Ship with false, only enable locally for profiling.
+	const bool kTimerTrace = false;
+
+	bool bMinimized = !isVisible() || windowState().testFlag(Qt::WindowMinimized);
+	bool bMenuOpen   = QApplication::activePopupWidget() != nullptr;
+	quint64 now = QDateTime::currentMSecsSinceEpoch();
+	bool bPauseRefreshOnInteraction = theConf->GetBool("Options/PauseRefreshOnInteraction", true);
+	bool bInteractionRefreshPaused = bPauseRefreshOnInteraction
+		&& (bMenuOpen || (m_pBoxView && m_pBoxView->IsRecentlyScrolled(now, kInteractionGraceMs)));
+	++m_iTimerTickCounter;
+
 	bool bForceProcessDisabled = false;
 	bool bIconBusy = false;
-	bool bConnected = false;
 
 	if (theAPI->IsConnected())
 	{
-		SB_STATUS Status = theAPI->ReloadBoxes();
+		// ReloadBoxes (INI parse): throttled, skip during active interaction.
+		{
+			int intervalMs = bMinimized ? kReloadMinimizedMs : kReloadVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastReloadBoxesMs >= (quint64)intervalMs) {
+				m_LastReloadBoxesMs = now;
+				if (kTimerTrace) {
+					QElapsedTimer t; t.start();
+					theAPI->ReloadBoxes();
+					qDebug() << "timerEvent: ReloadBoxes took" << t.elapsed() << "ms"
+					         << (bMinimized ? "(minimized)" : "(visible)");
+				} else {
+					theAPI->ReloadBoxes();
+				}
+			}
+		}
 
-		UpdateProcesses();
+		// UpdateProcesses (driver IOCTL): throttled, skip during active interaction.
+		{
+			int intervalMs = bMinimized ? kProcMinimizedMs : kProcVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastUpdateProcessesMs >= (quint64)intervalMs) {
+				m_LastUpdateProcessesMs = now;
+				if (kTimerTrace) {
+					QElapsedTimer t; t.start();
+					UpdateProcesses();
+					qDebug() << "timerEvent: UpdateProcesses took" << t.elapsed() << "ms"
+					         << (bMinimized ? "(minimized)" : "(visible)");
+				} else {
+					UpdateProcesses();
+				}
+			}
+		}
 
-		// Refresh CPU/memory columns in the main view every 2 seconds
-		if (m_pBoxView && (++m_iRefreshTick % 2 == 0))
+		// Resource stats: skip when minimized, else every 2 s.
+		if (!bMinimized && !bInteractionRefreshPaused && m_pBoxView && (++m_iRefreshTick % 2 == 0))
 			m_pBoxView->GetSbieModel()->RefreshResourceStats();
 
-		bForceProcessDisabled = theAPI->AreForceProcessDisabled();
+		// Force-process / breakout state.
+		{
+			int intervalMs = bMinimized ? kStatusMinimizedMs : kStatusVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastForceProcessDisabledMs >= (quint64)intervalMs) {
+				m_LastForceProcessDisabledMs = now;
+				m_bForceProcessDisabledCached = theAPI->AreForceProcessDisabled();
+			}
+		}
+		bForceProcessDisabled = m_bForceProcessDisabledCached;
 		m_pDisableForce->setChecked(bForceProcessDisabled);
 		m_pDisableForce2->setChecked(bForceProcessDisabled);
 
+		// Trace monitoring status.
 		if (m_pTraceView)
 		{
-			bool bIsMonitoring = theAPI->IsMonitoring();
+			int intervalMs = bMinimized ? kStatusMinimizedMs : kStatusVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastMonitoringStatusMs >= (quint64)intervalMs) {
+				m_LastMonitoringStatusMs = now;
+				m_bMonitoringCached = theAPI->IsMonitoring();
+			}
+			bool bIsMonitoring = m_bMonitoringCached;
 			m_pEnableMonitoring->setChecked(bIsMonitoring);
 			int iTraceCount = theAPI->GetTraceCount();
 			if (!bIsMonitoring && iTraceCount > 0)
@@ -2210,6 +2298,7 @@ void CSandMan::timerEvent(QTimerEvent* pEvent)
 			m_pTraceView->SetEnabled(bIsMonitoring);
 		}
 
+		// Process count (in-memory from last UpdateProcesses)
 		QMap<quint32, CBoxedProcessPtr> Processes = theAPI->GetAllProcesses();
 		int ActiveProcesses = 0;
 		if (KeepTerminated()) {
@@ -2221,22 +2310,49 @@ void CSandMan::timerEvent(QTimerEvent* pEvent)
 		else
 			ActiveProcesses = Processes.count();
 
+		// ImDisk query (driver IOCTL): throttled, skip during active interaction.
+		{
+			int intervalMs = bMinimized ? kImDiskMinimizedMs : kImDiskVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastImBoxQueryMs >= (quint64)intervalMs) {
+				m_LastImBoxQueryMs = now;
+				SB_RESULT(QVariantMap) ImBox;
+				if (kTimerTrace) {
+					QElapsedTimer t; t.start();
+					ImBox = theAPI->ImBoxQuery();
+					qDebug() << "timerEvent: ImBoxQuery took" << t.elapsed() << "ms"
+					         << (bMinimized ? "(minimized)" : "(visible)");
+				} else {
+					ImBox = theAPI->ImBoxQuery();
+				}
 
-		SB_RESULT(QVariantMap) ImBox = theAPI->ImBoxQuery();
-		m_ImDiskReady = ImBox.GetStatus() != ERROR_DEVICE_NOT_AVAILABLE;
-		if (!ImBox.IsError()) {
-			if (!m_pRamDiskInfo) {
-				m_pRamDiskInfo = new QLabel();
-				statusBar()->addPermanentWidget(m_pRamDiskInfo);
+				m_ImDiskReady = ImBox.GetStatus() != ERROR_DEVICE_NOT_AVAILABLE;
+				if (!ImBox.IsError()) {
+					if (!m_pRamDiskInfo) {
+						m_pRamDiskInfo = new QLabel();
+						statusBar()->addPermanentWidget(m_pRamDiskInfo);
+					}
+					m_pRamDiskInfo->setText(FormatSize(ImBox.GetValue().value("UsedSize").toULongLong()) + "/" + FormatSize(ImBox.GetValue().value("DiskSize").toULongLong()));
+				}
+				else if (m_pRamDiskInfo) {
+					m_pRamDiskInfo->deleteLater();
+					m_pRamDiskInfo = NULL;
+				}
 			}
-			m_pRamDiskInfo->setText(FormatSize(ImBox.GetValue().value("UsedSize").toULongLong()) + "/" + FormatSize(ImBox.GetValue().value("DiskSize").toULongLong()));
-		}
-		else if (m_pRamDiskInfo) {
-			m_pRamDiskInfo->deleteLater();
-			m_pRamDiskInfo = NULL;
 		}
 
+		// Image mount status: low-frequency refresh for external start.exe changes.
+		{
+			int intervalMs = bMinimized ? kMountMinimizedMs : kMountVisibleMs;
+			if (!bInteractionRefreshPaused && now - m_LastImageMountRefreshMs >= (quint64)intervalMs) {
+				m_LastImageMountRefreshMs = now;
+				foreach(const CSandBoxPtr & pBox, theAPI->GetAllBoxes()) {
+					if (pBox->GetBool("UseFileImage") || pBox->GetBool("UseRamDisk"))
+						pBox->CSandBox::UpdateDetails();
+				}
+			}
+		}
 
+		// Busy state.
 		if (theAPI->IsBusy() || m_iDeletingContent > 0)
 			bIconBusy = true;
 
@@ -2271,7 +2387,11 @@ void CSandMan::timerEvent(QTimerEvent* pEvent)
 		}
 	}
 
-	if (!isVisible() || windowState().testFlag(Qt::WindowMinimized))
+	// UI-only work: skip when window is hidden / minimized
+	// Tray-icon updates above are NOT skipped, they consume the
+	// in-memory state already collected on this (or a recent) tick
+	// and must stay fresh regardless of window visibility.
+	if (bMinimized)
 		return;
 
 	//QUERY_USER_NOTIFICATION_STATE NState; // todo
@@ -2572,7 +2692,20 @@ void CSandMan::UpdateProcesses()
 
 void CSandMan::OnBoxAdded(const CSandBoxPtr& pBox)
 {
+	m_bBoxMenuDirty = true;
 	connect(pBox.data(), SIGNAL(StartMenuChanged()), this, SLOT(OnStartMenuChanged()));
+	connect(pBox.data(), SIGNAL(MountStatusChanged()), this, SLOT(OnBoxMountChanged()));
+}
+
+void CSandMan::OnBoxMountChanged()
+{
+	m_bBoxMenuDirty = true;
+}
+
+void CSandMan::OnBoxRemoved(const CSandBoxPtr& pBox)
+{
+	Q_UNUSED(pBox);
+	m_bBoxMenuDirty = true;
 }
 
 void CSandMan::EnumBoxLinks(QMap<QString, QMap<QString,SBoxLink> > &BoxLinks, const QString& Prefix, const QString& Folder, bool bWithSubDirs)
@@ -2746,11 +2879,15 @@ void CSandMan::OnStartMenuChanged()
 
 void CSandMan::OnBoxOpened(const CSandBoxPtr& pBox)
 {
+	Q_UNUSED(pBox);
+	m_bBoxMenuDirty = true;
 	CSupportDialog::CheckSupport(true);
 }
 
 void CSandMan::OnBoxClosed(const CSandBoxPtr& pBox)
 {
+	m_bBoxMenuDirty = true;
+
 	foreach(const QString & Value, pBox->GetTextList("OnBoxTerminate", true, false, true)) {
 		QString Value2 = pBox->Expand(Value);
 		CSbieProgressPtr pProgress = CSbieUtils::RunCommand(Value2, true);
@@ -3242,8 +3379,14 @@ void CSandMan::OnHotKey(size_t id)
 		break;
 
 	case HK_FORCE:
-		theAPI->DisableForceProcess(!theAPI->AreForceProcessDisabled());
+	{
+		bool Status = !theAPI->AreForceProcessDisabled();
+		if (!theAPI->DisableForceProcess(Status).IsError()) {
+			m_bForceProcessDisabledCached = Status;
+			m_LastForceProcessDisabledMs = QDateTime::currentMSecsSinceEpoch();
+		}
 		break;
+	}
 	}
 }
 
@@ -3784,13 +3927,20 @@ void CSandMan::OnDisableForce()
 		if (!bOK)
 			return;
 	}
-	theAPI->DisableForceProcess(Status, Seconds);
+	if (!theAPI->DisableForceProcess(Status, Seconds).IsError()) {
+		m_bForceProcessDisabledCached = Status;
+		m_LastForceProcessDisabledMs = QDateTime::currentMSecsSinceEpoch();
+	}
 }
 
 void CSandMan::OnDisableForce2()
 {
 	bool Status = m_pDisableForce2->isChecked();
-	theAPI->DisableForceProcess(Status);
+	if (!theAPI->DisableForceProcess(Status).IsError()) {
+		m_bForceProcessDisabledCached = Status;
+		m_LastForceProcessDisabledMs = QDateTime::currentMSecsSinceEpoch();
+	}
+}
 }
 
 void CSandMan::OnDisablePopUp()
@@ -4135,6 +4285,7 @@ void CSandMan::OnSettingsAction()
 
 void CSandMan::UpdateSettings(bool bRebuildUI)
 {
+	m_bBoxMenuDirty = true;
 	if(m_pTrayBoxes) m_pTrayBoxes->clear(); // force refresh
 
 	//GetBoxView()->UpdateRunMenu();
@@ -4353,6 +4504,8 @@ void CSandMan::OnReloadIni()
 
 void CSandMan::OnIniReloaded()
 {
+	m_bBoxMenuDirty = true;
+
 	OnLogSbieMessage(0, QStringList() << tr("Sandboxie config has been reloaded") << "" << "", 4);
 
 	m_pBoxView->ReloadUserConfig();
@@ -4374,19 +4527,26 @@ void CSandMan::OnMonitoring()
 {
 	if (m_pTraceView)
 	{
-		theAPI->EnableMonitor(m_pEnableMonitoring->isChecked());
+		bool Status = m_pEnableMonitoring->isChecked();
+		if (!theAPI->EnableMonitor(Status).IsError()) {
+			m_bMonitoringCached = Status;
+			m_LastMonitoringStatusMs = QDateTime::currentMSecsSinceEpoch();
+		}
 
-		if(m_pEnableMonitoring->isChecked() && !m_pToolBar->isVisible())
+		if(Status && !m_pToolBar->isVisible())
 			m_pLogTabs->show();
 
-		if(m_pEnableMonitoring->isChecked())
+		if(Status)
 			m_pKeepTerminated->setChecked(true);
 		else
 			m_pKeepTerminated->setChecked(theConf->GetBool("Options/KeepTerminated"));
 	}
 	else
 	{
-		theAPI->EnableMonitor(true);
+		if (!theAPI->EnableMonitor(true).IsError()) {
+			m_bMonitoringCached = true;
+			m_LastMonitoringStatusMs = QDateTime::currentMSecsSinceEpoch();
+		}
 
 		static CTraceWindow* pTraceWindow = NULL;
 		if (!pTraceWindow) {
