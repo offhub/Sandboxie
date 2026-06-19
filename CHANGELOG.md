@@ -5,10 +5,11 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
-## [1.18.0 / 5.73.0] - 2026-06-??
+## [1.17.10 / 5.72.10] - 2026-06-??
 
 ### Fixed
-- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5427](https://github.com/sandboxie-plus/Sandboxie/pull/5427)
+- fixed expected non-user SID profile and shell lookup noise by suppressing matching SBIE1406/SBIE1412 and derivative SBIE1204 FileRootPath messages [#5422](https://github.com/sandboxie-plus/Sandboxie/pull/5422)
+- improved SandMan responsiveness during Sbie message and notification floods by batching UI updates and reducing expensive per-row rendering
 
 
 
