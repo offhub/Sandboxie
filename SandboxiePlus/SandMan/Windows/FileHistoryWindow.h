@@ -44,6 +44,7 @@ protected:
 	void closeEvent(QCloseEvent* e);
 
 private:
+	void AddExcludeRule(const QString& Rule);
 	void ApplyFilter();
 	bool CanDeleteHistory();
 	QStringList GetSelectedEvidencePaths(int* PendingCount = NULL) const;

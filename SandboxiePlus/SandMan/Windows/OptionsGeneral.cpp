@@ -666,6 +666,8 @@ void COptionsWindow::LoadCopyRules()
 		ParseAndAddCopyRule(Value, eCopyNewer);
 	foreach(const QString & Value, m_pBox->GetTextList("KeepFileVersions", m_Template))
 		ParseAndAddCopyRule(Value, eKeepFileVersions);
+	foreach(const QString & Value, m_pBox->GetTextList("KeepFileVersionsExclude", m_Template))
+		ParseAndAddCopyRule(Value, eKeepFileVersionsExclude);
 
 	foreach(const QString & Value, m_pBox->GetTextList("CopyAlwaysDisabled", m_Template))
 		ParseAndAddCopyRule(Value, eCopyAlways, true);
@@ -677,6 +679,8 @@ void COptionsWindow::LoadCopyRules()
 		ParseAndAddCopyRule(Value, eCopyNewer, true);
 	foreach(const QString & Value, m_pBox->GetTextList("KeepFileVersionsDisabled", m_Template))
 		ParseAndAddCopyRule(Value, eKeepFileVersions, true);
+	foreach(const QString & Value, m_pBox->GetTextList("KeepFileVersionsExcludeDisabled", m_Template))
+		ParseAndAddCopyRule(Value, eKeepFileVersionsExclude, true);
 
 	LoadCopyRulesTmpl();
 
@@ -699,6 +703,8 @@ void COptionsWindow::LoadCopyRulesTmpl(bool bUpdate)
 				ParseAndAddCopyRule(Value, eCopyNewer, false, Template);
 			foreach(const QString & Value, m_pBox->GetTextListTmpl("KeepFileVersions", Template))
 				ParseAndAddCopyRule(Value, eKeepFileVersions, false, Template);
+			foreach(const QString & Value, m_pBox->GetTextListTmpl("KeepFileVersionsExclude", Template))
+				ParseAndAddCopyRule(Value, eKeepFileVersionsExclude, false, Template);
 		}
 	}
 	else if (bUpdate)
@@ -725,6 +731,7 @@ QString COptionsWindow::GetCopyActionStr(ECopyAction Action)
 	case eCopyEmpty:	return tr("Copy empty");
 	case eCopyNewer:	return tr("Copy newer");
 	case eKeepFileVersions:	return tr("Keep file versions");
+	case eKeepFileVersionsExclude:	return tr("Exclude from file versions");
 	}
 	return "";
 }
@@ -779,6 +786,8 @@ void COptionsWindow::SaveCopyRules()
 	QList<QString> CopyNewerDisabled;
 	QList<QString> KeepFileVersions;
 	QList<QString> KeepFileVersionsDisabled;
+	QList<QString> KeepFileVersionsExclude;
+	QList<QString> KeepFileVersionsExcludeDisabled;
 	for (int i = 0; i < ui.treeCopy->topLevelItemCount(); i++)
 	{
 		QTreeWidgetItem* pItem = ui.treeCopy->topLevelItem(i);
@@ -799,6 +808,7 @@ void COptionsWindow::SaveCopyRules()
 			case eCopyEmpty:	CopyEmpty.append(Pattern); break;
 			case eCopyNewer:	CopyNewer.append(Pattern); break;
 			case eKeepFileVersions: KeepFileVersions.append(Pattern); break;
+			case eKeepFileVersionsExclude: KeepFileVersionsExclude.append(Pattern); break;
 			}
 		}
 		else {
@@ -808,6 +818,7 @@ void COptionsWindow::SaveCopyRules()
 			case eCopyEmpty:	CopyEmptyDisabled.append(Pattern); break;
 			case eCopyNewer:	CopyNewerDisabled.append(Pattern); break;
 			case eKeepFileVersions: KeepFileVersionsDisabled.append(Pattern); break;
+			case eKeepFileVersionsExclude: KeepFileVersionsExcludeDisabled.append(Pattern); break;
 			}
 		}
 	}
@@ -821,6 +832,8 @@ void COptionsWindow::SaveCopyRules()
 	WriteTextList("CopyNewerDisabled", CopyNewerDisabled);
 	WriteTextList("KeepFileVersions", KeepFileVersions);
 	WriteTextList("KeepFileVersionsDisabled", KeepFileVersionsDisabled);
+	WriteTextList("KeepFileVersionsExclude", KeepFileVersionsExclude);
+	WriteTextList("KeepFileVersionsExcludeDisabled", KeepFileVersionsExcludeDisabled);
 
 	m_CopyRulesChanged = false;
 }
@@ -839,6 +852,7 @@ void COptionsWindow::OnCopyItemDoubleClicked(QTreeWidgetItem* pItem, int Column)
 	pMode->addItem(tr("Copy empty"), (int)eCopyEmpty);
 	pMode->addItem(tr("Copy newer"), (int)eCopyNewer);
 	pMode->addItem(tr("Keep file versions"), (int)eKeepFileVersions);
+	pMode->addItem(tr("Exclude from file versions"), (int)eKeepFileVersionsExclude);
 	pMode->setCurrentIndex(pMode->findData(pItem->data(0, Qt::UserRole)));
 	ui.treeCopy->setItemWidget(pItem, 0, pMode);
 

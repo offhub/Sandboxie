@@ -21,6 +21,7 @@ namespace
 		eDate,
 		eExtension,
 		eHash,
+		eProcessName,
 		eIsEmpty,
 		eIsReused,
 		eIsPending,
@@ -323,9 +324,10 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pLoadIndicator->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	m_pLoadIndicator->setText(tr("Refreshing..."));
 	m_pLoadIndicator->setMinimumWidth(m_pLoadIndicator->sizeHint().width());
-	m_pLoadIndicator->clear();
+	m_pLoadIndicator->setText(tr("Loading..."));
 	m_pRefreshButton = new QPushButton(
 		CSandMan::GetIcon("Refresh"), tr("Refresh"), this);
+	m_pRefreshButton->setEnabled(false);
 
 	ToolLayout->addWidget(SearchButton);
 	ToolLayout->addWidget(m_pFilterScope);
@@ -426,7 +428,7 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	}
 
 	m_pFinder->Open();
-	Reload();
+	QTimer::singleShot(100, this, SLOT(Reload()));
 }
 
 
@@ -593,7 +595,8 @@ void CFileHistoryWindow::Reload()
 				Item->setData(5, eSortValue, Size);
 			}
 
-			QString Process = UnescapeField(Fields.value("image"));
+			QString ProcessName = UnescapeField(Fields.value("image"));
+			QString Process = ProcessName;
 			QString Pid = Fields.value("pid");
 			if (!Pid.isEmpty())
 				Process += Process.isEmpty() ? tr("PID %1").arg(Pid) : tr(" (PID %1)").arg(Pid);
@@ -611,6 +614,7 @@ void CFileHistoryWindow::Reload()
 			Item->setData(0, eSize, Item->text(5));
 			Item->setData(0, eDate, Item->text(2));
 			Item->setData(0, eExtension, QFileInfo(LogicalPath).suffix());
+			Item->setData(0, eProcessName, ProcessName);
 			bool Reused = Fields.value("content_reused").compare(
 				"y", Qt::CaseInsensitive) == 0;
 			Item->setData(0, eIsReused, Reused);
@@ -843,24 +847,47 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		QStringList EvidencePaths =
 			GetSelectedEvidencePaths(&PendingCount);
 		bool HasEvidence = !EvidencePaths.isEmpty() || PendingCount != 0;
-		QAction* OpenEditor = Menu.addAction(
-			CSandMan::GetIcon("EditIni"),
-			EvidencePaths.count() > 1
-				? tr("Open Selected Evidence in External Editor (Unsandboxed)...")
-				: tr("Open Evidence in External Editor (Unsandboxed)"));
+		QMenu* OpenExternal = Menu.addMenu(
+			CSandMan::GetIcon("EditIni"), tr("Open in External Editor"));
+		QAction* OpenEditor = OpenExternal->addAction(tr("Unsandboxed"));
 		OpenEditor->setEnabled(HasEvidence);
 		connect(OpenEditor, SIGNAL(triggered(bool)),
 			this, SLOT(OpenEvidenceInEditor()));
 
-		QAction* OpenSandboxedEditor = Menu.addAction(
-			CSandMan::GetIcon("Run"),
-			EvidencePaths.count() > 1
-				? tr("Open Selected Evidence in External Editor (Sandboxed)...")
-				: tr("Open Evidence in External Editor (Sandboxed)"));
+		QAction* OpenSandboxedEditor = OpenExternal->addAction(
+			CSandMan::GetIcon("Run"), tr("Sandboxed"));
 		OpenSandboxedEditor->setEnabled(HasEvidence);
 		connect(OpenSandboxedEditor, SIGNAL(triggered(bool)),
 			this, SLOT(OpenEvidenceInSandboxedEditor()));
 	}
+
+	QString LogicalPath = Item->data(0, eLogicalPath).toString();
+	QString ProcessName = Item->data(0, eProcessName).toString();
+	QString FileName = QFileInfo(LogicalPath).fileName();
+	QMenu* ExcludeMenu = Menu.addMenu(
+		CSandMan::GetIcon("Close"), tr("Exclude for Next Run"));
+	QAction* ExcludeFullPath = ExcludeMenu->addAction(tr("Full Path"));
+	QAction* ExcludeFileName = ExcludeMenu->addAction(tr("File Name Only"));
+	QAction* ExcludeProcess = ExcludeMenu->addAction(tr("Process"));
+	bool HasLogicalPath = !LogicalPath.isEmpty()
+		&& !LogicalPath.startsWith(QLatin1Char('('));
+	ExcludeFullPath->setEnabled(HasLogicalPath);
+	ExcludeFileName->setEnabled(
+		HasLogicalPath && !FileName.isEmpty());
+	ExcludeProcess->setEnabled(!ProcessName.isEmpty());
+	connect(ExcludeFullPath, &QAction::triggered, this,
+		[this, LogicalPath]() { AddExcludeRule(LogicalPath); });
+	connect(ExcludeFileName, &QAction::triggered, this,
+		[this, FileName]() {
+			AddExcludeRule(QStringLiteral("*\\") + FileName);
+		});
+	connect(ExcludeProcess, &QAction::triggered, this,
+		[this, ProcessName]() {
+			QString ImageName = QFileInfo(ProcessName).fileName();
+			if (ImageName.isEmpty())
+				ImageName = ProcessName;
+			AddExcludeRule(ImageName + QStringLiteral(",*"));
+		});
 
 	QAction* OpenFolder = Menu.addAction(
 		CSandMan::GetIcon("Folder"), tr("Open Evidence Folder"));
@@ -878,6 +905,35 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 	connect(Delete, SIGNAL(triggered(bool)), this, SLOT(DeleteEvidence()));
 
 	Menu.exec(m_pTree->viewport()->mapToGlobal(Pos));
+}
+
+
+void CFileHistoryWindow::AddExcludeRule(const QString& Rule)
+{
+	if (Rule.isEmpty())
+		return;
+
+	foreach(const QString& Existing,
+			m_pBox->GetTextList(
+				"KeepFileVersionsExclude", true, false, true)) {
+		if (Existing.compare(Rule, Qt::CaseInsensitive) == 0) {
+			QMessageBox::information(this, "Sandboxie-Plus",
+				tr("This retained-file exclusion already exists:\n\n%1")
+					.arg(Rule));
+			return;
+		}
+	}
+
+	SB_STATUS Status =
+		m_pBox->AppendText("KeepFileVersionsExclude", Rule);
+	QList<SB_STATUS> Results;
+	Results.append(Status);
+	theGUI->CheckResults(Results, this);
+	if (!Status.IsError()) {
+		m_pStatus->setText(
+			tr("Added for the next sandbox run: KeepFileVersionsExclude=%1")
+				.arg(Rule));
+	}
 }
 
 
@@ -1022,7 +1078,8 @@ void CFileHistoryWindow::ConfigureLimits()
 		tr("Enter 0 for unlimited. Leave a field empty to inherit its "
 			"global or template value, or the built-in default. Changes "
 			"apply to newly started sandboxed processes. Migrated-file "
-			"capture retains the host-derived baseline."),
+			"capture retains the host-derived baseline. The rule tabs edit "
+			"box-local settings only; inherited rules remain active."),
 		&Dialog);
 	Info->setWordWrap(true);
 	MainLayout->addWidget(Info);
@@ -1037,6 +1094,19 @@ void CFileHistoryWindow::ConfigureLimits()
 	QLineEdit* MaxFileSizeKB = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxFileSizeKB"), &Dialog);
 	QComboBox* CaptureMigrated = new QComboBox(&Dialog);
+	QPlainTextEdit* IncludeRules = new QPlainTextEdit(&Dialog);
+	QPlainTextEdit* ExcludeRules = new QPlainTextEdit(&Dialog);
+
+	IncludeRules->setPlainText(
+		m_pBox->GetTextList("KeepFileVersions", false).join("\n"));
+	ExcludeRules->setPlainText(
+		m_pBox->GetTextList("KeepFileVersionsExclude", false).join("\n"));
+	IncludeRules->setPlaceholderText(
+		tr("One KeepFileVersions rule per line"));
+	ExcludeRules->setPlaceholderText(
+		tr("One KeepFileVersionsExclude rule per line"));
+	IncludeRules->setMinimumHeight(90);
+	ExcludeRules->setMinimumHeight(90);
 
 	MaxVersions->setPlaceholderText(tr("Inherited (currently %1)")
 		.arg(m_pBox->GetNum(
@@ -1075,6 +1145,14 @@ void CFileHistoryWindow::ConfigureLimits()
 	FormLayout->addRow(
 		tr("Capture migrated-file baseline:"), CaptureMigrated);
 	MainLayout->addLayout(FormLayout);
+
+	QTabWidget* RuleTabs = new QTabWidget(&Dialog);
+	RuleTabs->addTab(IncludeRules, tr("Tracked Files"));
+	RuleTabs->addTab(ExcludeRules, tr("Excluded Files"));
+	RuleTabs->setToolTip(
+		tr("Enter one [process,]path-pattern rule per line. Rules inherited "
+			"from global settings or templates are not listed here."));
+	MainLayout->addWidget(RuleTabs);
 
 	QList<QLineEdit*> LimitEdits;
 	LimitEdits << MaxVersions << MaxVersionsPerFile
@@ -1140,6 +1218,41 @@ void CFileHistoryWindow::ConfigureLimits()
 	Save("FileHistoryMaxVersionsPerFile", MaxVersionsPerFile);
 	Save("FileHistoryMaxSizeTotalKB", MaxSizeKB);
 	Save("FileHistoryMaxFileSizeKB", MaxFileSizeKB);
+	auto ReadRules = [](QPlainTextEdit* Edit) {
+		QStringList Rules;
+		foreach(const QString& Line,
+				Edit->toPlainText().split(QLatin1Char('\n'))) {
+			QString Rule = Line.trimmed();
+			if (Rule.isEmpty())
+				continue;
+			bool Duplicate = false;
+			foreach(const QString& Existing, Rules) {
+				if (Existing.compare(Rule, Qt::CaseInsensitive) == 0) {
+					Duplicate = true;
+					break;
+				}
+			}
+			if (!Duplicate)
+				Rules.append(Rule);
+		}
+		return Rules;
+	};
+	auto SaveRules = [this, &Results](
+			const QString& Setting, const QStringList& NewRules) {
+		QStringList OldRules = m_pBox->GetTextList(Setting, false);
+		QStringList AddedRules = NewRules;
+		foreach(const QString& OldRule, OldRules) {
+			int Index = AddedRules.indexOf(OldRule);
+			if (Index >= 0)
+				AddedRules.removeAt(Index);
+			else
+				Results.append(m_pBox->DelValue(Setting, OldRule));
+		}
+		foreach(const QString& AddedRule, AddedRules)
+			Results.append(m_pBox->AppendText(Setting, AddedRule));
+	};
+	SaveRules("KeepFileVersions", ReadRules(IncludeRules));
+	SaveRules("KeepFileVersionsExclude", ReadRules(ExcludeRules));
 	int CaptureMigratedState = CaptureMigrated->currentData().toInt();
 	QString NewCaptureMigratedValue = CaptureMigratedState < 0
 		? QString()
