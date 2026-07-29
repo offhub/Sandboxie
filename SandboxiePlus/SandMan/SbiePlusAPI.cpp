@@ -134,11 +134,15 @@ SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QStri
 {
 	SNtObject src_dir(L"\\??\\" + SourcePath.toStdWString());
 	SNtObject dest_dir(L"\\??\\" + DestinationPath.toStdWString());
-	NTSTATUS status = NtIo_CopyFolder(&src_dir.attr, &dest_dir.attr, [](const WCHAR* info, void* param) {
+	NTSTATUS status = NtIo_CopyFolderEx(&src_dir.attr, &dest_dir.attr, [](const WCHAR* info, void* param) {
 		CSbieProgress* pProgress = (CSbieProgress*)param;
 		pProgress->ShowMessage(CSandBox::tr("Copying folder: %1").arg(QString::fromWCharArray(info)));
 		return !pProgress->IsCanceled();
-	}, pProgress.data());
+	}, pProgress.data(), [](const WCHAR* name, ULONG attributes, ULONG depth, void* param) {
+		Q_UNUSED(attributes);
+		Q_UNUSED(param);
+		return depth != 0 || _wcsicmp(name, L"FileHistory") != 0;
+	}, NULL);
 	if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_NOT_FOUND && status != STATUS_OBJECT_PATH_NOT_FOUND)
 		return SB_ERR((ESbieMsgCodes)SBX_FailedCopyDir, QVariantList() << SourcePath << DestinationPath, status);
 	return SB_OK;

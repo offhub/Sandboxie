@@ -29,6 +29,7 @@ HEADERS += ./stdafx.h \
     ./Helpers/IniHighlighter.h \
     ./Helpers/MiniDumpFilter.h \
     ./Windows/RecoveryWindow.h \
+    ./Windows/FileHistoryWindow.h \
     ./Windows/PopUpWindow.h \
     ./Windows/SnapshotsWindow.h \
     ./Windows/SettingsWindow.h \
@@ -92,6 +93,7 @@ SOURCES += ./main.cpp \
     ./Windows/EditorSettingsWindow.cpp \
     ./Windows/PopUpWindow.cpp \
     ./Windows/RecoveryWindow.cpp \
+    ./Windows/FileHistoryWindow.cpp \
     ./Windows/SettingsWindow.cpp \
     ./Windows/SnapshotsWindow.cpp \
     ./Windows/SelectBoxWindow.cpp \

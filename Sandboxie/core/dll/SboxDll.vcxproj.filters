@@ -171,6 +171,9 @@
     <ClCompile Include="file_copy.c">
       <Filter>file</Filter>
     </ClCompile>
+    <ClCompile Include="file_history.c">
+      <Filter>file</Filter>
+    </ClCompile>
     <ClCompile Include="scm_msi.c">
       <Filter>scm</Filter>
     </ClCompile>

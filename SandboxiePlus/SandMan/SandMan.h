@@ -99,6 +99,7 @@ public:
 	void				OpenSettings(const QString& Tab = QString());
 
 	void				EditIni(const QString& IniPath, bool bPlus = false);
+	bool				OpenFileInEditor(const QString& FilePath, quintptr* pProcessHandle = NULL, bool bElevated = false);
 
 	void				UpdateDrives();
 	void				UpdateForceUSB();

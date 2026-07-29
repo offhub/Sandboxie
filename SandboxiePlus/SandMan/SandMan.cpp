@@ -4398,6 +4398,8 @@ void CSandMan::OnResetGUI()
 	theConf->DelValue("SelectBoxWindow/Window_Geometry");
 	theConf->DelValue("SnapshotsWindow/Window_Geometry");
 	theConf->DelValue("FileBrowserWindow/Window_Geometry");
+	foreach(const QString& Option, theConf->ListKeys("FileHistoryWindow"))
+		theConf->DelValue("FileHistoryWindow/" + Option);
 	theConf->DelValue("RecoveryLogWindow/Window_Geometry");
 	theConf->DelValue("NtObjectBrowserWindow/Window_Geometry");
 
@@ -4464,37 +4466,55 @@ void CSandMan::EditIni(const QString& IniPath, bool bPlus)
 		// todo: warn user about file not being protected
 	}
 
-	std::wstring Editor = theConf->GetString("Options/Editor", "notepad.exe").toStdWString();
-	std::wstring iniPath = L"\"" + IniPath.toStdWString() + L"\"";
+	quintptr ProcessHandle = 0;
+	if (!OpenFileInEditor(IniPath, &ProcessHandle, !bIsWritable))
+		return;
+	HANDLE hProcess = (HANDLE)ProcessHandle;
 
-	SHELLEXECUTEINFOW si = { 0 };
-	si.cbSize = sizeof(si);
-	si.fMask = SEE_MASK_NOCLOSEPROCESS;
-	si.hwnd = NULL;
-	si.lpVerb = bIsWritable ? NULL : L"runas"; // plus ini does not require admin privileges
-	si.lpFile = Editor.c_str();
-	si.lpParameters = iniPath.c_str();
-	si.lpDirectory = NULL;
-	si.nShow = SW_SHOW;
-	si.hInstApp = NULL;
-	ShellExecuteExW(&si);
-	//WaitForSingleObject(si.hProcess, INFINITE);
-	//CloseHandle(si.hProcess);
-
-	if (!bPlus && theConf->GetBool("Options/WatchIni", true))
+	if (!bPlus && theConf->GetBool("Options/WatchIni", true)) {
+		if (hProcess)
+			CloseHandle(hProcess);
 		return; // if the ini is watched don't double reload
+	}
+	if (!hProcess)
+		return;
 
-	QWinEventNotifier* processFinishedNotifier = new QWinEventNotifier(si.hProcess);
+	QWinEventNotifier* processFinishedNotifier = new QWinEventNotifier(hProcess);
 	processFinishedNotifier->setEnabled(true);
-	connect(processFinishedNotifier, &QWinEventNotifier::activated, this, [processFinishedNotifier, this, si, bPlus]() {
+	connect(processFinishedNotifier, &QWinEventNotifier::activated, this, [processFinishedNotifier, this, hProcess, bPlus]() {
 		processFinishedNotifier->setEnabled(false);
 		processFinishedNotifier->deleteLater();
 		if (bPlus)
 			theConf->Sync();
 		else
 			this->OnReloadIni();
-		CloseHandle(si.hProcess);
+		CloseHandle(hProcess);
 	});
+}
+
+bool CSandMan::OpenFileInEditor(
+	const QString& FilePath, quintptr* pProcessHandle, bool bElevated)
+{
+	std::wstring Editor = theConf->GetString("Options/Editor", "notepad.exe").toStdWString();
+	std::wstring Parameters = L"\"" + FilePath.toStdWString() + L"\"";
+
+	SHELLEXECUTEINFOW si = { 0 };
+	si.cbSize = sizeof(si);
+	si.fMask = SEE_MASK_NOCLOSEPROCESS;
+	si.hwnd = NULL;
+	si.lpVerb = bElevated ? L"runas" : NULL;
+	si.lpFile = Editor.c_str();
+	si.lpParameters = Parameters.c_str();
+	si.lpDirectory = NULL;
+	si.nShow = SW_SHOW;
+	si.hInstApp = NULL;
+	if (!ShellExecuteExW(&si))
+		return false;
+	if (pProcessHandle)
+		*pProcessHandle = (quintptr)si.hProcess;
+	else if (si.hProcess)
+		CloseHandle(si.hProcess);
+	return true;
 }
 
 void CSandMan::OnReloadIni()
