@@ -258,6 +258,7 @@ private slots:
 	void OnInternetTab()  { OnTab(ui.tabsInternet->currentWidget()); }
 
 	void OnGeneralChanged();
+	void OnDeleteV3AdvancedSettings();
 	void OnPSTChanged();
 	void OnActionChanged();
 	void OnSecurityMode();
@@ -657,12 +658,22 @@ private:
 	void WriteTextList(const QString& Setting, const QStringList& List);
 	void WriteTextSafe(const QString& Name, const QString& Value);
 	QString ReadTextSafe(const QString& Name, const QString& Default);
+	void UpdateDeleteV3AdvancedButton();
+	void SaveDeleteV3AdvancedSettings();
 
 	Ui::OptionsWindow ui;
 	QCheckBox* m_pUseIcon;
 	QToolButton* m_pPickIcon;
 	QSlider* m_pColorSlider;
 	QToolButton* m_pColorReset;
+	QMap<QString, int> m_DeleteV3BoxOverrideValues;
+	QSet<QString> m_DeleteV3BoxResetKeys;
+	QSet<QString> m_DeleteV3GlobalResetKeys;
+	QMap<QString, QString> m_DeleteV3BoxPresetValues;
+	QSet<QString> m_DeleteV3BoxPresetResetKeys;
+	QSet<QString> m_DeleteV3GlobalPresetResetKeys;
+	bool m_AutoCompactV3 = false;
+	bool m_AutoCompactV3Changed = false;
 
 	struct SDbgOpt {
 		QString Name;

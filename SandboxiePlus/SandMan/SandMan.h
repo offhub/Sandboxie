@@ -483,6 +483,8 @@ private:
 	bool				m_bIconBusy;
 	bool				m_bIconSun;
 	int					m_iDeletingContent;
+	QSet<QString>			m_DeletingBoxes;
+	QSet<QString>			m_AutoCompactingV3Boxes;
 
 	bool				m_bOnTop;
 

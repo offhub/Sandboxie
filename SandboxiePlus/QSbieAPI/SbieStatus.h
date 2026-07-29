@@ -49,6 +49,7 @@ enum ESbieMsgCodes
 	SB_PasswordBad,
 	SB_Canceled,
 	SB_DeleteNoMount,
+	SB_SnapNoSpace,
 
 	SB_OtherError,
 

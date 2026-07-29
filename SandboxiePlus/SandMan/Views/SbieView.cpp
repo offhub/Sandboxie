@@ -263,6 +263,7 @@ void CSbieView::CreateMenu()
 	
 	m_pMenuTools = m_pMenuBox->addMenu(CSandMan::GetIcon("Maintenance"), tr("Sandbox Tools"));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
+		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
 		m_pMenuDuplicate = m_pMenuTools->addAction(CSandMan::GetIcon("Duplicate"), tr("Duplicate Box Config"), this, SLOT(OnSandBoxAction()));
 		m_pMenuDuplicateEx = m_pMenuTools->addAction(CSandMan::GetIcon("Duplicate"), tr("Duplicate Box with Content"), this, SLOT(OnSandBoxAction()));
@@ -400,6 +401,7 @@ void CSbieView::CreateOldMenu()
 		m_pMenuSnapshots = m_pMenuTools->addAction(CSandMan::GetIcon("Snapshots"), tr("Snapshots Manager"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
+		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
 		m_pMenuDuplicate = m_pMenuTools->addAction(CSandMan::GetIcon("Duplicate"), tr("Duplicate Sandbox Config"), this, SLOT(OnSandBoxAction()));
 		m_pMenuDuplicateEx = m_pMenuTools->addAction(CSandMan::GetIcon("Duplicate"), tr("Duplicate Sandbox with Content"), this, SLOT(OnSandBoxAction()));
@@ -681,6 +683,14 @@ bool CSbieView::UpdateMenu(bool bAdvanced, const CSandBoxPtr &pBox, int iSandBox
 	QList<QAction*> MenuActions = m_pMenu->actions();
 
 	auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
+	bool bDeleteV3Enabled = false;
+	if (iSandBoxeCount == 1 && pBox) {
+		bool bUseFileDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV3", false);
+		bool bUseRegDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV3", false);
+		bDeleteV3Enabled = pBox->GetBool("UseFileDeleteV3", bUseFileDeleteV3Global)
+			|| pBox->GetBool("UseRegDeleteV3", bUseRegDeleteV3Global);
+	}
+	m_pMenuCompactDeleteV3->setVisible(bDeleteV3Enabled);
 
 	m_pStopAsync->setVisible(bBoxBusy);
 
@@ -718,6 +728,7 @@ bool CSbieView::UpdateMenu(bool bAdvanced, const CSandBoxPtr &pBox, int iSandBox
 
 	//m_pMenuTools->setEnabled(iSandBoxeCount == 1)
 	m_pMenuBrowseNT->setEnabled(iSandBoxeCount == 1);
+	m_pMenuCompactDeleteV3->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicate->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicateEx->setEnabled(iSandBoxeCount == 1);
 
@@ -1538,6 +1549,8 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 		connect(theGUI, SIGNAL(Closed()), pBrowserWindow, SLOT(close()));
 		CSandMan::SafeShow(pBrowserWindow);
 	}
+	else if (Action == m_pMenuCompactDeleteV3)
+		Results.append(theGUI->RunStart(SandBoxes.first()->GetName(), "compact_delete_v3"));
 	else if (Action == m_pMenuRefresh)
 	{
 		foreach(const CSandBoxPtr& pBox, SandBoxes)

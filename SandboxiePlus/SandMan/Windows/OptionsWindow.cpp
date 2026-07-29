@@ -1829,6 +1829,7 @@ void COptionsWindow::SaveIniSection()
 
 #include "OptionsAccess.cpp"
 #include "OptionsAdvanced.cpp"
+#include "OptionsDeleteV3.cpp"
 #include "OptionsForce.cpp"
 #include "OptionsGeneral.cpp"
 #include "OptionsGrouping.cpp"

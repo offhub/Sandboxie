@@ -17,6 +17,8 @@
  */
 #include "stdafx.h"
 #include <QtConcurrent>
+#include <QCoreApplication>
+#include <limits>
 #include "SandBox.h"
 #include "../SbieAPI.h"
 
@@ -412,6 +414,10 @@ QList<SBoxDataFile> CSandBox__BoxDataFiles = QList<SBoxDataFile>()
 	<< SBoxDataFile("RegHive", true, false) 
 	<< SBoxDataFile("RegPaths.dat", false, false) 
 	<< SBoxDataFile("FilePaths.dat", false, true)
+	<< SBoxDataFile("RegPaths_v3.dat", false, false)
+	<< SBoxDataFile("RegPaths_v3.sbie", false, false)
+	<< SBoxDataFile("FilePaths_v3.dat", false, true)
+	<< SBoxDataFile("FilePaths_v3.sbie", false, true)
 ;
 
 bool CSandBox::IsInitialized() const
@@ -445,6 +451,64 @@ SB_STATUS CSandBox__MoveFolder(const QString& SourcePath, const QString& ParentF
 	return SB_OK;
 }
 
+static bool CSandBox__GetSnapshotCopySize(const QString& SourceFolder, quint64& RequiredBytes, quint64& FileCount);
+static bool CSandBox__GetSnapshotRestoreSize(const QString& SnapshotFolder, quint64& RequiredBytes, quint64& FileCount);
+static bool CSandBox__HasMetadataSpace(const QString& TargetFolder, quint64 RequiredBytes, quint64 FileCount, quint64 ReclaimableBytes = 0);
+
+static bool CSandBox__RestoreDataFiles(const QString& SnapshotFolder, const QString& BoxFolder)
+{
+	struct SRestore {
+		QString Target;
+		QString Stage;
+		QString Backup;
+		bool HasSource = false;
+		bool Published = false;
+	};
+	QList<SRestore> Restores;
+	int index = 0;
+	foreach (const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) {
+		SRestore Restore;
+		Restore.Target = BoxFolder + "\\" + BoxDataFile.Name;
+		Restore.Stage = Restore.Target + ".restore-stage-" + QString::number(QCoreApplication::applicationPid()) + "-" + QString::number(index);
+		Restore.Backup = Restore.Target + ".restore-backup-" + QString::number(QCoreApplication::applicationPid()) + "-" + QString::number(index++);
+		Restore.HasSource = !SnapshotFolder.isEmpty() && !BoxDataFile.Recursive && QFile::exists(SnapshotFolder + "\\" + BoxDataFile.Name);
+		if (!SnapshotFolder.isEmpty() && BoxDataFile.Required && !Restore.HasSource)
+			goto rollback;
+		QFile::remove(Restore.Stage);
+		QFile::remove(Restore.Backup);
+		if (Restore.HasSource && !QFile::copy(SnapshotFolder + "\\" + BoxDataFile.Name, Restore.Stage)) {
+			QFile::remove(Restore.Stage);
+			goto rollback;
+		}
+		Restores.append(Restore);
+	}
+
+	for (SRestore& Restore : Restores) {
+		if (QFile::exists(Restore.Target) && !QFile::rename(Restore.Target, Restore.Backup))
+			goto rollback;
+	}
+	for (SRestore& Restore : Restores) {
+		if (Restore.HasSource) {
+			if (!QFile::rename(Restore.Stage, Restore.Target))
+				goto rollback;
+			Restore.Published = true;
+		}
+	}
+	for (const SRestore& Restore : qAsConst(Restores))
+		QFile::remove(Restore.Backup);
+	return true;
+
+rollback:
+	for (SRestore& Restore : Restores) {
+		if (Restore.Published && QFile::exists(Restore.Target))
+			QFile::remove(Restore.Target);
+		if (QFile::exists(Restore.Backup))
+			QFile::rename(Restore.Backup, Restore.Target);
+		QFile::remove(Restore.Stage);
+	}
+	return false;
+}
+
 SB_PROGRESS CSandBox::TakeSnapshot(const QString& Name)
 {
 	QSettings ini(m_FilePath + "\\Snapshots.ini", QSettings::IniFormat);
@@ -465,17 +529,49 @@ SB_PROGRESS CSandBox::TakeSnapshot(const QString& Name)
 			break;
 	}
 
-	if (!QDir().mkpath(m_FilePath + "\\snapshot-" + ID))
+	QString SnapshotFolder = m_FilePath + "\\snapshot-" + ID;
+	quint64 RequiredBytes = 0;
+	quint64 FileCount = 0;
+	if (!CSandBox__GetSnapshotCopySize(m_FilePath, RequiredBytes, FileCount)
+		|| !CSandBox__HasMetadataSpace(m_FilePath, RequiredBytes, FileCount + 1))
+		return SB_ERR(SB_SnapNoSpace, STATUS_DISK_FULL);
+
+	if (!QDir().mkpath(SnapshotFolder))
 		return SB_ERR(SB_SnapMkDirFail);
 
-	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) 
+	bool copied = true;
+	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
 	{
-		if (!QFile::copy(m_FilePath + "\\" + BoxDataFile.Name, m_FilePath + "\\snapshot-" + ID + "\\" + BoxDataFile.Name)) {
+		QString SourceFile = m_FilePath + "\\" + BoxDataFile.Name;
+		if (!QFile::exists(SourceFile)) {
 			if (BoxDataFile.Required)
-				return SB_ERR(SB_SnapCopyDatFail);
+				copied = false;
+		} else if (!QFile::copy(SourceFile, SnapshotFolder + "\\" + BoxDataFile.Name))
+			copied = false;
+		if (!copied)
+			break;
+	}
+	if (!copied) {
+		foreach(const SBoxDataFile& CleanupFile, CSandBox__BoxDataFiles)
+			QFile::remove(SnapshotFolder + "\\" + CleanupFile.Name);
+		QDir().rmdir(SnapshotFolder);
+		return SB_ERR(SB_SnapCopyDatFail);
+	}
+
+	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
+	{
+		if (!BoxDataFile.Recursive)
+			continue;
+		QString SourceFile = m_FilePath + "\\" + BoxDataFile.Name;
+		if (QFile::exists(SourceFile) && !QFile::remove(SourceFile)) {
+			foreach(const SBoxDataFile& RestoreFile, CSandBox__BoxDataFiles) {
+				if (RestoreFile.Recursive && !QFile::exists(m_FilePath + "\\" + RestoreFile.Name))
+					QFile::copy(SnapshotFolder + "\\" + RestoreFile.Name, m_FilePath + "\\" + RestoreFile.Name);
+				QFile::remove(SnapshotFolder + "\\" + RestoreFile.Name);
+			}
+			QDir().rmdir(SnapshotFolder);
+			return SB_ERR(SB_SnapDelDatFail);
 		}
-		else if (BoxDataFile.Recursive) // this one is incremental, hence delete it from the copy root, after it was copied to the snapshot
-			QFile::remove(m_FilePath + "\\" + BoxDataFile.Name);
 	}
 
 	ini.setValue("Snapshot_" + ID + "/Name", Name);
@@ -600,21 +696,255 @@ SB_STATUS CSandBox__CleanupSnapshot(const QString& Folder)
 	return SB_OK;
 }
 
-void CSandBox__MoveDataFilesSafe(const QString& SourceFolder, const QString& TargetFolder)
+bool CSandBox__MoveDataFilesSafe(const QString& SourceFolder, const QString& TargetFolder, bool IncludeRecursive = true)
 {
+	struct SMove {
+		QString Source;
+		QString Target;
+		QString Backup;
+		bool Moved = false;
+	};
+	QList<SMove> Moves;
+	int index = 0;
 	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
 	{
-		if (!QFile::exists(SourceFolder + "\\" + BoxDataFile.Name))
+		if (!IncludeRecursive && BoxDataFile.Recursive)
 			continue;
-
-		QFile::remove(TargetFolder + "\\" + BoxDataFile.Name);
-		QFile::rename(SourceFolder + "\\" + BoxDataFile.Name, TargetFolder + "\\" + BoxDataFile.Name);
+		QString Source = SourceFolder + "\\" + BoxDataFile.Name;
+		if (!QFile::exists(Source))
+			continue;
+		SMove Move;
+		Move.Source = Source;
+		Move.Target = TargetFolder + "\\" + BoxDataFile.Name;
+		Move.Backup = Move.Target + ".merge-backup-" + QString::number(QCoreApplication::applicationPid()) + "-" + QString::number(index++);
+		Moves.append(Move);
 	}
+
+	for (SMove& Move : Moves) {
+		QFile::remove(Move.Backup);
+		if (QFile::exists(Move.Target) && !QFile::rename(Move.Target, Move.Backup))
+			goto rollback;
+	}
+	for (SMove& Move : Moves) {
+		if (!QFile::rename(Move.Source, Move.Target))
+			goto rollback;
+		Move.Moved = true;
+	}
+	for (const SMove& Move : qAsConst(Moves))
+		QFile::remove(Move.Backup);
+	return true;
+
+rollback:
+	for (SMove& Move : Moves) {
+		if (Move.Moved && QFile::exists(Move.Target))
+			QFile::rename(Move.Target, Move.Source);
+		if (QFile::exists(Move.Backup))
+			QFile::rename(Move.Backup, Move.Target);
+	}
+	return false;
+}
+
+static bool CSandBox__AppendDataFile(const QString& SourceFile, const QString& TargetFile)
+{
+	QFile src(SourceFile);
+	if (!src.open(QFile::ReadOnly))
+		return false;
+
+	QFile dst(TargetFile);
+	if (!dst.open(QFile::ReadWrite)) {
+		src.close();
+		return false;
+	}
+
+	qint64 originalSize = dst.size();
+	bool success = dst.seek(originalSize);
+	while (success && !src.atEnd()) {
+		QByteArray data = src.read(1024 * 1024);
+		if (data.isEmpty() || dst.write(data) != data.size())
+			success = false;
+	}
+	if (success)
+		success = dst.flush();
+	if (!success) {
+		dst.resize(originalSize);
+		dst.flush();
+	}
+	dst.close();
+	src.close();
+
+	return success && QFile::remove(SourceFile);
+}
+
+static bool CSandBox__GetAppendDataSize(const QString& SourceFolder, quint64& RequiredBytes)
+{
+	RequiredBytes = 0;
+	const QStringList fileNames = QStringList()
+		<< "FilePaths.dat" << "FilePaths_v3.dat"
+		<< "FilePaths_v3.sbie" << "RegPaths_v3.sbie";
+	foreach (const QString& fileName, fileNames) {
+		QFileInfo fileInfo(SourceFolder + "\\" + fileName);
+		if (!fileInfo.exists())
+			continue;
+		quint64 size = (quint64)fileInfo.size();
+		if (RequiredBytes > (std::numeric_limits<quint64>::max)() - size)
+			return false;
+		RequiredBytes += size;
+	}
+	return true;
+}
+
+static bool CSandBox__GetSnapshotCopySize(const QString& SourceFolder, quint64& RequiredBytes, quint64& FileCount)
+{
+	RequiredBytes = 0;
+	FileCount = 0;
+	foreach (const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) {
+		QFileInfo fileInfo(SourceFolder + "\\" + BoxDataFile.Name);
+		if (!fileInfo.exists())
+			continue;
+		quint64 size = (quint64)fileInfo.size();
+		if (RequiredBytes > (std::numeric_limits<quint64>::max)() - size)
+			return false;
+		RequiredBytes += size;
+		++FileCount;
+	}
+	return true;
+}
+
+static bool CSandBox__GetSnapshotRestoreSize(const QString& SnapshotFolder, quint64& RequiredBytes, quint64& FileCount)
+{
+	RequiredBytes = 0;
+	FileCount = 0;
+	foreach (const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) {
+		if (BoxDataFile.Recursive)
+			continue;
+		QFileInfo fileInfo(SnapshotFolder + "\\" + BoxDataFile.Name);
+		if (!fileInfo.exists()) {
+			if (BoxDataFile.Required)
+				return false;
+			continue;
+		}
+		quint64 size = (quint64)fileInfo.size();
+		if (RequiredBytes > (std::numeric_limits<quint64>::max)() - size)
+			return false;
+		RequiredBytes += size;
+		++FileCount;
+	}
+	return true;
+}
+
+static bool CSandBox__HasMetadataSpace(const QString& TargetFolder, quint64 RequiredBytes, quint64 FileCount, quint64 ReclaimableBytes)
+{
+	ULARGE_INTEGER availableBytes;
+	if (!GetDiskFreeSpaceExW((LPCWSTR)TargetFolder.utf16(), &availableBytes, NULL, NULL))
+		return false;
+
+	DWORD sectorsPerCluster, bytesPerSector, numberOfFreeClusters, totalNumberOfClusters;
+	if (GetDiskFreeSpaceW((LPCWSTR)TargetFolder.utf16(), &sectorsPerCluster, &bytesPerSector,
+		&numberOfFreeClusters, &totalNumberOfClusters)) {
+		quint64 allocationUnit = (quint64)sectorsPerCluster * bytesPerSector;
+		// Every created or extended file can consume an extra allocation unit.
+		if (allocationUnit && FileCount <= (std::numeric_limits<quint64>::max)() / allocationUnit
+			&& RequiredBytes <= (std::numeric_limits<quint64>::max)() - allocationUnit * FileCount)
+			RequiredBytes += allocationUnit * FileCount;
+	}
+	if (availableBytes.QuadPart >= RequiredBytes)
+		return true;
+	return ReclaimableBytes >= RequiredBytes - availableBytes.QuadPart;
 }
 
 // path flags, saved to file
 #define FILE_DELETED_FLAG       0x0001
 #define FILE_RELOCATION_FLAG    0x0002
+
+static int CSandBox__FindUnescapedPipe(const QString& Line, int Start = 0)
+{
+	for (int i = Start; i < Line.length(); ++i) {
+		const QChar Ch = Line.at(i);
+		if (Ch == QLatin1Char('\\') && i + 1 < Line.length()) {
+			++i;
+			continue;
+		}
+		if (Ch == QLatin1Char('|'))
+			return i;
+	}
+	return -1;
+}
+
+static QString CSandBox__UnescapeDeleteV3Field(const QString& Field)
+{
+	QString Result;
+	Result.reserve(Field.length());
+
+	for (int i = 0; i < Field.length(); ++i) {
+		const QChar Ch = Field.at(i);
+		if (Ch == QLatin1Char('\\') && i + 1 < Field.length()) {
+			const QChar Esc = Field.at(++i);
+			if (Esc == QLatin1Char('|') || Esc == QLatin1Char('\\'))
+				Result.append(Esc);
+			else if (Esc == QLatin1Char('r'))
+				Result.append(QChar('\r'));
+			else if (Esc == QLatin1Char('n'))
+				Result.append(QChar('\n'));
+			else {
+				Result.append(QLatin1Char('\\'));
+				Result.append(Esc);
+			}
+		}
+		else
+			Result.append(Ch);
+	}
+
+	return Result;
+}
+
+static bool CSandBox__ParseDeletePathLine(const QString& Line, bool IsV3, QString& Path, int& Flags, QString& Relocation)
+{
+	Path.clear();
+	Relocation.clear();
+	Flags = 0;
+
+	if (!IsV3) {
+		QStringList Data = Line.trimmed().split("|");
+		Path = Data.value(0);
+		if (Path.isEmpty())
+			return false;
+		Flags = Data.size() >= 2 ? Data[1].toInt() : 0;
+		if (Data.size() >= 3)
+			Relocation = Data[2];
+		return true;
+	}
+
+	QString DataLine = Line;
+	if (DataLine.endsWith(QLatin1Char('\r')))
+		DataLine.chop(1);
+	if (DataLine.isEmpty())
+		return false;
+
+	const int Sep1 = CSandBox__FindUnescapedPipe(DataLine);
+	if (Sep1 < 0)
+		return false;
+
+	const QString OpAndTail = DataLine.mid(Sep1 + 1);
+	const int Sep2 = CSandBox__FindUnescapedPipe(OpAndTail);
+	const QString Op = Sep2 >= 0 ? OpAndTail.left(Sep2) : OpAndTail;
+
+	bool Ok = false;
+	Flags = Op.toInt(&Ok);
+	if (!Ok || (Flags != FILE_DELETED_FLAG && Flags != FILE_RELOCATION_FLAG))
+		return false;
+
+	Path = CSandBox__UnescapeDeleteV3Field(DataLine.left(Sep1));
+	if (Path.isEmpty())
+		return false;
+
+	if (Flags & FILE_RELOCATION_FLAG) {
+		if (Sep2 < 0)
+			return false;
+		Relocation = CSandBox__UnescapeDeleteV3Field(OpAndTail.mid(Sep2 + 1));
+	}
+
+	return true;
+}
 
 void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QString& BoxPath, const QString& TargetID, const QString& SourceID, const QPair<const QString, class CSbieAPI*>& params)
 {
@@ -636,11 +966,21 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 	};
 
 	SB_STATUS Status = SB_OK;
-
-	// apply source FilePaths.dat on the targetfolder
-	if (QFile::exists(SourceFolder + "\\FilePaths.dat")) 
+	quint64 RequiredBytes = 0;
+	if (!CSandBox__GetAppendDataSize(SourceFolder, RequiredBytes)
+		|| !CSandBox__HasMetadataSpace(TargetFolder, RequiredBytes, 4))
 	{
-		QFile datSource(SourceFolder + "\\FilePaths.dat");
+		pProgress->Finish(SB_ERR(SB_SnapNoSpace, STATUS_DISK_FULL));
+		return;
+	}
+
+	// apply source FilePaths*.dat on the target folder (handles both v2 and v3 file names)
+	QStringList datFileNames = QStringList() << "FilePaths.dat" << "FilePaths_v3.dat";
+	foreach (const QString& datFileName, datFileNames) {
+	const bool IsDeleteV3 = datFileName == "FilePaths_v3.dat";
+	if (QFile::exists(SourceFolder + "\\" + datFileName)) 
+	{
+		QFile datSource(SourceFolder + "\\" + datFileName);
 		if (datSource.open(QFile::ReadOnly)) 
 		{
 			QByteArray datBin = datSource.readAll();
@@ -649,16 +989,17 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 
 			// process relocations
 			foreach (const QString& Line, datData) {
-				QStringList Data = Line.trimmed().split("|");
-
-				QString Path = Data[0];
-				if (Path.isEmpty()) continue;
+				QString Path;
+				QString RelocationPath;
+				int Flags = 0;
+				if (!CSandBox__ParseDeletePathLine(Line, IsDeleteV3, Path, Flags, RelocationPath))
+					continue;
 				Path = GetBoxedPath(Path, TargetFolder);
-				int Flags = Data.size() >= 2 ? Data[1].toInt() : 0;
+				if (Path.isEmpty()) continue;
 
 				if (Flags & FILE_RELOCATION_FLAG)
 				{
-					QString Relocation = Data.size() >= 3 ? GetBoxedPath(Data[2], TargetFolder) : QString();
+					QString Relocation = !RelocationPath.isEmpty() ? GetBoxedPath(RelocationPath, TargetFolder) : QString();
 					
 					SNtObject ntSrc(L"\\??\\" + Relocation.toStdWString());
 
@@ -686,12 +1027,13 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 
 			// process deletions
 			foreach (const QString& Line, datData) {
-				QStringList Data = Line.trimmed().split("|");
-
-				QString Path = Data[0];
-				if (Path.isEmpty()) continue;
+				QString Path;
+				QString RelocationPath;
+				int Flags = 0;
+				if (!CSandBox__ParseDeletePathLine(Line, IsDeleteV3, Path, Flags, RelocationPath))
+					continue;
 				Path = GetBoxedPath(Path, TargetFolder);
-				int Flags = Data.size() >= 2 ? Data[1].toInt() : 0;
+				if (Path.isEmpty()) continue;
 
 				if (Flags & FILE_DELETED_FLAG)
 				{
@@ -705,27 +1047,49 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 				}
 			}
 
-			// merge DeleteV2 file entries to the Target FilePaths.dat
-			QFile datTarget(TargetFolder + "\\FilePaths.dat");
-			if (datTarget.open(QFile::ReadWrite)) {
-				// merge with target
-				datTarget.seek(datTarget.size());
-				datTarget.write(datBin);
-				datTarget.close();
+			// merge DeleteV2/V3 file entries to the Target dat file
+			QFile datTarget(TargetFolder + "\\" + datFileName);
+			bool merged = datTarget.open(QFile::ReadWrite);
+			qint64 originalSize = merged ? datTarget.size() : 0;
+			if (merged)
+				merged = datTarget.seek(originalSize) && datTarget.write(datBin) == datBin.size() && datTarget.flush();
+			if (!merged && datTarget.isOpen()) {
+				datTarget.resize(originalSize);
+				datTarget.flush();
 			}
+			datTarget.close();
 
-			// remove source FilePaths.dat
 			datSource.close();
-			datSource.remove();
+			if (!merged || !datSource.remove()) {
+				Status = SB_ERR(SB_SnapMergeFail, QVariantList() << TargetFolder << SourceFolder, STATUS_UNSUCCESSFUL);
+				break;
+			}
+		} else {
+			Status = SB_ERR(SB_SnapMergeFail, QVariantList() << TargetFolder << SourceFolder, STATUS_UNSUCCESSFUL);
+			break;
 		}
+	}
+	} // end foreach datFileName
+
+	// merge file/reg journals by concatenating source onto target.
+	// source is the newer layer, so its entries must come last.
+	if (!Status.IsError()) {
+		if (QFile::exists(SourceFolder + "\\FilePaths_v3.sbie"))
+			if (!CSandBox__AppendDataFile(SourceFolder + "\\FilePaths_v3.sbie", TargetFolder + "\\FilePaths_v3.sbie"))
+				Status = SB_ERR(SB_SnapMergeFail, QVariantList() << TargetFolder << SourceFolder, STATUS_UNSUCCESSFUL);
+
+		// Registry metadata is cumulative across snapshots (both V3 files are
+		// non-recursive), so it is moved as a pair below rather than appended.
 	}
 
 	// merge source folders to the target snapshot
-	foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders) 
-	{
-		Status = CSandBox__MergeFolders(pProgress, TargetFolder + "\\" + BoxSubFolder, SourceFolder + "\\" + BoxSubFolder);
-		if (Status.IsError())
-			break;
+	if (!Status.IsError()) {
+		foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders)
+		{
+			Status = CSandBox__MergeFolders(pProgress, TargetFolder + "\\" + BoxSubFolder, SourceFolder + "\\" + BoxSubFolder);
+			if (Status.IsError())
+				break;
+		}
 	}
 
 	pProgress->ShowMessage(CSandBox::tr("Finishing Snapshot Merge..."));
@@ -733,9 +1097,12 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 	if(!Status.IsError())
 	{
 		// copy other data files from source to target
-		CSandBox__MoveDataFilesSafe(SourceFolder, TargetFolder);
+		// Recursive file metadata was merged above.  Moving it here would
+		// overwrite the merged checkpoint/journal in the target.
+		if (!CSandBox__MoveDataFilesSafe(SourceFolder, TargetFolder, false))
+			Status = SB_ERR(SB_SnapMergeFail, QVariantList() << TargetFolder << SourceFolder, STATUS_UNSUCCESSFUL);
 
-		if (IsCurrent)
+		if (!Status.IsError() && IsCurrent)
 		{
 			// move all folders out of the snapshot to root
 			foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders) 
@@ -746,13 +1113,14 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 			}
 
 			// move all data files out of the snapshot to root
-			CSandBox__MoveDataFilesSafe(TargetFolder, SourceFolder);
+			if (!CSandBox__MoveDataFilesSafe(TargetFolder, SourceFolder))
+				Status = SB_ERR(SB_SnapMergeFail, QVariantList() << SourceFolder << TargetFolder, STATUS_UNSUCCESSFUL);
 			
 			// delete snapshot rest
 			if (!Status.IsError())
 				Status = CSandBox__CleanupSnapshot(TargetFolder);
 		}
-		else
+		else if (!Status.IsError())
 		{
 			// delete rest of source snpshot
 			Status = CSandBox__CleanupSnapshot(SourceFolder);
@@ -791,18 +1159,21 @@ SB_PROGRESS CSandBox::SelectSnapshot(const QString& ID)
 	if (m_pAPI->HasProcesses(m_Name))
 		return SB_ERR(SB_SnapIsRunning);
 
-	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles)
-	{
-		QFile::remove(m_FilePath + "\\" + BoxDataFile.Name);
-
-		if (ID.isEmpty() || BoxDataFile.Recursive)
-			continue; // this one is incremental, don't restore it
-
-		if (!QFile::copy(m_FilePath + "\\snapshot-" + ID + "\\" + BoxDataFile.Name, m_FilePath + "\\" + BoxDataFile.Name)) {
-			if (BoxDataFile.Required)
-				return SB_ERR(SB_SnapCopyDatFail);
-		}
+	if (!ID.isEmpty()) {
+		quint64 RequiredBytes = 0;
+		quint64 FileCount = 0;
+		QString SnapshotFolder = m_FilePath + "\\snapshot-" + ID;
+		if (!CSandBox__GetSnapshotRestoreSize(SnapshotFolder, RequiredBytes, FileCount))
+			return SB_ERR(SB_SnapCopyDatFail);
+		// Restore stages replacement files before old metadata can be moved aside,
+		// so only currently free space can satisfy this preflight.
+		if (!CSandBox__HasMetadataSpace(m_FilePath, RequiredBytes, FileCount))
+			return SB_ERR(SB_SnapNoSpace, STATUS_DISK_FULL);
 	}
+
+	QString SnapshotFolder = ID.isEmpty() ? QString() : (m_FilePath + "\\snapshot-" + ID);
+	if (!CSandBox__RestoreDataFiles(SnapshotFolder, m_FilePath))
+		return SB_ERR(SB_SnapCopyDatFail);
 
 	ini.setValue("Current/Snapshot", ID);
 	ini.sync();
