@@ -23,6 +23,7 @@
 #define CMDLINE_SETTING                 L"CustomProcessCommandLine"
 #define CMDLINE_CHROMIUM_SETTING        L"CustomChromiumFlags"
 #define CMDLINE_INJECT_SETTING          L"InjectCmdLine"
+#define CMDLINE_GLOBAL_SECTION          L"GlobalSettings"
 #define CMDLINE_MAX_RULES               128
 #define CMDLINE_MAX_CONDITIONS          8
 #define CMDLINE_MAX_ARGUMENTS           512
@@ -32,6 +33,7 @@
 #define CMD_SEEN_MATCH                  0x0004
 #define CMD_SEEN_OCCURRENCES            0x0008
 #define CMD_SEEN_DUPLICATE              0x0010
+#define CMD_SEEN_CASE_SENSITIVE         0x0020
 
 typedef enum {
     CMD_ACTION_NONE,
@@ -84,6 +86,7 @@ typedef struct {
     BOOLEAN occurrences_first;
     BOOLEAN duplicate_allow;
     BOOLEAN selector_match;
+    BOOLEAN case_sensitive;
 } CMD_RULE;
 
 typedef struct {
@@ -269,6 +272,7 @@ static BOOLEAN CmdLine_ParseRule(WCHAR* text, CMD_RULE* rule)
     rule->storage = text;
     rule->match = CMD_MATCH_EXACT;
     rule->position = CMD_ADD_END;
+    rule->case_sensitive = TRUE;
 
     comma = wcschr(text, L',');
     if (!comma)
@@ -377,6 +381,12 @@ static BOOLEAN CmdLine_ParseRule(WCHAR* text, CMD_RULE* rule)
             else
                 return FALSE;
             seen |= CMD_SEEN_MATCH;
+        }
+        else if (_wcsicmp(key, L"CaseSensitive") == 0) {
+            if ((seen & CMD_SEEN_CASE_SENSITIVE) ||
+                    !CmdLine_ParseBoolean(value, &rule->case_sensitive))
+                return FALSE;
+            seen |= CMD_SEEN_CASE_SENSITIVE;
         }
         else if (_wcsicmp(key, L"At") == 0) {
             if (rule->relative)
@@ -611,32 +621,55 @@ static BOOLEAN CmdLine_ParseArguments(CMD_STATE* state)
 }
 
 static BOOLEAN CmdLine_MatchPattern(
-    const WCHAR* value, const WCHAR* pattern, CMD_MATCH mode)
+    const WCHAR* value, const WCHAR* pattern, CMD_MATCH mode,
+    BOOLEAN case_sensitive)
 {
     PATTERN* compiled;
-    BOOLEAN match;
+    BOOLEAN match = FALSE;
+    WCHAR* value_lwr = NULL;
 
     if (!value || !pattern)
         return FALSE;
 
     if (mode == CMD_MATCH_EXACT)
-        return wcscmp(value, pattern) == 0;
+        return case_sensitive
+            ? wcscmp(value, pattern) == 0
+            : _wcsicmp(value, pattern) == 0;
 
-    if (mode == CMD_MATCH_TEXT)
-        return wcsstr(value, pattern) != NULL;
-
-    compiled = Pattern_Create(Dll_PoolTemp, pattern, FALSE, 0);
-    if (!compiled)
+    if (mode == CMD_MATCH_TEXT) {
+        if (case_sensitive)
+            return wcsstr(value, pattern) != NULL;
+        while (*value) {
+            if (_wcsnicmp(value, pattern, wcslen(pattern)) == 0)
+                return TRUE;
+            ++value;
+        }
         return FALSE;
+    }
+
+    if (!case_sensitive) {
+        value_lwr = CmdLine_Duplicate(value);
+        if (!value_lwr)
+            return FALSE;
+        _wcslwr(value_lwr);
+        value = value_lwr;
+    }
+
+    compiled = Pattern_Create(Dll_PoolTemp, pattern, !case_sensitive, 0);
+    if (!compiled)
+        goto finish;
 
     match = Pattern_Match(compiled, value, (int)wcslen(value));
     Pattern_Free(compiled);
+finish:
+    if (value_lwr)
+        LocalFree(value_lwr);
     return match;
 }
 
 static LONG CmdLine_FindArgument(
     const CMD_STATE* state, const WCHAR* pattern, CMD_MATCH mode,
-    ULONG start_index)
+    BOOLEAN case_sensitive, ULONG start_index)
 {
     ULONG i;
 
@@ -644,7 +677,8 @@ static LONG CmdLine_FindArgument(
         start_index = 1;
 
     for (i = start_index; i < state->count; ++i) {
-        if (CmdLine_MatchPattern(state->args[i].value, pattern, mode))
+        if (CmdLine_MatchPattern(
+                state->args[i].value, pattern, mode, case_sensitive))
             return (LONG)i;
     }
 
@@ -653,7 +687,7 @@ static LONG CmdLine_FindArgument(
 
 static BOOLEAN CmdLine_ArgumentSequencePresent(
     const CMD_STATE* state, const WCHAR* fragment, CMD_MATCH mode,
-    BOOLEAN* present)
+    BOOLEAN case_sensitive, BOOLEAN* present)
 {
     CMD_STATE parsed;
     size_t fragment_len;
@@ -678,7 +712,7 @@ static BOOLEAN CmdLine_ArgumentSequencePresent(
         for (part = 1; part < parsed.count; ++part) {
             if (!CmdLine_MatchPattern(
                     state->args[start + part - 1].value,
-                    parsed.args[part].value, mode))
+                    parsed.args[part].value, mode, case_sensitive))
                 break;
         }
 
@@ -760,7 +794,8 @@ static BOOLEAN CmdLine_ParseCountCondition(
 }
 
 static BOOLEAN CmdLine_EvaluateCondition(
-    const CMD_STATE* state, const WCHAR* condition, CMD_MATCH mode)
+    const CMD_STATE* state, const WCHAR* condition, CMD_MATCH mode,
+    BOOLEAN case_sensitive)
 {
     BOOLEAN result;
     ULONG arg_count = state->count ? state->count - 1 : 0;
@@ -781,7 +816,8 @@ static BOOLEAN CmdLine_EvaluateCondition(
             condition, L"ArgCount", arg_count, &result))
         return result;
 
-    return CmdLine_FindArgument(state, condition, mode, 1) >= 0;
+    return CmdLine_FindArgument(
+        state, condition, mode, case_sensitive, 1) >= 0;
 }
 
 static BOOLEAN CmdLine_RuleConditionsMatch(
@@ -791,12 +827,15 @@ static BOOLEAN CmdLine_RuleConditionsMatch(
 
     for (i = 0; i < rule->condition_count; ++i) {
         if (!CmdLine_EvaluateCondition(
-                state, rule->conditions[i], rule->match))
+                state, rule->conditions[i], rule->match,
+                rule->case_sensitive))
             return FALSE;
     }
 
     for (i = 0; i < rule->skip_count; ++i) {
-        if (CmdLine_EvaluateCondition(state, rule->skips[i], rule->match))
+        if (CmdLine_EvaluateCondition(
+                state, rule->skips[i], rule->match,
+                rule->case_sensitive))
             return FALSE;
     }
 
@@ -868,7 +907,8 @@ static BOOLEAN CmdLine_Add(
     *applied = FALSE;
     if (!rule->duplicate_allow) {
         if (!CmdLine_ArgumentSequencePresent(
-                state, rule->value, rule->match, &present))
+                state, rule->value, rule->match,
+                rule->case_sensitive, &present))
             return FALSE;
         if (present)
             return TRUE;
@@ -882,7 +922,8 @@ static BOOLEAN CmdLine_Add(
     }
     else {
         relative = CmdLine_FindArgument(
-            state, rule->relative, rule->match, 1);
+            state, rule->relative, rule->match,
+            rule->case_sensitive, 1);
         if (relative < 0)
             return TRUE;
         insert_at = rule->position == CMD_ADD_BEFORE
@@ -917,7 +958,8 @@ static BOOLEAN CmdLine_RemoveOrReplace(
         return FALSE;
 
     while ((found = CmdLine_FindArgument(
-            state, rule->value, rule->match, search)) >= 0) {
+            state, rule->value, rule->match,
+            rule->case_sensitive, search)) >= 0) {
         ULONG start = rule->action == CMD_ACTION_REPLACE
             ? state->args[found].raw_start
             : state->args[found].prefix_start;
@@ -973,7 +1015,7 @@ static BOOLEAN CmdLine_RemoveSequence(
                 if (!CmdLine_MatchPattern(
                         state->args[start + part].value,
                         sequence.args[part + 1].value,
-                        rule->match))
+                        rule->match, rule->case_sensitive))
                     break;
             }
 
@@ -1079,18 +1121,41 @@ static BOOLEAN CmdLine_AddChromiumFlags(
     rule->action = CMD_ACTION_ADD;
     rule->value = storage;
     rule->match = CMD_MATCH_PATTERN;
+    rule->case_sensitive = TRUE;
     rule->position = CMD_ADD_START;
     rule->order = 400;
     rule->skips[rule->skip_count++] = L"--type=*";
     return TRUE;
 }
 
+static NTSTATUS CmdLine_QuerySetting(
+    const WCHAR* setting, ULONG* source, ULONG* index,
+    WCHAR* buffer, ULONG buffer_len)
+{
+    NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+
+    while (*source < 2) {
+        status = SbieApi_QueryConfAsIs(
+            *source ? CMDLINE_GLOBAL_SECTION : NULL, setting,
+            (*index)++ | (*source ? 0 : CONF_GET_NO_GLOBAL),
+            buffer, buffer_len);
+        if (NT_SUCCESS(status) || status == STATUS_BUFFER_TOO_SMALL)
+            break;
+
+        ++*source;
+        *index = 0;
+    }
+
+    return status;
+}
+
 static BOOLEAN CmdLine_AddInjectedFlags(
     CMD_RULE* rules, ULONG* count)
 {
-    ULONG index;
+    ULONG source = 0;
+    ULONG index = 0;
 
-    for (index = 0; index < CMDLINE_MAX_RULES; ++index) {
+    while (source < 2) {
         WCHAR buffer[CONF_LINE_LEN];
         WCHAR* storage;
         WCHAR* value;
@@ -1100,8 +1165,9 @@ static BOOLEAN CmdLine_AddInjectedFlags(
         if (*count >= CMDLINE_MAX_RULES)
             return TRUE;
 
-        status = SbieApi_QueryConfAsIs(
-            NULL, CMDLINE_INJECT_SETTING, index, buffer, sizeof(buffer));
+        status = CmdLine_QuerySetting(
+            CMDLINE_INJECT_SETTING, &source, &index,
+            buffer, sizeof(buffer));
         if (!NT_SUCCESS(status)) {
             if (status == STATUS_BUFFER_TOO_SMALL)
                 continue;
@@ -1134,6 +1200,7 @@ static BOOLEAN CmdLine_AddInjectedFlags(
         rule->action = CMD_ACTION_ADD;
         rule->value = value;
         rule->match = CMD_MATCH_PATTERN;
+        rule->case_sensitive = TRUE;
         rule->position = CMD_ADD_START;
         rule->order = 400;
         rule->duplicate_allow = TRUE;
@@ -1164,7 +1231,8 @@ BOOLEAN CmdLine_Build(
     ULONG count = 0;
     ULONG planned_count = 0;
     ULONG filtered_count = 0;
-    ULONG index;
+    ULONG source = 0;
+    ULONG index = 0;
     BOOLEAN changed = FALSE;
     BOOLEAN result = FALSE;
     UNICODE_STRING unicode;
@@ -1186,16 +1254,13 @@ BOOLEAN CmdLine_Build(
     if (!CmdLine_AddInjectedFlags(rules, &count))
         goto finish;
 
-    for (index = 0; index < CMDLINE_MAX_RULES; ++index) {
+    while (source < 2 && count < CMDLINE_MAX_RULES) {
         WCHAR buffer[CONF_LINE_LEN];
         WCHAR* storage;
         NTSTATUS status;
 
-        if (count >= CMDLINE_MAX_RULES)
-            break;
-
-        status = SbieApi_QueryConfAsIs(
-            NULL, CMDLINE_SETTING, index, buffer, sizeof(buffer));
+        status = CmdLine_QuerySetting(
+            CMDLINE_SETTING, &source, &index, buffer, sizeof(buffer));
 
         if (!NT_SUCCESS(status)) {
             if (status == STATUS_BUFFER_TOO_SMALL)
@@ -1218,6 +1283,8 @@ BOOLEAN CmdLine_Build(
     for (index = 0; index < count; ++index) {
         CMD_RULE* rule = &rules[index];
 
+        if (!rule->selector_match)
+            continue;
         if (rule->id && CmdLine_IdSeen(planned, planned_count, rule->id))
             continue;
         if (planned_count >= CMDLINE_MAX_RULES)
@@ -1228,7 +1295,7 @@ BOOLEAN CmdLine_Build(
     }
 
     for (index = 0; index < planned_count; ++index) {
-        if (!planned[index].disabled && planned[index].selector_match)
+        if (!planned[index].disabled)
             planned[filtered_count++] = planned[index];
         else if (planned[index].storage)
             LocalFree(planned[index].storage);
