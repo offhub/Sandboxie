@@ -21,6 +21,8 @@
 #include "common/pattern.h"
 
 #define CMDLINE_SETTING                 L"CustomProcessCommandLine"
+#define CMDLINE_CHROMIUM_SETTING        L"CustomChromiumFlags"
+#define CMDLINE_INJECT_SETTING          L"InjectCmdLine"
 #define CMDLINE_MAX_RULES               128
 #define CMDLINE_MAX_CONDITIONS          8
 #define CMDLINE_MAX_ARGUMENTS           512
@@ -36,6 +38,7 @@ typedef enum {
     CMD_ACTION_CLEAR,
     CMD_ACTION_SET,
     CMD_ACTION_REMOVE,
+    CMD_ACTION_REMOVE_SEQUENCE,
     CMD_ACTION_REPLACE,
     CMD_ACTION_ADD
 } CMD_ACTION;
@@ -235,7 +238,7 @@ static LONG CmdLine_DefaultOrder(CMD_ACTION action)
 {
     if (action == CMD_ACTION_CLEAR || action == CMD_ACTION_SET)
         return 100;
-    if (action == CMD_ACTION_REMOVE)
+    if (action == CMD_ACTION_REMOVE || action == CMD_ACTION_REMOVE_SEQUENCE)
         return 200;
     if (action == CMD_ACTION_REPLACE)
         return 300;
@@ -335,6 +338,10 @@ static BOOLEAN CmdLine_ParseRule(WCHAR* text, CMD_RULE* rule)
             if (!CmdLine_SetAction(rule, CMD_ACTION_REMOVE, value))
                 return FALSE;
         }
+        else if (_wcsicmp(key, L"RemoveSequence") == 0) {
+            if (!CmdLine_SetAction(rule, CMD_ACTION_REMOVE_SEQUENCE, value))
+                return FALSE;
+        }
         else if (_wcsicmp(key, L"Replace") == 0) {
             if (!CmdLine_SetAction(rule, CMD_ACTION_REPLACE, value))
                 return FALSE;
@@ -430,6 +437,7 @@ static BOOLEAN CmdLine_ParseRule(WCHAR* text, CMD_RULE* rule)
         return FALSE;
     if (rule->occurrences_first &&
             rule->action != CMD_ACTION_REMOVE &&
+            rule->action != CMD_ACTION_REMOVE_SEQUENCE &&
             rule->action != CMD_ACTION_REPLACE)
         return FALSE;
     if (rule->duplicate_allow && rule->action != CMD_ACTION_ADD)
@@ -932,6 +940,70 @@ static BOOLEAN CmdLine_RemoveOrReplace(
     return TRUE;
 }
 
+static BOOLEAN CmdLine_RemoveSequence(
+    CMD_STATE* state, const CMD_RULE* rule, BOOLEAN* applied)
+{
+    CMD_STATE sequence;
+    size_t value_len;
+    ULONG search = 1;
+    ULONG sequence_count;
+
+    *applied = FALSE;
+    memset(&sequence, 0, sizeof(sequence));
+    value_len = wcslen(rule->value);
+    sequence.text = LocalAlloc(
+        LMEM_FIXED, (value_len + 3) * sizeof(WCHAR));
+    if (!sequence.text)
+        return FALSE;
+
+    wcscpy(sequence.text, L"x ");
+    wcscat(sequence.text, rule->value);
+    if (!CmdLine_ParseArguments(&sequence) || sequence.count < 2)
+        goto failure;
+    sequence_count = sequence.count - 1;
+
+    while (search + sequence_count <= state->count) {
+        ULONG start;
+        BOOLEAN found = FALSE;
+
+        for (start = search; start + sequence_count <= state->count; ++start) {
+            ULONG part;
+
+            for (part = 0; part < sequence_count; ++part) {
+                if (!CmdLine_MatchPattern(
+                        state->args[start + part].value,
+                        sequence.args[part + 1].value,
+                        rule->match))
+                    break;
+            }
+
+            if (part == sequence_count) {
+                ULONG begin = state->args[start].prefix_start;
+                ULONG end = state->args[start + sequence_count - 1].raw_end;
+
+                if (!CmdLine_ReplaceText(state, begin, end, NULL))
+                    goto failure;
+                *applied = TRUE;
+                found = TRUE;
+                search = start;
+                break;
+            }
+        }
+
+        if (!found || rule->occurrences_first)
+            break;
+    }
+
+    CmdLine_FreeArguments(&sequence);
+    LocalFree(sequence.text);
+    return TRUE;
+
+failure:
+    CmdLine_FreeArguments(&sequence);
+    LocalFree(sequence.text);
+    return FALSE;
+}
+
 static BOOLEAN CmdLine_ApplyRule(
     CMD_STATE* state, const CMD_RULE* rule, BOOLEAN* applied)
 {
@@ -945,6 +1017,8 @@ static BOOLEAN CmdLine_ApplyRule(
     }
     if (rule->action == CMD_ACTION_ADD)
         return CmdLine_Add(state, rule, applied);
+    if (rule->action == CMD_ACTION_REMOVE_SEQUENCE)
+        return CmdLine_RemoveSequence(state, rule, applied);
     return CmdLine_RemoveOrReplace(state, rule, applied);
 }
 
@@ -990,7 +1064,7 @@ static BOOLEAN CmdLine_AddChromiumFlags(
         return TRUE;
 
     status = SbieApi_QueryConfAsIs(
-        NULL, L"CustomChromiumFlags", 0, flags, sizeof(flags));
+        NULL, CMDLINE_CHROMIUM_SETTING, 0, flags, sizeof(flags));
     if (!NT_SUCCESS(status) || !*flags)
         return TRUE;
 
@@ -1008,6 +1082,65 @@ static BOOLEAN CmdLine_AddChromiumFlags(
     rule->position = CMD_ADD_START;
     rule->order = 400;
     rule->skips[rule->skip_count++] = L"--type=*";
+    return TRUE;
+}
+
+static BOOLEAN CmdLine_AddInjectedFlags(
+    CMD_RULE* rules, ULONG* count)
+{
+    ULONG index;
+
+    for (index = 0; index < CMDLINE_MAX_RULES; ++index) {
+        WCHAR buffer[CONF_LINE_LEN];
+        WCHAR* storage;
+        WCHAR* value;
+        CMD_RULE* rule;
+        NTSTATUS status;
+
+        if (*count >= CMDLINE_MAX_RULES)
+            return TRUE;
+
+        status = SbieApi_QueryConfAsIs(
+            NULL, CMDLINE_INJECT_SETTING, index, buffer, sizeof(buffer));
+        if (!NT_SUCCESS(status)) {
+            if (status == STATUS_BUFFER_TOO_SMALL)
+                continue;
+            break;
+        }
+
+        storage = CmdLine_Duplicate(buffer);
+        if (!storage)
+            return FALSE;
+
+        value = wcschr(storage, L',');
+        if (!value) {
+            LocalFree(storage);
+            continue;
+        }
+
+        *value++ = L'\0';
+        CmdLine_Trim(storage);
+        CmdLine_Trim(value);
+        if (!*storage || !*value || !CmdLine_MatchSelector(storage)) {
+            LocalFree(storage);
+            continue;
+        }
+
+        rule = &rules[(*count)++];
+        memset(rule, 0, sizeof(*rule));
+        rule->storage = storage;
+        rule->selector = storage;
+        rule->selector_match = TRUE;
+        rule->action = CMD_ACTION_ADD;
+        rule->value = value;
+        rule->match = CMD_MATCH_PATTERN;
+        rule->position = CMD_ADD_START;
+        rule->order = 400;
+        rule->duplicate_allow = TRUE;
+        rule->skips[rule->skip_count++] = L"--type=*";
+        break;
+    }
+
     return TRUE;
 }
 
@@ -1049,6 +1182,8 @@ BOOLEAN CmdLine_Build(
     memset(&state, 0, sizeof(state));
 
     if (!CmdLine_AddChromiumFlags(rules, &count))
+        goto finish;
+    if (!CmdLine_AddInjectedFlags(rules, &count))
         goto finish;
 
     for (index = 0; index < CMDLINE_MAX_RULES; ++index) {

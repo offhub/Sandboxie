@@ -2594,7 +2594,8 @@ CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path
 
 	bool HasCommandLineRules =
 		!pProcess->m_pBox->GetTextList("CustomProcessCommandLine", true, false, true).isEmpty() ||
-		!pProcess->m_pBox->GetTextList("CustomChromiumFlags", true, false, true).isEmpty();
+		!pProcess->m_pBox->GetTextList("CustomChromiumFlags", true, false, true).isEmpty() ||
+		!pProcess->m_pBox->GetTextList("InjectCmdLine", true, false, true).isEmpty();
 	if (!HasCommandLineRules)
 		return pProcess;
 
