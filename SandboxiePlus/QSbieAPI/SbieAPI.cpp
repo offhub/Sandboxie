@@ -2592,6 +2592,26 @@ CBoxedProcessPtr CSbieAPI::OnProcessBoxed(quint32 ProcessId, const QString& Path
 	if (pProcess->m_CommandLine.isEmpty() && !CmdLine.isEmpty())
 		pProcess->m_CommandLine = CmdLine;
 
+	bool HasCommandLineRules =
+		!pProcess->m_pBox->GetTextList("CustomProcessCommandLine", true, false, true).isEmpty() ||
+		!pProcess->m_pBox->GetTextList("CustomChromiumFlags", true, false, true).isEmpty();
+	if (!HasCommandLineRules)
+		return pProcess;
+
+	// The driver notification arrives before SbieDll can rewrite the PEB command line.
+	// Refresh it after initialization instead of keeping the creation-time value.
+	auto RefreshCommandLine = [this, ProcessId]() {
+		CBoxedProcessPtr pCurrent = m_BoxedProxesses.value(ProcessId);
+		if (!pCurrent || pCurrent->IsTerminated())
+			return;
+
+		QString CommandLine;
+		if (!GetProcessInfo(ProcessId, NULL, NULL, NULL, NULL, &CommandLine).IsError() && !CommandLine.isEmpty())
+			pCurrent->m_CommandLine = CommandLine;
+	};
+	QTimer::singleShot(250, this, RefreshCommandLine);
+	QTimer::singleShot(1000, this, RefreshCommandLine);
+
 	return pProcess;
 }
 
