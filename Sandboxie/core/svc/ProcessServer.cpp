@@ -2057,22 +2057,28 @@ MSG_HEADER *ProcessServer::ProcInfoHandler(MSG_HEADER *msg)
         if (QueryFullProcessImageNameW(ProcessHandle, 0, filename, &dwSize))
             ImagePath = filename;
 
-        // Windows 8.1 and later
+        // Prefer the live PEB value because SbieDll may have rewritten it.
+        CommandLine = GetPebString(ProcessHandle, PhpoCommandLine);
+
+        // Use the Windows 8.1 query when the PEB cannot be read.
 #define ProcessCommandLineInformation ((PROCESSINFOCLASS)60)
-        ULONG returnLength = 0;
-        NTSTATUS status = NtQueryInformationProcess(ProcessHandle, ProcessCommandLineInformation, NULL, 0, &returnLength);
-        if (!(status != STATUS_BUFFER_OVERFLOW && status != STATUS_BUFFER_TOO_SMALL && status != STATUS_INFO_LENGTH_MISMATCH))
+        if (CommandLine.empty())
         {
-            PUNICODE_STRING commandLine = (PUNICODE_STRING)malloc(returnLength);
-            status = NtQueryInformationProcess(ProcessHandle, ProcessCommandLineInformation, commandLine, returnLength, &returnLength);
-            if (NT_SUCCESS(status) && commandLine->Buffer != NULL)
-                CommandLine = commandLine->Buffer;
-            free(commandLine);
+            ULONG returnLength = 0;
+            NTSTATUS status = NtQueryInformationProcess(ProcessHandle, ProcessCommandLineInformation, NULL, 0, &returnLength);
+            if (!(status != STATUS_BUFFER_OVERFLOW && status != STATUS_BUFFER_TOO_SMALL && status != STATUS_INFO_LENGTH_MISMATCH))
+            {
+                PUNICODE_STRING commandLine = (PUNICODE_STRING)malloc(returnLength);
+                if (commandLine) {
+                    status = NtQueryInformationProcess(ProcessHandle, ProcessCommandLineInformation, commandLine, returnLength, &returnLength);
+                    if (NT_SUCCESS(status) && commandLine->Buffer != NULL &&
+                            (commandLine->Length % sizeof(WCHAR)) == 0)
+                        CommandLine.assign(commandLine->Buffer, commandLine->Length / sizeof(WCHAR));
+                }
+                free(commandLine);
+            }
         }
 #undef ProcessCommandLineInformation
-
-        if (CommandLine.empty()) // fall back to the Win 7 method - requires PROCESS_VM_READ
-            CommandLine = GetPebString(ProcessHandle, PhpoCommandLine);
 
         WorkingDir = GetPebString(ProcessHandle, PhpoCurrentDirectory);
     }

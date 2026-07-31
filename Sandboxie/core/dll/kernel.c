@@ -23,13 +23,12 @@
 //#include <windows.h>
 //#include "common/win32_ntddk.h"
 #include "dll.h"
+#include "cmdline.h"
 #include "obj.h"
 #include <wchar.h>
 
 #include "common/pool.h"
 #include "common/map.h"
-
-#define CONF_LINE_LEN               2000    // keep in sync with drv/conf.c
 
 //---------------------------------------------------------------------------
 // Functions Prototypes
@@ -175,50 +174,41 @@ extern NTSTATUS File_GetName(
 _FX BOOLEAN Kernel_Init()
 {
 	HMODULE module = Dll_Kernel32;
-
-	if (Dll_ImageType == DLL_IMAGE_GOOGLE_CHROME) {
-
-		RTL_USER_PROCESS_PARAMETERS* ProcessParms = Proc_GetRtlUserProcessParameters();
-
-		if (!wcsstr(ProcessParms->CommandLine.Buffer, L" --type=")) { // don't add flags to child processes
-
-			NTSTATUS status;
-			WCHAR CustomChromiumFlags[CONF_LINE_LEN];
-			status = SbieApi_QueryConfAsIs(NULL, L"CustomChromiumFlags", 0, CustomChromiumFlags, ARRAYSIZE(CustomChromiumFlags));
-			if (NT_SUCCESS(status)) {
-
-				const WCHAR* lpCommandLine = ProcessParms->CommandLine.Buffer;
-				const WCHAR* lpArguments = SbieDll_FindArgumentEnd(lpCommandLine);
-				if (lpArguments == NULL)
-					lpArguments = wcsrchr(lpCommandLine, L'\0');
-
-				Kernel_CommandLineW.MaximumLength = ProcessParms->CommandLine.MaximumLength + (CONF_LINE_LEN + 8) * sizeof(WCHAR);
-				Kernel_CommandLineW.Buffer = LocalAlloc(LMEM_FIXED,Kernel_CommandLineW.MaximumLength);
-
-				// copy argument 0
-				wmemcpy(Kernel_CommandLineW.Buffer, lpCommandLine, lpArguments - lpCommandLine);
-				Kernel_CommandLineW.Buffer[lpArguments - lpCommandLine] = 0;
-				
-				// add custom arguments
-				if(Kernel_CommandLineW.Buffer[lpArguments - lpCommandLine - 1] != L' ')
-					wcscat(Kernel_CommandLineW.Buffer, L" ");
-				wcscat(Kernel_CommandLineW.Buffer, CustomChromiumFlags);
-
-				// add remaining arguments
-				wcscat(Kernel_CommandLineW.Buffer, lpArguments);
-
-
-				Kernel_CommandLineW.Length = wcslen(Kernel_CommandLineW.Buffer) * sizeof(WCHAR);
-
-				RtlUnicodeStringToAnsiString(&Kernel_CommandLineA, &Kernel_CommandLineW, TRUE);
-
-				void* GetCommandLineW = GetProcAddress(Dll_KernelBase ? Dll_KernelBase : Dll_Kernel32, "GetCommandLineW");
-				SBIEDLL_HOOK(Kernel_, GetCommandLineW);
-
-				void* GetCommandLineA = GetProcAddress(Dll_KernelBase ? Dll_KernelBase : Dll_Kernel32, "GetCommandLineA");
-				SBIEDLL_HOOK(Kernel_, GetCommandLineA);
-			}
+	RTL_USER_PROCESS_PARAMETERS* ProcessParms = Proc_GetRtlUserProcessParameters();
+	BOOLEAN IsFromSandboxieDir = FALSE;
+	BOOLEAN IsSandboxieImage =
+		Dll_ImageType >= DLL_IMAGE_SANDBOXIE_RPCSS &&
+		Dll_ImageType <= DLL_IMAGE_SANDBOXIE_SBIESVC;
+	if (ProcessParms && ProcessParms->ImagePathName.Buffer) {
+		ULONG image_len = ProcessParms->ImagePathName.Length / sizeof(WCHAR);
+		// ImagePathName in the PEB may be a native NT path (\Device\...) or a DOS path (C:\...)
+		// depending on how the process was started, so check both home paths.
+		if (Dll_HomeNtPath && Dll_HomeNtPathLen > 0) {
+			ULONG len = Dll_HomeNtPathLen;
+			if (image_len >= len &&
+				_wcsnicmp(ProcessParms->ImagePathName.Buffer, Dll_HomeNtPath, len) == 0 &&
+				(image_len == len || ProcessParms->ImagePathName.Buffer[len] == L'\\'))
+				IsFromSandboxieDir = TRUE;
 		}
+		if (!IsFromSandboxieDir && Dll_HomeDosPath && *Dll_HomeDosPath) {
+			ULONG len = (ULONG)wcslen(Dll_HomeDosPath);
+			if (image_len >= len &&
+				_wcsnicmp(ProcessParms->ImagePathName.Buffer, Dll_HomeDosPath, len) == 0 &&
+				(image_len == len || ProcessParms->ImagePathName.Buffer[len] == L'\\'))
+				IsFromSandboxieDir = TRUE;
+		}
+	}
+	if (!IsFromSandboxieDir && !IsSandboxieImage &&
+			CmdLine_Build(ProcessParms, &Kernel_CommandLineW, &Kernel_CommandLineA)) {
+
+		// Also update the PEB so the UI and tools reading it directly see the modified command line.
+		ProcessParms->CommandLine = Kernel_CommandLineW;
+
+		void* GetCommandLineW = GetProcAddress(Dll_KernelBase ? Dll_KernelBase : Dll_Kernel32, "GetCommandLineW");
+		SBIEDLL_HOOK(Kernel_, GetCommandLineW);
+
+		void* GetCommandLineA = GetProcAddress(Dll_KernelBase ? Dll_KernelBase : Dll_Kernel32, "GetCommandLineA");
+		SBIEDLL_HOOK(Kernel_, GetCommandLineA);
 	}
 
 	if (SbieApi_QueryConfBool(NULL, L"BlockInterferePower", FALSE)) {

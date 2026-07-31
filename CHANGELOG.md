@@ -4,6 +4,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.19.0 / 5.74.0] - 2026-08-??
+
+### Added
+- added ordered `CustomProcessCommandLine` rules to clear, set, remove, replace, or add arguments using standard process/ProcessGroup selectors and virtual SpecialImage groups
+  - Example: `CustomProcessCommandLine=<Special:Chrome>,Add=--disable-background-networking;Skip=--type=*;Match=Pattern`
+
+
+
 ## [1.18.2/ 5.73.2] - 2026-08-??
 
 ### Added
