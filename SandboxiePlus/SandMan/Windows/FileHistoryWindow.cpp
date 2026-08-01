@@ -2,6 +2,7 @@
 #include "FileHistoryWindow.h"
 #include "SandMan.h"
 #include "../../MiscHelpers/Common/Finder.h"
+#include "../../MiscHelpers/Common/PanelView.h"
 #include <QItemSelectionModel>
 #include <windows.h>
 
@@ -33,6 +34,7 @@ namespace
 	{
 		eAllFields,
 		ePathField,
+		eVersionField,
 		eOperationField,
 		eProcessField,
 		eStateField,
@@ -262,6 +264,7 @@ namespace
 	{
 		switch (Scope) {
 		case ePathField:		return Item->data(0, eLogicalPath).toString();
+		case eVersionField:		return Item->text(1);
 		case eOperationField:	return Item->data(0, eOperation).toString();
 		case eProcessField:		return Item->data(0, eProcess).toString();
 		case eStateField:		return Item->data(0, eState).toString();
@@ -270,8 +273,9 @@ namespace
 		case eExtensionField:	return Item->data(0, eExtension).toString();
 		case eHashField:		return Item->data(0, eHash).toString();
 		default:
-			return QStringLiteral("%1\n%2\n%3\n%4\n%5\n%6\n%7\n%8")
+			return QStringLiteral("%1\n%2\n%3\n%4\n%5\n%6\n%7\n%8\n%9")
 				.arg(Item->data(0, eLogicalPath).toString(),
+					Item->text(1),
 					Item->data(0, eOperation).toString(),
 					Item->data(0, eProcess).toString(),
 					Item->data(0, eState).toString(),
@@ -280,6 +284,176 @@ namespace
 					Item->data(0, eExtension).toString(),
 					Item->data(0, eHash).toString());
 		}
+	}
+
+	int CompareArgumentCount(const QString& Command)
+	{
+		if (Command.trimmed().isEmpty())
+			return 0;
+
+		QRegularExpression Exp(QStringLiteral("%(\\d+)"));
+		QStringList Parts = QProcess::splitCommand(Command);
+		if (Parts.isEmpty() || Exp.match(Parts.first()).hasMatch())
+			return -1;
+		QRegularExpressionMatchIterator Matches = Exp.globalMatch(Command);
+		QSet<int> Arguments;
+		while (Matches.hasNext()) {
+			bool Ok = false;
+			int Argument = Matches.next().captured(1).toInt(&Ok);
+			if (!Ok || Argument < 1 || Argument > 5)
+				return -1;
+			Arguments.insert(Argument);
+		}
+		int ArgumentCount = (int)Arguments.count();
+		if (ArgumentCount < 2)
+			return -1;
+		for (int Argument = 1; Argument <= ArgumentCount; ++Argument) {
+			if (!Arguments.contains(Argument))
+				return -1;
+		}
+		return ArgumentCount;
+	}
+
+	QString QuoteCommandArgument(const QString& Argument)
+	{
+		if (!Argument.isEmpty()
+				&& !Argument.contains(QRegularExpression(QStringLiteral("[\\s\"]"))))
+			return Argument;
+
+		QString Quoted = QStringLiteral("\"");
+		int Backslashes = 0;
+		foreach(const QChar& Ch, Argument) {
+			if (Ch == QLatin1Char('\\')) {
+				++Backslashes;
+				continue;
+			}
+			if (Ch == QLatin1Char('"')) {
+				Quoted += QString(Backslashes * 2 + 1, QLatin1Char('\\'));
+				Quoted += Ch;
+			}
+			else {
+				Quoted += QString(Backslashes, QLatin1Char('\\'));
+				Quoted += Ch;
+			}
+			Backslashes = 0;
+		}
+		Quoted += QString(Backslashes * 2, QLatin1Char('\\'));
+		Quoted += QLatin1Char('"');
+		return Quoted;
+	}
+
+	QString BuildCompareCommand(
+		const QString& Command, const QStringList& Paths)
+	{
+		QStringList Parts = QProcess::splitCommand(Command);
+		if (Parts.isEmpty())
+			return QString();
+
+		QString ExpandedCommand = QuoteCommandArgument(Parts.takeFirst());
+		QRegularExpression Exp(QStringLiteral("%(\\d+)"));
+		int PathCount = (int)Paths.count();
+		foreach(const QString& Part, Parts) {
+			QRegularExpressionMatchIterator Matches = Exp.globalMatch(Part);
+			QString ExpandedPart;
+			int Offset = 0;
+			bool SkipPart = false;
+			while (Matches.hasNext()) {
+				QRegularExpressionMatch Match = Matches.next();
+				int Argument = Match.captured(1).toInt();
+				if (Argument > PathCount) {
+					SkipPart = true;
+					break;
+				}
+				int Start = (int)Match.capturedStart();
+				int End = (int)Match.capturedEnd();
+				ExpandedPart += Part.mid(Offset, Start - Offset);
+				ExpandedPart += QDir::toNativeSeparators(Paths[Argument - 1]);
+				Offset = End;
+			}
+			if (SkipPart)
+				continue;
+			ExpandedPart += Part.mid(Offset);
+			ExpandedCommand += QLatin1Char(' ')
+				+ QuoteCommandArgument(ExpandedPart);
+		}
+		return ExpandedCommand;
+	}
+
+	bool StartExternalCommand(const QString& Command)
+	{
+		QStringList Parts = QProcess::splitCommand(Command);
+		if (Parts.isEmpty())
+			return false;
+		std::wstring Program = Parts.takeFirst().toStdWString();
+		QString Parameters;
+		foreach(const QString& Part, Parts) {
+			if (!Parameters.isEmpty())
+				Parameters += QLatin1Char(' ');
+			Parameters += QuoteCommandArgument(Part);
+		}
+		std::wstring NativeParameters = Parameters.toStdWString();
+
+		SHELLEXECUTEINFOW Info = { 0 };
+		Info.cbSize = sizeof(Info);
+		Info.fMask = SEE_MASK_NOCLOSEPROCESS;
+		Info.lpFile = Program.c_str();
+		Info.lpParameters = NativeParameters.empty()
+			? NULL : NativeParameters.c_str();
+		Info.nShow = SW_SHOW;
+		if (!ShellExecuteExW(&Info))
+			return false;
+		if (Info.hProcess)
+			CloseHandle(Info.hProcess);
+		return true;
+	}
+
+	int EvidenceLinkCount(const QString& Path)
+	{
+		BY_HANDLE_FILE_INFORMATION Info;
+		HANDLE Handle = CreateFileW(
+			(LPCWSTR)Path.utf16(), FILE_READ_ATTRIBUTES,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		if (Handle == INVALID_HANDLE_VALUE)
+			return -1;
+
+		bool Queried = GetFileInformationByHandle(Handle, &Info) != FALSE;
+		CloseHandle(Handle);
+		return Queried ? (int)Info.nNumberOfLinks : -1;
+	}
+
+	QStringList VisibleHeaders(QTreeWidget* Tree)
+	{
+		QStringList Header;
+		for (int Column = 0; Column < Tree->columnCount(); ++Column) {
+			if (!Tree->isColumnHidden(Column))
+				Header.append(Tree->headerItem()->text(Column));
+		}
+		return Header;
+	}
+
+	QStringList VisibleRow(QTreeWidget* Tree, QTreeWidgetItem* Item, int Level = 0)
+	{
+		QStringList Row;
+		for (int Column = 0; Column < Tree->columnCount(); ++Column) {
+			if (Tree->isColumnHidden(Column))
+				continue;
+			QString Cell = Item->text(Column);
+			if (Level && Column == 0)
+				Cell.prepend(QString(Level, QLatin1Char('_')) + QLatin1Char(' '));
+			Row.append(Cell);
+		}
+		return Row;
+	}
+
+	void AppendVisibleRows(QTreeWidget* Tree, QTreeWidgetItem* Item,
+		QList<QStringList>& Rows, int Level = 0)
+	{
+		if (Item->isHidden())
+			return;
+		Rows.append(VisibleRow(Tree, Item, Level));
+		for (int Index = 0; Index < Item->childCount(); ++Index)
+			AppendVisibleRows(Tree, Item->child(Index), Rows, Level + 1);
 	}
 }
 
@@ -301,6 +475,7 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pFilterScope = new QComboBox(this);
 	m_pFilterScope->addItem(tr("All fields"), eAllFields);
 	m_pFilterScope->addItem(tr("Path"), ePathField);
+	m_pFilterScope->addItem(tr("Version"), eVersionField);
 	m_pFilterScope->addItem(tr("Operation"), eOperationField);
 	m_pFilterScope->addItem(tr("Process"), eProcessField);
 	m_pFilterScope->addItem(tr("State"), eStateField);
@@ -401,6 +576,16 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	connect(m_pOpenFolder, SIGNAL(clicked(bool)), this, SLOT(OpenEvidenceFolder()));
 	connect(ConfigureLimitsButton, SIGNAL(clicked(bool)), this, SLOT(ConfigureLimits()));
 	connect(CloseButton, SIGNAL(clicked(bool)), this, SLOT(close()));
+
+	m_pCopyCell = new QAction(CPanelView::m_CopyCell, this);
+	m_pCopyRow = new QAction(CPanelView::m_CopyRow, this);
+	m_pCopyPanel = new QAction(CPanelView::m_CopyPanel, this);
+	m_pCopyRow->setShortcut(QKeySequence::Copy);
+	m_pCopyRow->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+	addAction(m_pCopyRow);
+	connect(m_pCopyCell, SIGNAL(triggered(bool)), this, SLOT(CopyCell()));
+	connect(m_pCopyRow, SIGNAL(triggered(bool)), this, SLOT(CopyRow()));
+	connect(m_pCopyPanel, SIGNAL(triggered(bool)), this, SLOT(CopyPanel()));
 
 	QAction* ResizeColumnsAction = new QAction(
 		tr("Resize All Columns to Contents"), this);
@@ -839,8 +1024,11 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		m_pTree->clearSelection();
 		Item->setSelected(true);
 	}
+	int Column = m_pTree->columnAt(Pos.x());
+	if (Column < 0)
+		Column = 0;
 	m_pTree->setCurrentItem(
-		Item, 0, QItemSelectionModel::NoUpdate);
+		Item, Column, QItemSelectionModel::NoUpdate);
 	QMenu Menu(this);
 	if (Item->data(0, eIsEvidence).toBool()) {
 		int PendingCount = 0;
@@ -859,6 +1047,26 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		OpenSandboxedEditor->setEnabled(HasEvidence);
 		connect(OpenSandboxedEditor, SIGNAL(triggered(bool)),
 			this, SLOT(OpenEvidenceInSandboxedEditor()));
+
+		QString CompareCommand = theConf->GetString(
+			"FileHistoryWindow/CompareCommand").trimmed();
+		int CompareArguments = CompareArgumentCount(CompareCommand);
+		int EvidenceCount = (int)EvidencePaths.count();
+		int SelectedCount = (int)m_pTree->selectedItems().count();
+		bool AllSelectedEvidence = PendingCount == 0
+			&& EvidenceCount == SelectedCount;
+		if (AllSelectedEvidence && EvidenceCount > 1
+				&& EvidenceCount <= CompareArguments) {
+			QMenu* CompareMenu = Menu.addMenu(tr("Compare"));
+			QAction* CompareUnsandboxed = CompareMenu->addAction(
+				tr("Unsandboxed"));
+			QAction* CompareSandboxed = CompareMenu->addAction(
+				CSandMan::GetIcon("Run"), tr("Sandboxed"));
+			connect(CompareUnsandboxed, &QAction::triggered, this,
+				[this]() { CompareEvidence(false); });
+			connect(CompareSandboxed, &QAction::triggered, this,
+				[this]() { CompareEvidence(true); });
+		}
 	}
 
 	QString LogicalPath = Item->data(0, eLogicalPath).toString();
@@ -893,6 +1101,19 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		CSandMan::GetIcon("Folder"), tr("Open Evidence Folder"));
 	connect(OpenFolder, SIGNAL(triggered(bool)),
 		this, SLOT(OpenEvidenceFolder()));
+
+	Menu.addSeparator();
+	QAction* UseFilter = Menu.addAction(tr("Use as Filter"));
+	UseFilter->setEnabled(
+		m_pTree->selectedItems().count() == 1
+		&& !Item->text(Column).isEmpty());
+	connect(UseFilter, SIGNAL(triggered(bool)), this, SLOT(UseAsFilter()));
+	m_pCopyCell->setEnabled(!Item->text(Column).isEmpty());
+	m_pCopyRow->setEnabled(!m_pTree->selectedItems().isEmpty());
+	m_pCopyPanel->setEnabled(m_pTree->topLevelItemCount() != 0);
+	Menu.addAction(m_pCopyCell);
+	Menu.addAction(m_pCopyRow);
+	Menu.addAction(m_pCopyPanel);
 
 	Menu.addSeparator();
 	QAction* Delete = Menu.addAction(
@@ -943,18 +1164,30 @@ QStringList CFileHistoryWindow::GetSelectedEvidencePaths(
 	QStringList Paths;
 	if (PendingCount)
 		*PendingCount = 0;
-	foreach(QTreeWidgetItem* Item, m_pTree->selectedItems()) {
-		if (Item->isHidden() || !Item->data(0, eIsEvidence).toBool())
-			continue;
+	QSet<QTreeWidgetItem*> Selected;
+	foreach(QTreeWidgetItem* Item, m_pTree->selectedItems())
+		Selected.insert(Item);
+	auto AddItem = [&Paths, PendingCount, &Selected](QTreeWidgetItem* Item) {
+		if (!Selected.contains(Item) || Item->isHidden()
+				|| !Item->data(0, eIsEvidence).toBool())
+			return;
 		if (Item->data(0, eIsPending).toBool()) {
 			if (PendingCount)
 				++*PendingCount;
-			continue;
+			return;
 		}
 
 		QString Path = Item->data(0, eBinaryPath).toString();
 		if (!Path.isEmpty() && !Paths.contains(Path, Qt::CaseInsensitive))
 			Paths.append(Path);
+	};
+	for (int Index = 0; Index < m_pTree->topLevelItemCount(); ++Index) {
+		QTreeWidgetItem* Parent = m_pTree->topLevelItem(Index);
+		if (Parent->isHidden())
+			continue;
+		AddItem(Parent);
+		for (int ChildIndex = 0; ChildIndex < Parent->childCount(); ++ChildIndex)
+			AddItem(Parent->child(ChildIndex));
 	}
 	return Paths;
 }
@@ -973,7 +1206,6 @@ void CFileHistoryWindow::OpenEvidenceInEditor()
 	}
 	if (Paths.isEmpty())
 		return;
-
 	if (Paths.count() > 1 &&
 			QMessageBox::question(this, "Sandboxie-Plus",
 				tr("Open %1 selected retained evidence files outside the "
@@ -982,12 +1214,15 @@ void CFileHistoryWindow::OpenEvidenceInEditor()
 				QMessageBox::Yes,
 				QMessageBox::No | QMessageBox::Default |
 					QMessageBox::Escape,
-				QMessageBox::NoButton) != QMessageBox::Yes)
+					QMessageBox::NoButton) != QMessageBox::Yes)
+		return;
+	bool Detach = false;
+	if (!ConfirmSharedEvidenceAccess(Paths, &Detach))
 		return;
 
 	QStringList FailedPaths;
 	foreach(const QString& Path, Paths) {
-		if (!DetachSharedEvidence(Path) ||
+		if ((Detach && !DetachSharedEvidence(Path)) ||
 				!theGUI->OpenFileInEditor(Path))
 			FailedPaths.append(Path);
 	}
@@ -1014,7 +1249,6 @@ void CFileHistoryWindow::OpenEvidenceInSandboxedEditor()
 	}
 	if (Paths.isEmpty())
 		return;
-
 	if (Paths.count() > 1 &&
 			QMessageBox::question(this, "Sandboxie-Plus",
 				tr("Open %1 selected retained evidence files inside sandbox "
@@ -1023,14 +1257,17 @@ void CFileHistoryWindow::OpenEvidenceInSandboxedEditor()
 				QMessageBox::Yes,
 				QMessageBox::No | QMessageBox::Default |
 					QMessageBox::Escape,
-				QMessageBox::NoButton) != QMessageBox::Yes)
+					QMessageBox::NoButton) != QMessageBox::Yes)
+		return;
+	bool Detach = false;
+	if (!ConfirmSharedEvidenceAccess(Paths, &Detach))
 		return;
 
 	QString Editor = theConf->GetString("Options/Editor", "notepad.exe");
 	QList<SB_STATUS> Results;
 	QStringList FailedPaths;
 	foreach(const QString& Path, Paths) {
-		if (!DetachSharedEvidence(Path)) {
+		if (Detach && !DetachSharedEvidence(Path)) {
 			FailedPaths.append(Path);
 			continue;
 		}
@@ -1048,6 +1285,175 @@ void CFileHistoryWindow::OpenEvidenceInSandboxedEditor()
 				.arg(FailedPaths.count())
 				.arg(FailedPaths.mid(0, 10).join("\n")));
 	}
+}
+
+
+void CFileHistoryWindow::CompareEvidence(bool Sandboxed)
+{
+	int PendingCount = 0;
+	QStringList Paths = GetSelectedEvidencePaths(&PendingCount);
+	QString Command = theConf->GetString(
+		"FileHistoryWindow/CompareCommand").trimmed();
+	int ArgumentCount = CompareArgumentCount(Command);
+	int PathCount = (int)Paths.count();
+	int SelectedCount = (int)m_pTree->selectedItems().count();
+	if (PendingCount != 0 || PathCount <= 1 || PathCount > ArgumentCount
+			|| PathCount != SelectedCount)
+		return;
+	bool Detach = false;
+	if (!ConfirmSharedEvidenceAccess(Paths, &Detach))
+		return;
+
+	QStringList FailedPaths;
+	if (Detach) foreach(const QString& Path, Paths) {
+		if (!DetachSharedEvidence(Path))
+			FailedPaths.append(Path);
+	}
+	if (!FailedPaths.isEmpty()) {
+		QMessageBox::warning(this, "Sandboxie-Plus",
+			tr("%1 retained evidence file(s) could not be prepared for "
+				"comparison without changing other retained versions.\n\n%2")
+				.arg(FailedPaths.count())
+				.arg(FailedPaths.mid(0, 10).join("\n")));
+		return;
+	}
+
+	Command = BuildCompareCommand(Command, Paths);
+	if (Command.isEmpty())
+		return;
+
+	if (Sandboxed) {
+		QList<SB_STATUS> Results;
+		Results.append(m_pBox->RunStart(Command));
+		theGUI->CheckResults(Results, this);
+		return;
+	}
+
+	if (!StartExternalCommand(Command)) {
+		QMessageBox::warning(this, "Sandboxie-Plus",
+			tr("The external comparison tool could not be started.\n\n%1")
+				.arg(Command));
+	}
+}
+
+
+bool CFileHistoryWindow::ConfirmSharedEvidenceAccess(const QStringList& Paths,
+	bool* Detach)
+{
+	int SharedCount = 0;
+	QStringList QueryFailures;
+	foreach(const QString& Path, Paths) {
+		int LinkCount = EvidenceLinkCount(Path);
+		if (LinkCount < 0)
+			QueryFailures.append(Path);
+		else if (LinkCount > 1)
+			++SharedCount;
+	}
+	if (!QueryFailures.isEmpty()) {
+		QMessageBox::warning(this, "Sandboxie-Plus",
+			tr("The hard-link state of %1 retained evidence file(s) could not be "
+				"checked, so they will not be opened.\n\n%2")
+				.arg(QueryFailures.count())
+				.arg(QueryFailures.mid(0, 10).join("\n")));
+		return false;
+	}
+	if (SharedCount == 0) {
+		*Detach = false;
+		return true;
+	}
+
+	QMessageBox Message(QMessageBox::Warning, "Sandboxie-Plus",
+		tr("%1 selected evidence file(s) share their data with another retained "
+			"version through NTFS hard links.\n\n"
+			"If the external program writes to one of these files, every linked "
+			"version may be changed. Detach creates an independent copy first. If "
+			"your external program is read-only, you may continue without detaching.")
+			.arg(SharedCount), QMessageBox::NoButton, this);
+	QPushButton* DetachButton = Message.addButton(tr("Detach and Continue"),
+		QMessageBox::AcceptRole);
+	QPushButton* ContinueButton = Message.addButton(tr("Continue Anyway"),
+		QMessageBox::DestructiveRole);
+	QPushButton* CancelButton = Message.addButton(QMessageBox::Cancel);
+	Message.setDefaultButton(DetachButton);
+	Message.setEscapeButton(CancelButton);
+	Message.exec();
+
+	if (Message.clickedButton() == CancelButton)
+		return false;
+	*Detach = Message.clickedButton() == DetachButton;
+	return Message.clickedButton() == DetachButton ||
+		Message.clickedButton() == ContinueButton;
+}
+
+
+void CFileHistoryWindow::CopyCell()
+{
+	QTreeWidgetItem* Current = m_pTree->currentItem();
+	if (!Current)
+		return;
+
+	int Column = m_pTree->currentColumn();
+	QList<QStringList> Rows;
+	foreach(QTreeWidgetItem* Item, m_pTree->selectedItems()) {
+		if (!Item->isHidden())
+			Rows.append(QStringList() << Item->text(Column));
+	}
+	CPanelView::CopyToClipboard(QStringList(), Rows);
+}
+
+
+void CFileHistoryWindow::CopyRow()
+{
+	QList<QStringList> Rows;
+	foreach(QTreeWidgetItem* Item, m_pTree->selectedItems()) {
+		if (!Item->isHidden())
+			Rows.append(VisibleRow(m_pTree, Item));
+	}
+	CPanelView::CopyToClipboard(VisibleHeaders(m_pTree), Rows);
+}
+
+
+void CFileHistoryWindow::CopyPanel()
+{
+	QList<QStringList> Rows;
+	for (int Index = 0; Index < m_pTree->topLevelItemCount(); ++Index)
+		AppendVisibleRows(m_pTree, m_pTree->topLevelItem(Index), Rows);
+	CPanelView::CopyToClipboard(VisibleHeaders(m_pTree), Rows);
+}
+
+
+void CFileHistoryWindow::UseAsFilter()
+{
+	if (m_pTree->selectedItems().count() != 1)
+		return;
+	QTreeWidgetItem* Item = m_pTree->currentItem();
+	if (!Item)
+		return;
+
+	int Column = m_pTree->currentColumn();
+	int Scope = eAllFields;
+	QString Value = Item->text(Column);
+	switch (Column) {
+	case 0:
+		Scope = ePathField;
+		Value = QFileInfo(
+			Item->data(0, eLogicalPath).toString()).fileName();
+		break;
+	case 1: Scope = eVersionField; break;
+	case 2: Scope = eDateField; break;
+	case 3: Scope = eOperationField; break;
+	case 4: Scope = eStateField; break;
+	case 5: Scope = eSizeField; break;
+	case 6: Scope = eProcessField; break;
+	case 7: Scope = eHashField; break;
+	}
+	if (Value.isEmpty())
+		return;
+
+	int ScopeIndex = m_pFilterScope->findData(Scope);
+	if (ScopeIndex >= 0)
+		m_pFilterScope->setCurrentIndex(ScopeIndex);
+	m_pFinder->SetSearchText(Value);
 }
 
 
@@ -1094,6 +1500,8 @@ void CFileHistoryWindow::ConfigureLimits()
 	QLineEdit* MaxFileSizeKB = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxFileSizeKB"), &Dialog);
 	QComboBox* CaptureMigrated = new QComboBox(&Dialog);
+	QLineEdit* CompareCommand = new QLineEdit(
+		theConf->GetString("FileHistoryWindow/CompareCommand"), &Dialog);
 	QPlainTextEdit* IncludeRules = new QPlainTextEdit(&Dialog);
 	QPlainTextEdit* ExcludeRules = new QPlainTextEdit(&Dialog);
 
@@ -1107,6 +1515,15 @@ void CFileHistoryWindow::ConfigureLimits()
 		tr("One KeepFileVersionsExclude rule per line"));
 	IncludeRules->setMinimumHeight(90);
 	ExcludeRules->setMinimumHeight(90);
+	CompareCommand->setPlaceholderText(
+		tr("BCompare.exe /readonly /solo \"%1\" \"%2\""));
+	CompareCommand->setToolTip(
+		tr("Enter a complete command containing two to five contiguous path "
+			"placeholders starting with %1. The highest placeholder sets the "
+			"maximum selection count. Compare is shown for two up to that "
+			"maximum, and unused placeholder arguments are omitted. Paths are "
+			"quoted automatically when needed."));
+	CompareCommand->setMinimumWidth(500);
 
 	MaxVersions->setPlaceholderText(tr("Inherited (currently %1)")
 		.arg(m_pBox->GetNum(
@@ -1144,6 +1561,7 @@ void CFileHistoryWindow::ConfigureLimits()
 		tr("Maximum capture size (KiB):"), MaxFileSizeKB);
 	FormLayout->addRow(
 		tr("Capture migrated-file baseline:"), CaptureMigrated);
+	FormLayout->addRow(tr("External compare command:"), CompareCommand);
 	MainLayout->addLayout(FormLayout);
 
 	QTabWidget* RuleTabs = new QTabWidget(&Dialog);
@@ -1171,7 +1589,7 @@ void CFileHistoryWindow::ConfigureLimits()
 
 	connect(Buttons, &QDialogButtonBox::accepted, &Dialog,
 		[this, &Dialog, MaxVersions, MaxVersionsPerFile,
-			MaxSizeKB, MaxFileSizeKB]() {
+			MaxSizeKB, MaxFileSizeKB, CompareCommand]() {
 		QStringList Invalid;
 		auto Validate = [&Invalid](QLineEdit* Edit, quint64 Maximum,
 			const QString& Name) {
@@ -1190,6 +1608,13 @@ void CFileHistoryWindow::ConfigureLimits()
 		Validate(MaxSizeKB, 0x7FFFFFFFFFFFFFFFULL, tr("Maximum total size"));
 		Validate(MaxFileSizeKB, 0x7FFFFFFFFFFFFFFFULL,
 			tr("Maximum capture size"));
+		if (CompareArgumentCount(CompareCommand->text()) < 0) {
+			QMessageBox::warning(&Dialog, "Sandboxie-Plus",
+				tr("The external compare command must contain two to five "
+					"contiguous path placeholders starting with %1. For "
+					"example:\n\nBCompare.exe /readonly /solo \"%1\" \"%2\""));
+			return;
+		}
 
 		if (!Invalid.isEmpty()) {
 			QMessageBox::warning(&Dialog, "Sandboxie-Plus",
@@ -1218,6 +1643,8 @@ void CFileHistoryWindow::ConfigureLimits()
 	Save("FileHistoryMaxVersionsPerFile", MaxVersionsPerFile);
 	Save("FileHistoryMaxSizeTotalKB", MaxSizeKB);
 	Save("FileHistoryMaxFileSizeKB", MaxFileSizeKB);
+	theConf->SetValue("FileHistoryWindow/CompareCommand",
+		CompareCommand->text().trimmed());
 	auto ReadRules = [](QPlainTextEdit* Edit) {
 		QStringList Rules;
 		foreach(const QString& Line,

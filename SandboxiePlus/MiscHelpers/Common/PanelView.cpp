@@ -178,24 +178,41 @@ void CPanelView::OnCopyPanel()
 
 void CPanelView::FormatAndCopy(QList<QStringList> Rows, bool Header)
 {
+	FormatClipboard(Header ? CopyHeader() : QStringList(), Rows, Header, Header);
+}
+
+void CPanelView::CopyToClipboard(const QStringList& Header, QList<QStringList> Rows)
+{
+	FormatClipboard(Header, Rows, !Header.isEmpty(), false);
+}
+
+void CPanelView::FormatClipboard(const QStringList& Header, QList<QStringList> Rows,
+	bool HasHeader, bool HeaderFormatted)
+{
 	int RowCount = Rows.length();
 
-	if (Header)
+	if (HasHeader)
 	{
+		QStringList FormattedHeader = Header;
+		if (!m_SimpleFormat && !HeaderFormatted) {
+			int HeaderCount = (int)FormattedHeader.count();
+			for (int i = 0; i < HeaderCount; ++i)
+				FormattedHeader[i] = "|" + FormattedHeader[i] + "|";
+		}
 		Rows.prepend(QStringList());
-		Rows.prepend(CopyHeader());
+		Rows.prepend(FormattedHeader);
 		Rows.prepend(QStringList());
 	}
 
 	QStringList TextRows;
-	if (m_SimpleFormat || !Header)
+	if (m_SimpleFormat || !HasHeader)
 	{
 		foreach(const QStringList& Row, Rows)
 			TextRows.append(Row.join(m_CellSeparator));
 	}
-	else if(Rows.size() > (Header ? 3 : 0))
+	else if(Rows.size() > (HasHeader ? 3 : 0))
 	{
-		int Columns = Rows[Header ? 3 : 0].count();
+		int Columns = Rows[HasHeader ? 3 : 0].count();
 		QVector<int> ColumnWidths(Columns, 0);
 
 		foreach(const QStringList& Row, Rows)

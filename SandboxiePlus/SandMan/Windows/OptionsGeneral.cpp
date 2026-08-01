@@ -726,11 +726,11 @@ QString COptionsWindow::GetCopyActionStr(ECopyAction Action)
 {
 	switch (Action)
 	{
-	case eCopyAlways:	return tr("Always copy");
-	case eDontCopy:		return tr("Don't copy");
-	case eCopyEmpty:	return tr("Copy empty");
-	case eCopyNewer:	return tr("Copy newer");
-	case eKeepFileVersions:	return tr("Keep file versions");
+	case eCopyAlways:				return tr("Always copy");
+	case eDontCopy:					return tr("Don't copy");
+	case eCopyEmpty:				return tr("Copy empty");
+	case eCopyNewer:				return tr("Copy newer");
+	case eKeepFileVersions:			return tr("Keep file versions");
 	case eKeepFileVersionsExclude:	return tr("Exclude from file versions");
 	}
 	return "";
@@ -854,6 +854,15 @@ void COptionsWindow::OnCopyItemDoubleClicked(QTreeWidgetItem* pItem, int Column)
 	pMode->addItem(tr("Keep file versions"), (int)eKeepFileVersions);
 	pMode->addItem(tr("Exclude from file versions"), (int)eKeepFileVersionsExclude);
 	pMode->setCurrentIndex(pMode->findData(pItem->data(0, Qt::UserRole)));
+	connect(pMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+		[this, pMode](int Index) {
+			if (pMode->itemData(Index).toInt() != eKeepFileVersions)
+				return;
+			QMessageBox::warning(this, "Sandboxie-Plus",
+				tr("Keeping file versions can cause high disk I/O and consume "
+					"significant storage space. Avoid broad rules on RAM disks or "
+					"encrypted disks, and make sure the storage has enough free space."));
+		});
 	ui.treeCopy->setItemWidget(pItem, 0, pMode);
 
 	QString Program = pItem->data(1, Qt::UserRole).toString();

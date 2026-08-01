@@ -4,6 +4,7 @@
 #include <QRegularExpression>
 
 class CFinder;
+class QAction;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -36,6 +37,10 @@ private slots:
 	void ShowContextMenu(const QPoint& Pos);
 	void OpenEvidenceInEditor();
 	void OpenEvidenceInSandboxedEditor();
+	void CopyCell();
+	void CopyRow();
+	void CopyPanel();
+	void UseAsFilter();
 	void DeleteEvidence();
 	void RemoveHistory();
 	void ConfigureLimits();
@@ -47,7 +52,9 @@ private:
 	void AddExcludeRule(const QString& Rule);
 	void ApplyFilter();
 	bool CanDeleteHistory();
+	void CompareEvidence(bool Sandboxed);
 	QStringList GetSelectedEvidencePaths(int* PendingCount = NULL) const;
+	bool ConfirmSharedEvidenceAccess(const QStringList& Paths, bool* Detach);
 
 	CSandBoxPtr m_pBox;
 	CFinder* m_pFinder;
@@ -61,6 +68,9 @@ private:
 	QPushButton* m_pRefreshButton;
 	QPushButton* m_pOpenFolder;
 	QPushButton* m_pRemoveHistory;
+	QAction* m_pCopyCell;
+	QAction* m_pCopyRow;
+	QAction* m_pCopyPanel;
 	QRegularExpression m_FilterExp;
 	bool m_Loading;
 	bool m_Loaded;

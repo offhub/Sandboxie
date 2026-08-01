@@ -15,6 +15,7 @@ public:
 	static void					SetCellSeparator(const QString& Sep) { m_CellSeparator = Sep; }
 
 	virtual QList<QStringList>	DumpPanel();
+	static void					CopyToClipboard(const QStringList& Header, QList<QStringList> Rows);
 
 	static QString				m_CopyCell;
 	static QString				m_CopyRow;
@@ -49,6 +50,7 @@ protected:
 	void						UpdateCopyMenu();
 	void						AddCopyMenu(QMenu* pMenu, bool bAddSeparator = true);
 	void						FormatAndCopy(QList<QStringList> Rows, bool Header = true);
+	static void					FormatClipboard(const QStringList& Header, QList<QStringList> Rows, bool HasHeader, bool HeaderFormatted);
 
 	QMenu*						m_pMenu;
 
