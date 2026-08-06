@@ -33,6 +33,7 @@ private slots:
 	void SetFilter(const QRegularExpression& RegExp, int Options = 0, int Column = -1);
 	void UpdateFilterScope();
 	void UpdateSelection();
+	void UpdateHashHighlight();
 	void OpenEvidenceFolder();
 	void ShowContextMenu(const QPoint& Pos);
 	void OpenEvidenceInEditor();
@@ -58,6 +59,7 @@ private:
 
 	CSandBoxPtr m_pBox;
 	CFinder* m_pFinder;
+	QCheckBox* m_pHighlightSame;
 	QCheckBox* m_pHideEmpty;
 	QCheckBox* m_pHideReused;
 	QComboBox* m_pFilterScope;

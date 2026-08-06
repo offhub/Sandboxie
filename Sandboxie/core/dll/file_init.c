@@ -276,6 +276,8 @@ _FX BOOLEAN File_Init(void)
 
     File_InitFileMigration();
 
+    File_HistoryInitCrypto();
+
     //
     // intercept NTDLL entry points
     //

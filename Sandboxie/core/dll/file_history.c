@@ -38,16 +38,22 @@
 #define FILE_HISTORY_USAGE_SCAN_ATTEMPTS 2
 #define FILE_HISTORY_COLLISION_ATTEMPTS 16
 #define FILE_HISTORY_PUBLISH_ATTEMPTS 2
+#define FILE_HISTORY_SHARING_RETRY_ATTEMPTS 3
+#define FILE_HISTORY_SHARING_RETRY_DELAY_MS 10
 #define FILE_HISTORY_ULONG_MAX       ((ULONG)-1)
 #define FILE_HISTORY_ULONGLONG_MAX   ((ULONGLONG)-1)
-#define FILE_HISTORY_DEFAULT_MAX_VERSIONS_TOTAL 1000
-#define FILE_HISTORY_DEFAULT_MAX_VERSIONS_PER_FILE 100
+#define FILE_HISTORY_DEFAULT_MAX_VERSIONS_TOTAL 2500
+#define FILE_HISTORY_DEFAULT_MAX_VERSIONS_PER_FILE 25
 #define FILE_HISTORY_DEFAULT_MAX_SIZE_TOTAL_KB (1024 * 1024)
-#define FILE_HISTORY_DEFAULT_MAX_FILE_SIZE_KB 1024
+#define FILE_HISTORY_DEFAULT_MAX_FILE_SIZE_KB (10 * 1024)
 #define FILE_HISTORY_NOTICE_WARNING  0x00000001
 #define FILE_HISTORY_NOTICE_LIMIT    0x00000002
 #define FILE_HISTORY_SHA256_SIZE     32
 #define FILE_HISTORY_SHA256_TEXT     65
+#define FILE_HISTORY_BLOB_NONE       0
+#define FILE_HISTORY_BLOB_MISSING    1
+#define FILE_HISTORY_BLOB_MATCH      2
+#define FILE_HISTORY_BLOB_EXISTING   3
 
 
 //---------------------------------------------------------------------------
@@ -65,6 +71,7 @@ static ULONG File_HistoryMaxVersionsPerFile = 0;
 static ULONGLONG File_HistoryMaxSizeTotal = 0;
 static ULONGLONG File_HistoryMaxFileSize = 0;
 static BOOLEAN File_HistoryCaptureMigrated = FALSE;
+static BOOLEAN File_HistoryLogWarnings = TRUE;
 static HANDLE File_HistoryNoticeHandle = NULL;
 static volatile LONG *File_HistoryNoticeFlags = NULL;
 static volatile LONG File_HistoryLocalNoticeFlags = 0;
@@ -103,14 +110,23 @@ typedef NTSTATUS (WINAPI *P_FileHistoryBCryptCloseAlgorithmProvider)(
     BCRYPT_ALG_HANDLE, ULONG);
 
 typedef struct _FILE_HISTORY_HASH_CONTEXT {
-    BCRYPT_ALG_HANDLE Algorithm;
     BCRYPT_HASH_HANDLE Hash;
     UCHAR *Object;
     P_FileHistoryBCryptHashData HashData;
     P_FileHistoryBCryptFinishHash FinishHash;
     P_FileHistoryBCryptDestroyHash DestroyHash;
-    P_FileHistoryBCryptCloseAlgorithmProvider CloseAlgorithmProvider;
 } FILE_HISTORY_HASH_CONTEXT;
+
+typedef struct _FILE_HISTORY_HASH_API {
+    BCRYPT_ALG_HANDLE Algorithm;
+    ULONG ObjectLength;
+    P_FileHistoryBCryptCreateHash CreateHash;
+    P_FileHistoryBCryptHashData HashData;
+    P_FileHistoryBCryptFinishHash FinishHash;
+    P_FileHistoryBCryptDestroyHash DestroyHash;
+} FILE_HISTORY_HASH_API;
+
+static FILE_HISTORY_HASH_API File_HistoryHashApi;
 
 static _FX NTSTATUS File_HistoryQueryIdentity(
     const WCHAR *Path, FILE_INTERNAL_INFORMATION *Internal,
@@ -118,10 +134,13 @@ static _FX NTSTATUS File_HistoryQueryIdentity(
     FILE_STANDARD_INFORMATION *Standard);
 static _FX BOOLEAN File_HistoryQueryProcessCreationTime(
     HANDLE Process, ULONGLONG *CreationTime);
+static _FX WCHAR *File_HistoryGetMetadataField(
+    const WCHAR *Text, const WCHAR *Name, BOOLEAN Unescape);
 static _FX WCHAR *File_HistorySetMetadataField(
     const WCHAR *Text, const WCHAR *Name, const WCHAR *Value);
 static _FX VOID File_HistoryUpdatePendingPaths(
     const WCHAR *Artifact, const WCHAR *TruePath, const WCHAR *CopyPath);
+static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned);
 static _FX NTSTATUS File_HistoryCheckLimits(
     const WCHAR *ArtifactPath, ULONGLONG AdditionalSize, HANDLE *Mutex);
 static _FX BOOLEAN File_HistoryCapture(
@@ -170,24 +189,30 @@ static _FX VOID File_HistoryFreeHash(
         Context->DestroyHash(Context->Hash);
     if (Context->Object)
         Dll_Free(Context->Object);
-    if (Context->Algorithm && Context->CloseAlgorithmProvider)
-        Context->CloseAlgorithmProvider(Context->Algorithm, 0);
     memzero(Context, sizeof(FILE_HISTORY_HASH_CONTEXT));
 }
 
 
-static _FX BOOLEAN File_HistoryInitHash(
-    FILE_HISTORY_HASH_CONTEXT *Context)
+static _FX BOOLEAN File_HistoryInitCrypto(void)
 {
+    WCHAR conf_buf[2048];
+    FILE_HISTORY_HASH_API api;
     HMODULE module;
     P_FileHistoryBCryptOpenAlgorithmProvider open_algorithm;
     P_FileHistoryBCryptGetProperty get_property;
-    P_FileHistoryBCryptCreateHash create_hash;
+    P_FileHistoryBCryptCloseAlgorithmProvider close_provider;
     ULONG object_size;
     ULONG result_size;
     NTSTATUS status;
 
-    memzero(Context, sizeof(FILE_HISTORY_HASH_CONTEXT));
+    if (File_HistoryHashApi.Algorithm)
+        return TRUE;
+    if (!NT_SUCCESS(SbieApi_QueryConf(
+            NULL, L"KeepFileVersions", 0,
+            conf_buf, sizeof(conf_buf) - 16 * sizeof(WCHAR))))
+        return TRUE;
+
+    memzero(&api, sizeof(api));
     module = GetModuleHandleW(L"bcrypt.dll");
     if (!module)
         module = LoadLibraryW(L"bcrypt.dll");
@@ -200,50 +225,70 @@ static _FX BOOLEAN File_HistoryInitHash(
     get_property =
         (P_FileHistoryBCryptGetProperty)GetProcAddress(
             module, "BCryptGetProperty");
-    create_hash =
+    api.CreateHash =
         (P_FileHistoryBCryptCreateHash)GetProcAddress(
             module, "BCryptCreateHash");
-    Context->HashData =
+    api.HashData =
         (P_FileHistoryBCryptHashData)GetProcAddress(
             module, "BCryptHashData");
-    Context->FinishHash =
+    api.FinishHash =
         (P_FileHistoryBCryptFinishHash)GetProcAddress(
             module, "BCryptFinishHash");
-    Context->DestroyHash =
+    api.DestroyHash =
         (P_FileHistoryBCryptDestroyHash)GetProcAddress(
             module, "BCryptDestroyHash");
-    Context->CloseAlgorithmProvider =
+    close_provider =
         (P_FileHistoryBCryptCloseAlgorithmProvider)GetProcAddress(
             module, "BCryptCloseAlgorithmProvider");
-    if (!open_algorithm || !get_property || !create_hash ||
-            !Context->HashData || !Context->FinishHash ||
-            !Context->DestroyHash || !Context->CloseAlgorithmProvider) {
-        File_HistoryFreeHash(Context);
+    if (!open_algorithm || !get_property ||
+            !api.CreateHash || !api.HashData || !api.FinishHash ||
+            !api.DestroyHash || !close_provider) {
         return FALSE;
     }
 
     status = open_algorithm(
-        &Context->Algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0);
-    if (!NT_SUCCESS(status)) {
-        File_HistoryFreeHash(Context);
+        &api.Algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+    if (!NT_SUCCESS(status))
         return FALSE;
-    }
+
     status = get_property(
-        Context->Algorithm, BCRYPT_OBJECT_LENGTH,
+        api.Algorithm, BCRYPT_OBJECT_LENGTH,
         (PUCHAR)&object_size, sizeof(object_size), &result_size, 0);
-    if (!NT_SUCCESS(status) || result_size != sizeof(object_size)) {
-        File_HistoryFreeHash(Context);
+    if (!NT_SUCCESS(status) || result_size != sizeof(object_size) ||
+            !object_size) {
+        close_provider(api.Algorithm, 0);
         return FALSE;
     }
 
-    Context->Object = Dll_AllocTemp(object_size);
+    api.ObjectLength = object_size;
+    File_HistoryHashApi = api;
+    return TRUE;
+}
+
+
+static _FX BOOLEAN File_HistoryInitHash(
+    FILE_HISTORY_HASH_CONTEXT *Context)
+{
+    NTSTATUS status;
+
+    memzero(Context, sizeof(FILE_HISTORY_HASH_CONTEXT));
+    if (!File_HistoryHashApi.Algorithm ||
+            !File_HistoryHashApi.CreateHash) {
+        return FALSE;
+    }
+
+    Context->HashData = File_HistoryHashApi.HashData;
+    Context->FinishHash = File_HistoryHashApi.FinishHash;
+    Context->DestroyHash = File_HistoryHashApi.DestroyHash;
+
+    Context->Object = Dll_AllocTemp(File_HistoryHashApi.ObjectLength);
     if (!Context->Object) {
         File_HistoryFreeHash(Context);
         return FALSE;
     }
-    status = create_hash(
-        Context->Algorithm, &Context->Hash,
-        Context->Object, object_size, NULL, 0, 0);
+    status = File_HistoryHashApi.CreateHash(
+        File_HistoryHashApi.Algorithm, &Context->Hash,
+        Context->Object, File_HistoryHashApi.ObjectLength, NULL, 0, 0);
     if (!NT_SUCCESS(status)) {
         File_HistoryFreeHash(Context);
         return FALSE;
@@ -905,6 +950,45 @@ static _FX VOID File_HistoryReleaseMutex(HANDLE Mutex)
 
 
 //---------------------------------------------------------------------------
+// File_HistoryCreateLimitMutex
+//---------------------------------------------------------------------------
+
+
+static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned)
+{
+    WCHAR *name;
+    HANDLE mutex;
+    DWORD wait_result;
+    ULONG length;
+
+    if (Abandoned)
+        *Abandoned = FALSE;
+
+    length = wcslen(Dll_BoxName) + 40;
+    name = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (!name)
+        return NULL;
+
+    Sbie_snwprintf(name, length, L"Sandboxie_FileHistoryLimit_%s",
+        Dll_BoxName);
+    mutex = CreateMutex(NULL, FALSE, name);
+    Dll_Free(name);
+    if (!mutex)
+        return NULL;
+
+    wait_result = WaitForSingleObject(mutex, INFINITE);
+    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return NULL;
+    }
+    if (wait_result == WAIT_ABANDONED && Abandoned)
+        *Abandoned = TRUE;
+
+    return mutex;
+}
+
+
+//---------------------------------------------------------------------------
 // File_HistoryCreateMutexPair
 //---------------------------------------------------------------------------
 
@@ -1047,6 +1131,8 @@ static _FX VOID File_HistoryInvalidateUsage(void)
 static _FX VOID File_HistoryLogWarning(
     const WCHAR *Operation, NTSTATUS Status, const WCHAR *Path)
 {
+    if (!File_HistoryLogWarnings)
+        return;
     if (!File_HistoryClaimNotice(FILE_HISTORY_NOTICE_WARNING))
         return;
 
@@ -1073,6 +1159,8 @@ static _FX VOID File_HistoryLogWarning(
 
 static _FX VOID File_HistoryLogLimit(const WCHAR *Path)
 {
+    if (!File_HistoryLogWarnings)
+        return;
     if (!File_HistoryClaimNotice(FILE_HISTORY_NOTICE_LIMIT))
         return;
 
@@ -1315,17 +1403,13 @@ static _FX NTSTATUS File_HistoryQueryUsage(
 static _FX NTSTATUS File_HistoryCheckLimits(
     const WCHAR *ArtifactPath, ULONGLONG AdditionalSize, HANDLE *Mutex)
 {
-    WCHAR *name;
     HANDLE mutex;
-    DWORD wait_result;
     NTSTATUS status;
     FILE_HISTORY_USAGE_STATE *usage_state;
     ULONG versions;
-    ULONG file_versions;
     ULONGLONG size;
-    ULONGLONG file_size;
-    ULONG length;
     ULONG usage_attempts = 0;
+    BOOLEAN abandoned;
 
     *Mutex = NULL;
     versions = 0;
@@ -1335,9 +1419,11 @@ static _FX NTSTATUS File_HistoryCheckLimits(
     if (File_HistoryMaxFileSize &&
             AdditionalSize > File_HistoryMaxFileSize)
         return STATUS_FILE_TOO_LARGE;
+
     if (File_HistoryMaxVersionsPerFile) {
-        file_versions = 0;
-        file_size = 0;
+        ULONG file_versions = 0;
+        ULONGLONG file_size = 0;
+
         status = File_HistoryAddDirectoryUsage(
             ArtifactPath, &file_versions, &file_size,
             File_HistoryMaxVersionsPerFile);
@@ -1349,29 +1435,15 @@ static _FX NTSTATUS File_HistoryCheckLimits(
             !File_HistoryGetUsageState())
         return STATUS_SUCCESS;
 
-    length = wcslen(Dll_BoxName) + 40;
-    name = Dll_AllocTemp(length * sizeof(WCHAR));
-    if (!name)
-        return STATUS_INSUFFICIENT_RESOURCES;
-
-    Sbie_snwprintf(name, length, L"Sandboxie_FileHistoryLimit_%s",
-        Dll_BoxName);
-    mutex = CreateMutex(NULL, FALSE, name);
-    Dll_Free(name);
+    mutex = File_HistoryCreateLimitMutex(&abandoned);
     if (!mutex)
         return STATUS_INSUFFICIENT_RESOURCES;
-
-    // Limit checking and evidence creation must remain serialized.  Wait for
-    // an active capture instead of dropping evidence during normal contention.
-    wait_result = WaitForSingleObject(mutex, INFINITE);
-    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
-        CloseHandle(mutex);
-        return STATUS_UNSUCCESSFUL;
-    }
 
     // Build aggregate usage once per box and session.
     // Captures update it under this mutex; pending removals invalidate it.
     usage_state = File_HistoryGetUsageState();
+    if (abandoned && usage_state)
+        InterlockedExchange(&usage_state->Initialized, 0);
     if (!usage_state) {
         status = File_HistoryQueryUsage(&versions, &size);
     }
@@ -1403,12 +1475,12 @@ static _FX NTSTATUS File_HistoryCheckLimits(
                 break;
         }
     }
-    if (NT_SUCCESS(status) &&
-            File_HistoryUsageReached(
-                versions, size,
-                File_HistoryMaxVersionsTotal,
-                File_HistoryMaxSizeTotal, AdditionalSize))
+    if (NT_SUCCESS(status) && File_HistoryUsageReached(
+            versions, size,
+            File_HistoryMaxVersionsTotal,
+            File_HistoryMaxSizeTotal, AdditionalSize)) {
         status = STATUS_QUOTA_EXCEEDED;
+    }
 
     if (!NT_SUCCESS(status)) {
         File_HistoryReleaseMutex(mutex);
@@ -1603,6 +1675,88 @@ static _FX BOOLEAN File_HistorySameGenerationInfo(
 }
 
 
+static _FX BOOLEAN File_HistoryHashHandle(
+    HANDLE Source, const FILE_NETWORK_OPEN_INFORMATION *ExpectedInfo,
+    UCHAR Hash[FILE_HISTORY_SHA256_SIZE])
+{
+    FILE_NETWORK_OPEN_INFORMATION current_info;
+    FILE_NETWORK_OPEN_INFORMATION final_info;
+    FILE_HISTORY_HASH_CONTEXT hash_context;
+    IO_STATUS_BLOCK iosb;
+    LARGE_INTEGER offset;
+    UCHAR *buffer = NULL;
+    NTSTATUS status;
+    BOOLEAN hashing;
+
+    memzero(&hash_context, sizeof(hash_context));
+    hashing = File_HistoryInitHash(&hash_context);
+    if (!hashing)
+        return FALSE;
+
+    status = __sys_NtQueryInformationFile(
+        Source, &iosb, &current_info, sizeof(current_info),
+        FileNetworkOpenInformation);
+    if (!NT_SUCCESS(status) ||
+            !File_HistorySameGenerationInfo(ExpectedInfo, &current_info))
+        goto finish;
+
+    if (current_info.EndOfFile.QuadPart > 0) {
+        buffer = Dll_AllocTemp(FILE_HISTORY_COPY_BUFFER);
+        if (!buffer) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto finish;
+        }
+    }
+
+    offset.QuadPart = 0;
+    while ((ULONGLONG)offset.QuadPart <
+            (ULONGLONG)current_info.EndOfFile.QuadPart) {
+        ULONGLONG remaining =
+            current_info.EndOfFile.QuadPart - offset.QuadPart;
+        ULONG length = remaining > FILE_HISTORY_COPY_BUFFER
+                     ? FILE_HISTORY_COPY_BUFFER : (ULONG)remaining;
+
+        status = __sys_NtReadFile(
+            Source, NULL, NULL, NULL, &iosb,
+            buffer, length, &offset, NULL);
+        if (!NT_SUCCESS(status))
+            goto finish;
+        if (!iosb.Information) {
+            status = STATUS_END_OF_FILE;
+            goto finish;
+        }
+
+        length = (ULONG)iosb.Information;
+        if (!File_HistoryUpdateHash(&hash_context, buffer, length)) {
+            status = STATUS_UNSUCCESSFUL;
+            hashing = FALSE;
+            goto finish;
+        }
+        offset.QuadPart += length;
+    }
+
+    status = __sys_NtQueryInformationFile(
+        Source, &iosb, &final_info, sizeof(final_info),
+        FileNetworkOpenInformation);
+    if (!NT_SUCCESS(status) ||
+            !File_HistorySameGenerationInfo(&current_info, &final_info)) {
+        status = STATUS_RETRY;
+        goto finish;
+    }
+
+    if (hashing && !File_HistoryFinishHash(&hash_context, Hash)) {
+        status = STATUS_UNSUCCESSFUL;
+        hashing = FALSE;
+    }
+
+finish:
+    if (buffer)
+        Dll_Free(buffer);
+    File_HistoryFreeHash(&hash_context);
+    return NT_SUCCESS(status) && hashing;
+}
+
+
 static _FX NTSTATUS File_HistoryCopyFile(
     const WCHAR *SourcePath, const WCHAR *TargetPath,
     FILE_NETWORK_OPEN_INFORMATION *SourceInfo,
@@ -1629,12 +1783,93 @@ static _FX NTSTATUS File_HistoryCopyFile(
 
     InitializeObjectAttributes(
         &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, Secure_NormalSD);
+
+    //
+    // Empty files never need a source open.  Skipping the open entirely
+    // avoids sharing violations when the application holds the file with
+    // ShareMode: None (exclusive), which is common for temporary/scratch
+    // files created by Chrome and similar applications.
+    //
+    if (SourceInfo->EndOfFile.QuadPart == 0) {
+        FILE_NETWORK_OPEN_INFORMATION verify_info;
+
+        RtlInitUnicodeString(&objname, TargetPath);
+        status = __sys_NtCreateFile(
+            &target, FILE_GENERIC_WRITE | SYNCHRONIZE,
+            &objattrs, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_VALID_FLAGS, FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
+            FILE_OPEN_REPARSE_POINT, NULL, 0);
+        if (!NT_SUCCESS(status)) {
+            File_HistoryDeleteFile(TargetPath);
+            return status;
+        }
+
+        //
+        // The source may have been written between the initial
+        // NtQueryFullAttributesFile in File_HistoryCapture and
+        // this fast path.  Re-query to detect a generation change.
+        //
+        RtlInitUnicodeString(&objname, SourcePath);
+        status = __sys_NtQueryFullAttributesFile(&objattrs, &verify_info);
+        if (!NT_SUCCESS(status) ||
+                !File_HistorySameGenerationInfo(SourceInfo, &verify_info)) {
+            NtClose(target);
+            File_HistoryDeleteFile(TargetPath);
+            return NT_SUCCESS(status) ? STATUS_RETRY : status;
+        }
+        *SourceInfo = verify_info;
+
+        {
+            NTSTATUS attr_status;
+
+            basic.CreationTime = SourceInfo->CreationTime;
+            basic.LastAccessTime = SourceInfo->LastAccessTime;
+            basic.LastWriteTime = SourceInfo->LastWriteTime;
+            basic.ChangeTime = SourceInfo->ChangeTime;
+            basic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+            attr_status = __sys_NtSetInformationFile(
+                target, &iosb, &basic, sizeof(basic),
+                FileBasicInformation);
+            if (!NT_SUCCESS(attr_status))
+                File_HistoryLogWarning(
+                    L"Preserving file attributes",
+                    attr_status, SourcePath);
+        }
+
+        // SHA-256 of the empty string
+        static const UCHAR empty_hash[FILE_HISTORY_SHA256_SIZE] = {
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+            0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+            0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+            0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
+        };
+        memcpy(Hash, empty_hash, FILE_HISTORY_SHA256_SIZE);
+        *HashValid = TRUE;
+        NtClose(target);
+        return status;
+    }
+
     RtlInitUnicodeString(&objname, SourcePath);
-    status = __sys_NtCreateFile(
-        &source, FILE_GENERIC_READ | SYNCHRONIZE,
-        &objattrs, &iosb, NULL, 0, FILE_SHARE_VALID_FLAGS, FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
-        FILE_OPEN_REPARSE_POINT, NULL, 0);
+
+    {
+        ULONG sharing_retries;
+
+        for (sharing_retries = 0; ; ++sharing_retries) {
+            status = __sys_NtCreateFile(
+                &source, FILE_GENERIC_READ | SYNCHRONIZE,
+                &objattrs, &iosb, NULL, 0, FILE_SHARE_VALID_FLAGS,
+                FILE_OPEN,
+                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
+                FILE_OPEN_REPARSE_POINT, NULL, 0);
+            if (status != STATUS_SHARING_VIOLATION ||
+                    sharing_retries >= FILE_HISTORY_SHARING_RETRY_ATTEMPTS)
+                break;
+            Sleep(FILE_HISTORY_SHARING_RETRY_DELAY_MS
+                  * (sharing_retries + 1));
+        }
+    }
+
     if (!NT_SUCCESS(status))
         return status;
 
@@ -1846,10 +2081,9 @@ finish:
 }
 
 
-static _FX NTSTATUS File_HistoryPublishCopy(
-    const WCHAR *TempPath, const WCHAR *VersionPath,
-    const UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN HashValid,
-    BOOLEAN *ContentReused)
+static _FX ULONG File_HistoryProbeCopyBlob(
+    const WCHAR *TempPath,
+    const UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN HashValid)
 {
     WCHAR hash_text[FILE_HISTORY_SHA256_TEXT];
     WCHAR *blob_path;
@@ -1860,15 +2094,14 @@ static _FX NTSTATUS File_HistoryPublishCopy(
     ULONG length;
     BOOLEAN blob_exists = FALSE;
 
-    *ContentReused = FALSE;
     if (!HashValid || !File_HistoryBlobs)
-        return File_HistoryRenamePath(TempPath, VersionPath, FALSE);
+        return FILE_HISTORY_BLOB_NONE;
 
     File_HistoryFormatHash(Hash, hash_text);
     length = wcslen(File_HistoryBlobs) + wcslen(hash_text) + 6;
     blob_path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (!blob_path)
-        return File_HistoryRenamePath(TempPath, VersionPath, FALSE);
+        return FILE_HISTORY_BLOB_NONE;
     Sbie_snwprintf(blob_path, length, L"%s\\%s.bin",
         File_HistoryBlobs, hash_text);
 
@@ -1884,6 +2117,46 @@ static _FX NTSTATUS File_HistoryPublishCopy(
     else if (status == STATUS_OBJECT_NAME_NOT_FOUND ||
             status == STATUS_OBJECT_PATH_NOT_FOUND ||
             status == STATUS_NO_SUCH_FILE) {
+        Dll_Free(blob_path);
+        return FILE_HISTORY_BLOB_MISSING;
+    }
+
+    if (blob_exists && File_HistoryFilesEqual(TempPath, blob_path)) {
+        Dll_Free(blob_path);
+        return FILE_HISTORY_BLOB_MATCH;
+    }
+
+    Dll_Free(blob_path);
+    return blob_exists
+        ? FILE_HISTORY_BLOB_EXISTING : FILE_HISTORY_BLOB_NONE;
+}
+
+
+static _FX NTSTATUS File_HistoryPublishCopy(
+    const WCHAR *TempPath, const WCHAR *VersionPath,
+    const UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN HashValid,
+    ULONG BlobState, BOOLEAN *ContentReused)
+{
+    WCHAR hash_text[FILE_HISTORY_SHA256_TEXT];
+    WCHAR *blob_path;
+    NTSTATUS status;
+    ULONG length;
+
+    *ContentReused = FALSE;
+    if ((!HashValid || !File_HistoryBlobs) ||
+            (BlobState != FILE_HISTORY_BLOB_MISSING &&
+             BlobState != FILE_HISTORY_BLOB_MATCH))
+        return File_HistoryRenamePath(TempPath, VersionPath, FALSE);
+
+    File_HistoryFormatHash(Hash, hash_text);
+    length = wcslen(File_HistoryBlobs) + wcslen(hash_text) + 6;
+    blob_path = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (!blob_path)
+        return File_HistoryRenamePath(TempPath, VersionPath, FALSE);
+    Sbie_snwprintf(blob_path, length, L"%s\\%s.bin",
+        File_HistoryBlobs, hash_text);
+
+    if (BlobState == FILE_HISTORY_BLOB_MISSING) {
         status = File_HistoryCreateHardLink(TempPath, blob_path);
         if (NT_SUCCESS(status)) {
             status = File_HistoryRenamePath(
@@ -1893,23 +2166,18 @@ static _FX NTSTATUS File_HistoryPublishCopy(
             Dll_Free(blob_path);
             return status;
         }
-        if (status == STATUS_OBJECT_NAME_COLLISION)
-            blob_exists = TRUE;
+        if (status != STATUS_OBJECT_NAME_COLLISION) {
+            Dll_Free(blob_path);
+            return File_HistoryRenamePath(TempPath, VersionPath, FALSE);
+        }
     }
-
-    if (blob_exists && File_HistoryFilesEqual(TempPath, blob_path)) {
+    else {
         status = File_HistoryCreateHardLink(blob_path, VersionPath);
         if (NT_SUCCESS(status)) {
-            if (File_HistoryFilesEqual(TempPath, VersionPath)) {
-                File_HistoryDeleteFile(TempPath);
-                *ContentReused = TRUE;
-                Dll_Free(blob_path);
-                return STATUS_SUCCESS;
-            }
-            File_HistoryDeleteFile(VersionPath);
+            File_HistoryDeleteFile(TempPath);
+            *ContentReused = TRUE;
             Dll_Free(blob_path);
-            return File_HistoryRenamePath(
-                TempPath, VersionPath, FALSE);
+            return STATUS_SUCCESS;
         }
         if (status == STATUS_OBJECT_NAME_COLLISION) {
             Dll_Free(blob_path);
@@ -2027,6 +2295,7 @@ static _FX BOOLEAN File_HistoryCapture(
     BOOLEAN write_metadata;
     BOOLEAN hash_valid;
     BOOLEAN content_reused;
+    ULONG blob_state;
 
     if (!File_HistoryMatches(TruePath))
         return FALSE;
@@ -2161,15 +2430,16 @@ retry_capture:
                 ? (ULONGLONG)info.EndOfFile.QuadPart : 0,
             &limit_mutex);
         if (NT_SUCCESS(status)) {
+            File_HistoryReleaseMutex(limit_mutex);
+            limit_mutex = NULL;
             Sbie_snwprintf(temp_path, length + 32, L"%s.tmp.%08X.%08X",
                 version_path, Dll_ProcessId,
                 InterlockedIncrement(&File_HistorySequence));
             status = File_HistoryCopyFile(
                 CopyPath, temp_path, &info, hash, &hash_valid);
-            if (status == STATUS_RETRY &&
+            if ((status == STATUS_RETRY ||
+                 status == STATUS_SHARING_VIOLATION) &&
                     attempts < FILE_HISTORY_CAPTURE_ATTEMPTS) {
-                File_HistoryReleaseMutex(limit_mutex);
-                limit_mutex = NULL;
                 RtlInitUnicodeString(&objname, CopyPath);
                 status = __sys_NtQueryFullAttributesFile(&objattrs, &info);
                 if (NT_SUCCESS(status)) {
@@ -2183,17 +2453,33 @@ retry_capture:
                 }
             }
             if (NT_SUCCESS(status)) {
+                blob_state = File_HistoryProbeCopyBlob(
+                    temp_path, hash, hash_valid);
                 for (publish_attempt = 0;
                         publish_attempt < FILE_HISTORY_PUBLISH_ATTEMPTS;
                         ++publish_attempt) {
+                    status = File_HistoryCheckLimits(
+                        artifact_path,
+                        info.EndOfFile.QuadPart > 0
+                            ? (ULONGLONG)info.EndOfFile.QuadPart : 0,
+                        &limit_mutex);
+                    if (!NT_SUCCESS(status)) {
+                        File_HistoryDeleteFile(temp_path);
+                        break;
+                    }
                     status = File_HistoryPublishCopy(
                         temp_path, version_path, hash, hash_valid,
-                        &content_reused);
+                        blob_state, &content_reused);
                     if (NT_SUCCESS(status)) {
                         File_HistoryCommitUsage(
                             info.EndOfFile.QuadPart > 0
                                 ? (ULONGLONG)info.EndOfFile.QuadPart : 0);
+                        File_HistoryReleaseMutex(limit_mutex);
+                        limit_mutex = NULL;
+                        break;
                     }
+                    File_HistoryReleaseMutex(limit_mutex);
+                    limit_mutex = NULL;
                     if (status != STATUS_OBJECT_NAME_COLLISION)
                         break;
 
@@ -2452,6 +2738,9 @@ static _FX BOOLEAN File_HistoryArmDelete(
         }
     }
 
+    File_HistoryReleaseMutex(limit_mutex);
+    limit_mutex = NULL;
+
     if (NT_SUCCESS(status)) {
         NTSTATUS meta_status;
 
@@ -2505,15 +2794,34 @@ static _FX BOOLEAN File_HistoryArmDelete(
             File_HistoryLogWarning(
                 L"Delete-on-close metadata", meta_status, TruePath);
             if (link_created) {
-                NTSTATUS cleanup_status =
-                    File_HistoryDeleteFile(link_path);
-                File_HistoryDeleteFile(meta_path);
-                if (NT_SUCCESS(cleanup_status))
+                BOOLEAN rollback_abandoned;
+                HANDLE rollback_mutex =
+                    File_HistoryCreateLimitMutex(&rollback_abandoned);
+                if (rollback_mutex) {
+                    NTSTATUS cleanup_status;
+
+                    if (rollback_abandoned)
+                        File_HistoryInvalidateUsage();
+                    cleanup_status = File_HistoryDeleteFile(link_path);
+                    File_HistoryDeleteFile(meta_path);
+                    if (NT_SUCCESS(cleanup_status))
+                        File_HistoryInvalidateUsage();
+                    else
+                        File_HistoryLogWarning(
+                            L"Delete-on-close evidence rollback",
+                            cleanup_status, TruePath);
+                    File_HistoryReleaseMutex(rollback_mutex);
+                }
+                else {
+                    NTSTATUS cleanup_status =
+                        File_HistoryDeleteFile(link_path);
+                    File_HistoryDeleteFile(meta_path);
                     File_HistoryInvalidateUsage();
-                else
-                    File_HistoryLogWarning(
-                        L"Delete-on-close evidence rollback",
-                        cleanup_status, TruePath);
+                    if (!NT_SUCCESS(cleanup_status))
+                        File_HistoryLogWarning(
+                            L"Delete-on-close evidence rollback",
+                            cleanup_status, TruePath);
+                }
                 status = meta_status;
             }
         }
@@ -2547,6 +2855,8 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
     WCHAR *marker;
     WCHAR *path;
     HANDLE mutex;
+    HANDLE limit_mutex;
+    BOOLEAN abandoned;
     ULONG length;
 
     if (!File_HistoryRoot)
@@ -2564,6 +2874,14 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
     }
     Dll_Free(marker);
 
+    limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
+    if (!limit_mutex) {
+        File_HistoryReleaseMutex(mutex);
+        return;
+    }
+    if (abandoned)
+        File_HistoryInvalidateUsage();
+
     length = wcslen(File_HistoryArtifacts) + wcslen(artifact) + 24;
     path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (path) {
@@ -2580,6 +2898,7 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
         Dll_Free(path);
     }
 
+    File_HistoryReleaseMutex(limit_mutex);
     File_HistoryReleaseMutex(mutex);
 }
 
@@ -2802,6 +3121,81 @@ static _FX WCHAR *File_HistorySetMetadataField(
     wmemcpy(updated + prefix_len + name_len + 1,
         Value, value_len);
     wcscpy(updated + prefix_len + name_len + 1 + value_len, end);
+    return updated;
+}
+
+
+static _FX WCHAR *File_HistoryAppendMetadataField(
+    const WCHAR *Text, const WCHAR *Name, const WCHAR *Value)
+{
+    ULONG text_len = wcslen(Text);
+    ULONG name_len = wcslen(Name);
+    ULONG value_len = wcslen(Value);
+    ULONG length = text_len + name_len + value_len + 4;
+    WCHAR *updated = Dll_AllocTemp(length * sizeof(WCHAR));
+
+    if (!updated)
+        return NULL;
+    wmemcpy(updated, Text, text_len);
+    wmemcpy(updated + text_len, Name, name_len);
+    updated[text_len + name_len] = L'=';
+    wmemcpy(updated + text_len + name_len + 1,
+        Value, value_len);
+    wmemcpy(updated + text_len + name_len + value_len + 1,
+        L"\r\n", 2);
+    updated[length - 1] = L'\0';
+    return updated;
+}
+
+
+static _FX WCHAR *File_HistoryFinalizeMetadata(
+    const WCHAR *Text, const FILE_NETWORK_OPEN_INFORMATION *Info,
+    const UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN HashValid)
+{
+    WCHAR size_text[32];
+    WCHAR attributes_text[16];
+    WCHAR last_write_text[32];
+    WCHAR change_time_text[32];
+    WCHAR hash_text[FILE_HISTORY_SHA256_TEXT];
+    WCHAR *updated;
+    WCHAR *next;
+
+    updated = File_HistorySetMetadataField(
+        Text, L"state", L"finalized");
+    if (!updated)
+        return NULL;
+
+    Sbie_snwprintf(size_text, RTL_NUMBER_OF_V1(size_text),
+        L"%I64u", Info->EndOfFile.QuadPart);
+    Sbie_snwprintf(attributes_text, RTL_NUMBER_OF_V1(attributes_text),
+        L"%08X", Info->FileAttributes);
+    Sbie_snwprintf(last_write_text, RTL_NUMBER_OF_V1(last_write_text),
+        L"%016I64X", Info->LastWriteTime.QuadPart);
+    Sbie_snwprintf(change_time_text, RTL_NUMBER_OF_V1(change_time_text),
+        L"%016I64X", Info->ChangeTime.QuadPart);
+    if (HashValid)
+        File_HistoryFormatHash(Hash, hash_text);
+    else
+        wcscpy(hash_text, L"unavailable");
+
+#define FILE_HISTORY_APPEND_FINAL_FIELD(Name, Value) \
+    do { \
+        next = File_HistoryAppendMetadataField(updated, Name, Value); \
+        Dll_Free(updated); \
+        updated = next; \
+        if (!updated) \
+            return NULL; \
+    } while (0)
+
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"size", size_text);
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"attributes", attributes_text);
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"last_write", last_write_text);
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"change_time", change_time_text);
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"sha256", hash_text);
+    FILE_HISTORY_APPEND_FINAL_FIELD(L"content_reused", L"n");
+
+#undef FILE_HISTORY_APPEND_FINAL_FIELD
+
     return updated;
 }
 
@@ -3325,14 +3719,18 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
     WCHAR *pid_text = NULL;
     WCHAR *process_start_text = NULL;
     HANDLE mutex = NULL;
+    HANDLE limit_mutex = NULL;
     HANDLE pending_handle = NULL;
     NTSTATUS status;
     ULONG length;
     ULONG process_id;
     ULONGLONG process_start = 0;
+    UCHAR hash[FILE_HISTORY_SHA256_SIZE];
     BOOLEAN duplicate_version = FALSE;
     BOOLEAN duplicate_metadata = FALSE;
     BOOLEAN use_collision_name = FALSE;
+    BOOLEAN hash_valid;
+    BOOLEAN abandoned;
 
     length = wcslen(File_HistoryArtifacts) + wcslen(Artifact) + 2;
     artifact_path = Dll_AllocTemp(length * sizeof(WCHAR));
@@ -3405,15 +3803,25 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
             pending_info.EndOfFile.QuadPart > 0 &&
             (ULONGLONG)pending_info.EndOfFile.QuadPart >
                 File_HistoryMaxFileSize) {
+        limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
+        if (!limit_mutex) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto log_failure;
+        }
+        if (abandoned)
+            File_HistoryInvalidateUsage();
         status = File_HistoryDeleteFile(pending_path);
         if (NT_SUCCESS(status)) {
             File_HistoryInvalidateUsage();
             File_HistoryDeleteFile(pending_meta_path);
         }
-        else
+        else {
             File_HistoryLogWarning(
                 L"Oversized pending evidence cleanup",
                 status, true_path);
+        }
+        File_HistoryReleaseMutex(limit_mutex);
+        limit_mutex = NULL;
         goto finish;
     }
 
@@ -3507,7 +3915,8 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
         &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
     RtlInitUnicodeString(&objname, pending_path);
     status = __sys_NtCreateFile(
-        &pending_handle, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        &pending_handle,
+        DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         &objattrs, &iosb, NULL, 0, 0, FILE_OPEN,
         FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
         FILE_OPEN_REPARSE_POINT, NULL, 0);
@@ -3537,11 +3946,10 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
     }
 
     if (!duplicate_metadata) {
-        if (updated_text)
-            Dll_Free(updated_text);
-        updated_text =
-            File_HistorySetMetadataField(
-                pending_text, L"state", L"finalized");
+        hash_valid = File_HistoryHashHandle(
+            pending_handle, &fresh_pending_info, hash);
+        updated_text = File_HistoryFinalizeMetadata(
+            pending_text, &fresh_pending_info, hash, hash_valid);
         if (!updated_text) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto log_failure;
@@ -3554,25 +3962,51 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
     }
 
     if (duplicate_version) {
+        limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
+        if (!limit_mutex)
+            goto log_failure;
+        if (abandoned)
+            File_HistoryInvalidateUsage();
         status = File_HistoryDeleteHandle(pending_handle);
         NtClose(pending_handle);
         pending_handle = NULL;
         if (NT_SUCCESS(status))
             File_HistoryInvalidateUsage();
+        File_HistoryReleaseMutex(limit_mutex);
+        limit_mutex = NULL;
     }
     else {
+        limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
+        if (!limit_mutex)
+            goto log_failure;
+        if (abandoned)
+            File_HistoryInvalidateUsage();
         status = File_HistoryRenameHandle(
             pending_handle, version_path, FALSE);
         NtClose(pending_handle);
         pending_handle = NULL;
-        if (NT_SUCCESS(status))
+        if (NT_SUCCESS(status)) {
             File_HistoryInvalidateUsage();
-        else if (status == STATUS_OBJECT_NAME_COLLISION) {
+            File_HistoryReleaseMutex(limit_mutex);
+            limit_mutex = NULL;
+        }
+        else {
+            File_HistoryReleaseMutex(limit_mutex);
+            limit_mutex = NULL;
+        }
+        if (status == STATUS_OBJECT_NAME_COLLISION) {
             if (File_HistoryFilesEqual(
                     pending_path, version_path)) {
+                limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
+                if (!limit_mutex)
+                    goto log_failure;
+                if (abandoned)
+                    File_HistoryInvalidateUsage();
                 status = File_HistoryDeleteFile(pending_path);
                 if (NT_SUCCESS(status))
                     File_HistoryInvalidateUsage();
+                File_HistoryReleaseMutex(limit_mutex);
+                limit_mutex = NULL;
             }
             else
                 File_HistoryDeleteFile(version_meta_path);
@@ -3593,6 +4027,8 @@ log_failure:
 finish:
     if (pending_handle)
         NtClose(pending_handle);
+    if (limit_mutex)
+        File_HistoryReleaseMutex(limit_mutex);
     if (mutex)
         File_HistoryReleaseMutex(mutex);
     if (pid_text)
@@ -3722,6 +4158,9 @@ static _FX BOOLEAN File_InitHistory(void)
     File_HistoryCaptureMigrated =
         SbieApi_QueryConfBool(
             NULL, L"FileHistoryCaptureMigrated", FALSE) ? TRUE : FALSE;
+    File_HistoryLogWarnings =
+        SbieApi_QueryConfBool(
+            NULL, L"FileHistoryLogWarnings", TRUE) ? TRUE : FALSE;
 
     value = File_HistoryQueryLimit(
         L"FileHistoryMaxVersionsTotal",

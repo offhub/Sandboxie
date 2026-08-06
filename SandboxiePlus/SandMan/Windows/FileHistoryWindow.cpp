@@ -22,6 +22,7 @@ namespace
 		eDate,
 		eExtension,
 		eHash,
+		eHashValue,
 		eProcessName,
 		eIsEmpty,
 		eIsReused,
@@ -487,6 +488,19 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pFinder->SetCloseButtonAtEnd(false);
 	QAbstractButton* SearchButton = m_pFinder->GetToggleButton();
 	SearchButton->setText(tr("Search"));
+	QToolButton* ViewOptionsButton = new QToolButton(this);
+	ViewOptionsButton->setIcon(CSandMan::GetIcon("List"));
+	ViewOptionsButton->setText(tr("View Options"));
+	ViewOptionsButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	ViewOptionsButton->setCheckable(true);
+	ViewOptionsButton->setAutoRaise(true);
+	ViewOptionsButton->setToolTip(
+		tr("Show or hide retained file history view options."));
+	m_pHighlightSame = new QCheckBox(tr("Highlight same"), this);
+	m_pHighlightSame->setChecked(
+		theConf->GetBool("FileHistoryWindow/HighlightSameHash", true));
+	m_pHighlightSame->setToolTip(
+		tr("Highlight retained versions with the same SHA-256 hash as the selected version."));
 	m_pHideEmpty = new QCheckBox(tr("Hide 0-byte files"), this);
 	m_pHideEmpty->setChecked(
 		theConf->GetBool("FileHistoryWindow/HideEmptyFiles", true));
@@ -495,10 +509,21 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pHideReused = new QCheckBox(tr("Hide reused files"), this);
 	m_pHideReused->setChecked(
 		theConf->GetBool("FileHistoryWindow/HideReusedFiles", true));
+	m_pHideReused->setToolTip(
+		tr("Hide retained evidence whose content reuses an existing blob."));
+	QWidget* ViewOptionsWidget = new QWidget(this);
+	QHBoxLayout* ViewOptionsLayout = new QHBoxLayout(ViewOptionsWidget);
+	ViewOptionsLayout->setContentsMargins(0, 0, 0, 0);
+	ViewOptionsLayout->addStretch();
+	ViewOptionsLayout->addWidget(m_pHighlightSame);
+	ViewOptionsLayout->addWidget(m_pHideEmpty);
+	ViewOptionsLayout->addWidget(m_pHideReused);
+	ViewOptionsWidget->setVisible(false);
 	m_pLoadIndicator = new QLabel(this);
 	m_pLoadIndicator->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-	m_pLoadIndicator->setText(tr("Refreshing..."));
-	m_pLoadIndicator->setMinimumWidth(m_pLoadIndicator->sizeHint().width());
+	m_pLoadIndicator->setMinimumWidth(
+		fontMetrics().horizontalAdvance(
+			tr("Refreshing... 0000000000 / 0000000000 files")) + 8);
 	m_pLoadIndicator->setText(tr("Loading..."));
 	m_pRefreshButton = new QPushButton(
 		CSandMan::GetIcon("Refresh"), tr("Refresh"), this);
@@ -508,11 +533,11 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	ToolLayout->addWidget(m_pFilterScope);
 	ToolLayout->addWidget(m_pFinder);
 	ToolLayout->addStretch();
-	ToolLayout->addWidget(m_pHideEmpty);
-	ToolLayout->addWidget(m_pHideReused);
 	ToolLayout->addWidget(m_pLoadIndicator);
 	ToolLayout->addWidget(m_pRefreshButton);
+	ToolLayout->addWidget(ViewOptionsButton);
 	MainLayout->addLayout(ToolLayout);
+	MainLayout->addWidget(ViewOptionsWidget);
 
 	m_pTree = new QTreeWidget(this);
 	m_pTree->setColumnCount(8);
@@ -560,6 +585,12 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	MainLayout->addLayout(BottomLayout);
 
 	connect(m_pRefreshButton, SIGNAL(clicked(bool)), this, SLOT(Reload()));
+	connect(ViewOptionsButton, &QToolButton::toggled,
+		this, [ViewOptionsWidget](bool Expanded) {
+			ViewOptionsWidget->setVisible(Expanded);
+		});
+	connect(m_pHighlightSame, &QCheckBox::toggled,
+		this, [this](bool) { UpdateSelection(); });
 	connect(m_pHideEmpty, &QCheckBox::toggled,
 		this, [this](bool) { ApplyFilter(); });
 	connect(m_pHideReused, &QCheckBox::toggled,
@@ -625,13 +656,15 @@ CFileHistoryWindow::~CFileHistoryWindow()
 		"FileHistoryWindow/HideEmptyFiles", m_pHideEmpty->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/HideReusedFiles", m_pHideReused->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/HighlightSameHash", m_pHighlightSame->isChecked());
 }
 
 
 void CFileHistoryWindow::closeEvent(QCloseEvent* e)
 {
+	Q_UNUSED(e);
 	emit Closed();
-	QDialog::closeEvent(e);
 	deleteLater();
 }
 
@@ -667,31 +700,50 @@ void CFileHistoryWindow::Reload()
 	m_pTree->clear();
 
 	quint64 MaxVersions = qMax(0,
-		m_pBox->GetNum("FileHistoryMaxVersionsTotal", 1000, true, true));
+		m_pBox->GetNum("FileHistoryMaxVersionsTotal", 2500, true, true));
 	quint64 MaxVersionsPerFile = qMax(0,
 		m_pBox->GetNum(
-			"FileHistoryMaxVersionsPerFile", 100, true, true));
+			"FileHistoryMaxVersionsPerFile", 25, true, true));
 	quint64 MaxSizeKB = qMax<qint64>(0,
 		m_pBox->GetNum64(
 			"FileHistoryMaxSizeTotalKB", 1024 * 1024, true, true));
 	quint64 MaxFileSizeKB = qMax<qint64>(0,
-		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 1024, true, true));
+		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 10 * 1024, true, true));
 	QString HistoryPath = QDir::cleanPath(
 		m_pBox->GetFileRoot() + "\\FileHistory");
 	if (m_pBox->GetActiveProcessCount() == 0)
 		RemoveOrphanedBlobs(HistoryPath);
 	QString ArtifactsPath = QDir::cleanPath(HistoryPath + "\\Artifacts");
 	QDir Artifacts(ArtifactsPath);
+	QFileInfoList ArtifactList = Artifacts.entryInfoList(
+		QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+		QDir::Name);
+	int ArtifactCount = 0;
+	foreach(const QFileInfo& ArtifactInfo, ArtifactList) {
+		if (IsArtifactId(ArtifactInfo.fileName()))
+			++ArtifactCount;
+	}
+	int ArtifactIndex = 0;
+	QString LoadPrefix = m_Loaded
+		? tr("Refreshing...") : tr("Loading...");
+	m_pLoadIndicator->setText(
+		tr("%1 0 / %2 files").arg(LoadPrefix).arg(ArtifactCount));
+	m_pLoadIndicator->repaint();
 	QMap<QString, QTreeWidgetItem*> PathItems;
 	quint64 UsedVersions = 0;
 	quint64 UsedSize = 0;
 
-	foreach(const QFileInfo& ArtifactInfo,
-			Artifacts.entryInfoList(
-				QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-				QDir::Name)) {
+	foreach(const QFileInfo& ArtifactInfo, ArtifactList) {
 		if (!IsArtifactId(ArtifactInfo.fileName()))
 			continue;
+		++ArtifactIndex;
+		if (ArtifactIndex == 1 || ArtifactIndex == ArtifactCount ||
+				(ArtifactIndex % 16) == 0) {
+			m_pLoadIndicator->setText(
+				tr("%1 %2 / %3 files")
+					.arg(LoadPrefix).arg(ArtifactIndex).arg(ArtifactCount));
+			m_pLoadIndicator->repaint();
+		}
 
 		QDir ArtifactDir(ArtifactInfo.absoluteFilePath());
 		QMap<QString, SHistoryFilePair> Pairs;
@@ -814,6 +866,7 @@ void CFileHistoryWindow::Reload()
 					HashDisplay += Reused
 						? tr(" (reused blob)") : tr(" (blob)");
 				Item->setText(7, HashDisplay);
+				Item->setData(0, eHashValue, Hash);
 				Item->setData(0, eHash, HashDisplay);
 				Item->setToolTip(7,
 					tr("SHA-256: %1\nBlob: %2\nContent reused: %3")
@@ -994,8 +1047,38 @@ void CFileHistoryWindow::ApplyFilter()
 }
 
 
+void CFileHistoryWindow::UpdateHashHighlight()
+{
+	QString SelectedHash;
+	QTreeWidgetItem* Current = m_pTree->currentItem();
+	if (m_pHighlightSame->isChecked() && Current &&
+			Current->isSelected() &&
+			Current->data(0, eIsEvidence).toBool()) {
+		SelectedHash = Current->data(0, eHashValue).toString();
+	}
+	bool HasHash = IsSha256(SelectedHash);
+	QBrush MatchBrush(theGUI->m_DarkTheme
+		? QColor(125, 105, 0) : QColor(255, 248, 190));
+
+	for (int Index = 0; Index < m_pTree->topLevelItemCount(); ++Index) {
+		QTreeWidgetItem* Parent = m_pTree->topLevelItem(Index);
+		for (int ChildIndex = 0;
+				ChildIndex < Parent->childCount(); ++ChildIndex) {
+			QTreeWidgetItem* Child = Parent->child(ChildIndex);
+			bool Match = HasHash &&
+				Child->data(0, eHashValue).toString().compare(
+					SelectedHash, Qt::CaseInsensitive) == 0;
+			for (int Column = 0; Column < m_pTree->columnCount(); ++Column)
+				Child->setBackground(
+					Column, Match ? MatchBrush : QBrush());
+		}
+	}
+}
+
+
 void CFileHistoryWindow::UpdateSelection()
 {
+	UpdateHashHighlight();
 	QTreeWidgetItem* Item = m_pTree->currentItem();
 	m_pOpenFolder->setEnabled(
 		Item && !Item->data(0, eFolderPath).toString().isEmpty());
@@ -1445,7 +1528,10 @@ void CFileHistoryWindow::UseAsFilter()
 	case 4: Scope = eStateField; break;
 	case 5: Scope = eSizeField; break;
 	case 6: Scope = eProcessField; break;
-	case 7: Scope = eHashField; break;
+	case 7:
+		Scope = eHashField;
+		Value = Item->data(0, eHashValue).toString();
+		break;
 	}
 	if (Value.isEmpty())
 		return;
@@ -1490,7 +1576,7 @@ void CFileHistoryWindow::ConfigureLimits()
 	Info->setWordWrap(true);
 	MainLayout->addWidget(Info);
 
-	QFormLayout* FormLayout = new QFormLayout();
+	QGridLayout* FormLayout = new QGridLayout();
 	QLineEdit* MaxVersions = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxVersionsTotal"), &Dialog);
 	QLineEdit* MaxVersionsPerFile = new QLineEdit(
@@ -1500,6 +1586,7 @@ void CFileHistoryWindow::ConfigureLimits()
 	QLineEdit* MaxFileSizeKB = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxFileSizeKB"), &Dialog);
 	QComboBox* CaptureMigrated = new QComboBox(&Dialog);
+	QComboBox* LogWarnings = new QComboBox(&Dialog);
 	QLineEdit* CompareCommand = new QLineEdit(
 		theConf->GetString("FileHistoryWindow/CompareCommand"), &Dialog);
 	QPlainTextEdit* IncludeRules = new QPlainTextEdit(&Dialog);
@@ -1520,23 +1607,29 @@ void CFileHistoryWindow::ConfigureLimits()
 	CompareCommand->setToolTip(
 		tr("Enter a complete command containing two to five contiguous path "
 			"placeholders starting with %1. The highest placeholder sets the "
-			"maximum selection count. Compare is shown for two up to that "
+			"maximum selection count.\nCompare is shown for two up to that "
 			"maximum, and unused placeholder arguments are omitted. Paths are "
 			"quoted automatically when needed."));
-	CompareCommand->setMinimumWidth(500);
+	CompareCommand->setMinimumWidth(240);
 
+	const quint64 InheritedMaxVersions = qMax(0,
+		m_pBox->GetNum("FileHistoryMaxVersionsTotal", 2500, true, true));
+	const quint64 InheritedMaxVersionsPerFile = qMax(0,
+		m_pBox->GetNum(
+			"FileHistoryMaxVersionsPerFile", 25, true, true));
+	const quint64 InheritedMaxSizeKB = qMax<qint64>(0,
+		m_pBox->GetNum64(
+			"FileHistoryMaxSizeTotalKB", 1024 * 1024, true, true));
+	const quint64 InheritedMaxFileSizeKB = qMax<qint64>(0,
+		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 10 * 1024, true, true));
 	MaxVersions->setPlaceholderText(tr("Inherited (currently %1)")
-		.arg(m_pBox->GetNum(
-			"FileHistoryMaxVersionsTotal", 1000, true, true)));
+		.arg(InheritedMaxVersions));
 	MaxVersionsPerFile->setPlaceholderText(tr("Inherited (currently %1)")
-		.arg(m_pBox->GetNum(
-			"FileHistoryMaxVersionsPerFile", 100, true, true)));
+		.arg(InheritedMaxVersionsPerFile));
 	MaxSizeKB->setPlaceholderText(tr("Inherited (currently %1)")
-		.arg(m_pBox->GetNum64(
-			"FileHistoryMaxSizeTotalKB", 1024 * 1024, true, true)));
+		.arg(InheritedMaxSizeKB));
 	MaxFileSizeKB->setPlaceholderText(tr("Inherited (currently %1)")
-		.arg(m_pBox->GetNum64(
-			"FileHistoryMaxFileSizeKB", 1024, true, true)));
+		.arg(InheritedMaxFileSizeKB));
 	bool EffectiveCaptureMigrated = m_pBox->GetBool(
 		"FileHistoryCaptureMigrated", false, true, true);
 	CaptureMigrated->addItem(
@@ -1551,18 +1644,169 @@ void CFileHistoryWindow::ConfigureLimits()
 		CaptureMigrated->setCurrentIndex(1);
 	else if (CaptureMigratedValue.compare("n", Qt::CaseInsensitive) == 0)
 		CaptureMigrated->setCurrentIndex(2);
-
-	FormLayout->addRow(
-		tr("Maximum total non-empty versions:"), MaxVersions);
-	FormLayout->addRow(
-		tr("Maximum non-empty versions per file:"), MaxVersionsPerFile);
-	FormLayout->addRow(tr("Maximum total size (KiB):"), MaxSizeKB);
-	FormLayout->addRow(
-		tr("Maximum capture size (KiB):"), MaxFileSizeKB);
-	FormLayout->addRow(
+	bool EffectiveLogWarnings = m_pBox->GetBool(
+		"FileHistoryLogWarnings", true, true, true);
+	LogWarnings->addItem(
+		tr("Inherited (currently %1)")
+			.arg(EffectiveLogWarnings ? tr("enabled") : tr("disabled")),
+		-1);
+	LogWarnings->addItem(tr("Enabled"), 1);
+	LogWarnings->addItem(tr("Disabled"), 0);
+	QString LogWarningsValue =
+		m_pBox->GetText("FileHistoryLogWarnings").trimmed();
+	if (LogWarningsValue.compare("y", Qt::CaseInsensitive) == 0)
+		LogWarnings->setCurrentIndex(1);
+	else if (LogWarningsValue.compare("n", Qt::CaseInsensitive) == 0)
+		LogWarnings->setCurrentIndex(2);
+	QLabel* TotalUsage = new QLabel(&Dialog);
+	QLabel* PerFileUsage = new QLabel(&Dialog);
+	QLabel* TotalSize = new QLabel(&Dialog);
+	QLabel* CaptureSize = new QLabel(&Dialog);
+	foreach(QLabel* Label,
+			QList<QLabel*>() << TotalUsage << PerFileUsage
+				<< TotalSize << CaptureSize) {
+		Label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		Label->setSizePolicy(
+			QSizePolicy::MinimumExpanding, QSizePolicy::Preferred);
+	}
+	int FormRow = 0;
+	int LabelWidth = 0;
+	auto AddLabel = [&Dialog, &FormLayout, &LabelWidth](const QString& LabelText,
+			int Row) {
+		QLabel* Label = new QLabel(LabelText, &Dialog);
+		Label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		LabelWidth = qMax(LabelWidth,
+			Label->fontMetrics().horizontalAdvance(LabelText));
+		FormLayout->addWidget(Label, Row, 0, 1, 2);
+	};
+	auto AddLimitRow = [&AddLabel, &FormLayout, &FormRow](
+			const QString& LabelText, QLineEdit* Edit, QLabel* ValueLabel) {
+		AddLabel(LabelText, FormRow);
+		FormLayout->addWidget(Edit, FormRow, 2, 1, 2);
+		FormLayout->addWidget(ValueLabel, FormRow, 4);
+		++FormRow;
+	};
+	auto AddOptionRow = [&AddLabel, &FormLayout, &FormRow](
+			const QString& LabelText, QWidget* Widget) {
+		AddLabel(LabelText, FormRow);
+		FormLayout->addWidget(Widget, FormRow, 2, 1, 2);
+		++FormRow;
+	};
+	auto AddSpanningRow = [&AddLabel, &FormLayout, &FormRow](
+			const QString& LabelText, QWidget* Widget) {
+		AddLabel(LabelText, FormRow);
+		FormLayout->addWidget(Widget, FormRow, 2, 1, 3);
+		++FormRow;
+	};
+	AddLimitRow(tr("Maximum total non-empty versions:"),
+		MaxVersions, TotalUsage);
+	AddLimitRow(tr("Maximum non-empty versions per file:"),
+		MaxVersionsPerFile, PerFileUsage);
+	AddLimitRow(tr("Maximum total size (KiB):"),
+		MaxSizeKB, TotalSize);
+	AddLimitRow(tr("Maximum capture size (KiB):"),
+		MaxFileSizeKB, CaptureSize);
+	AddOptionRow(
 		tr("Capture migrated-file baseline:"), CaptureMigrated);
-	FormLayout->addRow(tr("External compare command:"), CompareCommand);
+	AddOptionRow(
+		tr("Log file history warnings (SBIE2228/2229):"), LogWarnings);
+	AddSpanningRow(tr("External compare command:"), CompareCommand);
+	FormLayout->setColumnStretch(4, 1);
+
 	MainLayout->addLayout(FormLayout);
+
+	auto ReadLimit = [](QLineEdit* Edit, quint64 Fallback, bool* Valid) {
+		QString Text = Edit->text().trimmed();
+		if (Text.isEmpty()) {
+			*Valid = true;
+			return Fallback;
+		}
+		bool Ok = false;
+		quint64 Value = Text.toULongLong(&Ok);
+		*Valid = Ok;
+		return Ok ? Value : 0;
+	};
+	auto UpdateUsage = [MaxVersions, MaxVersionsPerFile, MaxSizeKB,
+		MaxFileSizeKB, TotalUsage, PerFileUsage, TotalSize, CaptureSize,
+		ReadLimit, InheritedMaxVersions, InheritedMaxVersionsPerFile,
+		InheritedMaxSizeKB, InheritedMaxFileSizeKB]() {
+		bool Valid = true;
+		bool FieldValid;
+		quint64 TotalVersions = ReadLimit(
+			MaxVersions, InheritedMaxVersions, &FieldValid);
+		Valid = Valid && FieldValid;
+		quint64 PerFileVersions = ReadLimit(
+			MaxVersionsPerFile, InheritedMaxVersionsPerFile, &FieldValid);
+		Valid = Valid && FieldValid;
+		quint64 MaxSize = ReadLimit(
+			MaxSizeKB, InheritedMaxSizeKB, &FieldValid);
+		Valid = Valid && FieldValid;
+		quint64 MaxCaptureSize = ReadLimit(
+			MaxFileSizeKB, InheritedMaxFileSizeKB, &FieldValid);
+		Valid = Valid && FieldValid;
+		if (!Valid) {
+			TotalUsage->setText(CFileHistoryWindow::tr("invalid"));
+			PerFileUsage->setText(CFileHistoryWindow::tr("invalid"));
+			TotalSize->setText(CFileHistoryWindow::tr("invalid"));
+			CaptureSize->setText(CFileHistoryWindow::tr("invalid"));
+			return;
+		}
+
+		TotalSize->setText(FormatLimitKB(MaxSize));
+		CaptureSize->setText(FormatLimitKB(MaxCaptureSize));
+		auto LimitProduct = [](quint64 Count, quint64 Size,
+			bool* Finite) {
+			const quint64 Maximum = ~quint64(0);
+			if (!Count || !Size) {
+				*Finite = false;
+				return quint64(0);
+			}
+			*Finite = true;
+			return Count > Maximum / Size ? Maximum : Count * Size;
+		};
+		auto FormatUsage = [](quint64 Size, bool Finite) {
+			return Finite
+				? FormatLimitKB(Size)
+				: CFileHistoryWindow::tr("unlimited");
+		};
+
+		bool TotalFinite;
+		quint64 TotalUsageValue = LimitProduct(
+			TotalVersions, MaxCaptureSize, &TotalFinite);
+		if (MaxSize &&
+				(!TotalFinite || MaxSize < TotalUsageValue)) {
+			TotalUsageValue = MaxSize;
+			TotalFinite = true;
+		}
+		TotalUsage->setText(FormatUsage(TotalUsageValue, TotalFinite));
+
+		quint64 PerFileVersionLimit = 0;
+		if (TotalVersions && PerFileVersions)
+			PerFileVersionLimit = qMin(TotalVersions, PerFileVersions);
+		else if (TotalVersions)
+			PerFileVersionLimit = TotalVersions;
+		else
+			PerFileVersionLimit = PerFileVersions;
+		bool PerFileFinite;
+		quint64 PerFileUsageValue = LimitProduct(
+			PerFileVersionLimit, MaxCaptureSize, &PerFileFinite);
+		if (MaxSize &&
+				(!PerFileFinite || MaxSize < PerFileUsageValue)) {
+			PerFileUsageValue = MaxSize;
+			PerFileFinite = true;
+		}
+		PerFileUsage->setText(
+			FormatUsage(PerFileUsageValue, PerFileFinite));
+	};
+	UpdateUsage();
+	connect(MaxVersions, &QLineEdit::textChanged, &Dialog,
+		[UpdateUsage](const QString&) { UpdateUsage(); });
+	connect(MaxVersionsPerFile, &QLineEdit::textChanged, &Dialog,
+		[UpdateUsage](const QString&) { UpdateUsage(); });
+	connect(MaxSizeKB, &QLineEdit::textChanged, &Dialog,
+		[UpdateUsage](const QString&) { UpdateUsage(); });
+	connect(MaxFileSizeKB, &QLineEdit::textChanged, &Dialog,
+		[UpdateUsage](const QString&) { UpdateUsage(); });
 
 	QTabWidget* RuleTabs = new QTabWidget(&Dialog);
 	RuleTabs->addTab(IncludeRules, tr("Tracked Files"));
@@ -1575,12 +1819,45 @@ void CFileHistoryWindow::ConfigureLimits()
 	QList<QLineEdit*> LimitEdits;
 	LimitEdits << MaxVersions << MaxVersionsPerFile
 		<< MaxSizeKB << MaxFileSizeKB;
+	const qreal DpiScale = Dialog.logicalDpiX() / 96.0;
+	const int TextPadding = qRound(24 * DpiScale);
+	const int ColumnSpacing = FormLayout->horizontalSpacing();
 	int FieldWidth = 0;
-	foreach(QLineEdit* Edit, LimitEdits)
+	foreach(QLineEdit* Edit, LimitEdits) {
+		QString ShownText = Edit->text().isEmpty()
+			? Edit->placeholderText() : Edit->text();
 		FieldWidth = qMax(FieldWidth,
-			Edit->fontMetrics().horizontalAdvance(Edit->placeholderText()) + 24);
+			Edit->minimumSizeHint().width());
+		FieldWidth = qMax(FieldWidth,
+			Edit->fontMetrics().horizontalAdvance(ShownText) + TextPadding);
+	}
+	foreach(QComboBox* Combo, QList<QComboBox*>()
+			<< CaptureMigrated << LogWarnings) {
+		int ComboWidth = Combo->minimumSizeHint().width();
+		QFontMetrics Metrics(Combo->font());
+		for (int Index = 0; Index < Combo->count(); ++Index)
+			ComboWidth = qMax(ComboWidth,
+				Metrics.horizontalAdvance(Combo->itemText(Index)) + TextPadding);
+		FieldWidth = qMax(FieldWidth, ComboWidth);
+	}
 	foreach(QLineEdit* Edit, LimitEdits)
 		Edit->setMinimumWidth(FieldWidth);
+	foreach(QComboBox* Combo, QList<QComboBox*>()
+			<< CaptureMigrated << LogWarnings)
+		Combo->setMinimumWidth(FieldWidth);
+	int LabelColumnWidth = (LabelWidth + ColumnSpacing + 1) / 2;
+	FormLayout->setColumnMinimumWidth(0, LabelColumnWidth);
+	FormLayout->setColumnMinimumWidth(1, LabelColumnWidth);
+	int FieldColumnWidth = (FieldWidth + ColumnSpacing + 1) / 2;
+	FormLayout->setColumnMinimumWidth(2, FieldColumnWidth);
+	FormLayout->setColumnMinimumWidth(3, FieldColumnWidth);
+	int UsageWidth = 0;
+	foreach(QLabel* Label,
+			QList<QLabel*>() << TotalUsage << PerFileUsage
+				<< TotalSize << CaptureSize)
+		UsageWidth = qMax(UsageWidth,
+			Label->fontMetrics().horizontalAdvance(Label->text()));
+	FormLayout->setColumnMinimumWidth(4, UsageWidth + TextPadding);
 
 	QDialogButtonBox* Buttons = new QDialogButtonBox(
 		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &Dialog);
@@ -1694,7 +1971,20 @@ void CFileHistoryWindow::ConfigureLimits()
 			: m_pBox->SetText(
 				"FileHistoryCaptureMigrated", NewCaptureMigratedValue));
 	}
-
+	int LogWarningsState = LogWarnings->currentData().toInt();
+	QString NewLogWarningsValue = LogWarningsState < 0
+		? QString()
+		: (LogWarningsState
+			? QStringLiteral("y") : QStringLiteral("n"));
+	QString OldLogWarningsValue =
+		m_pBox->GetText("FileHistoryLogWarnings").trimmed();
+	if (NewLogWarningsValue.compare(
+			OldLogWarningsValue, Qt::CaseInsensitive) != 0) {
+		Results.append(NewLogWarningsValue.isEmpty()
+			? m_pBox->DelValue("FileHistoryLogWarnings")
+			: m_pBox->SetText(
+				"FileHistoryLogWarnings", NewLogWarningsValue));
+	}
 	theGUI->CheckResults(Results, this);
 	Reload();
 }
