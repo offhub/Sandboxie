@@ -774,8 +774,6 @@ void COptionsWindow::AddForcedEntry(const QString& Name, int type, bool disabled
 		baseRule = Name;
 
 	QTreeWidgetItem* pItem = new CRuleTreeItem();
-	if (!Template.isEmpty())
-		pItem->setData(0, COptionsWindow::PendingItemTemplateRole, true);
 	pItem->setCheckState(0, disabled ? Qt::Unchecked : Qt::Checked);
 	QString Type;
 	switch (type)
@@ -802,8 +800,6 @@ void COptionsWindow::AddBreakoutEntry(const QString& Name, int type, bool disabl
 		baseRule = Name;
 
 	QTreeWidgetItem* pItem = new CRuleTreeItem();
-	if (!Template.isEmpty())
-		pItem->setData(0, COptionsWindow::PendingItemTemplateRole, true);
 	pItem->setCheckState(0, disabled ? Qt::Unchecked : Qt::Checked);
 	QString Type;
 	switch (type)
