@@ -131,43 +131,43 @@
 <context>
     <name>CAdvancedPage</name>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="921"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="926"/>
         <source>Advanced Sandbox options</source>
         <translation>サンドボックスの詳細設定</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="922"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="927"/>
         <source>On this page advanced sandbox options can be configured.</source>
         <translation>このページでは、サンドボックスの詳細設定ができます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="934"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="939"/>
         <source>Prevent sandboxed programs on the host from loading sandboxed DLLs</source>
         <oldsource>Prevent sandboxed programs installed on the host from loading DLLs from the sandbox</oldsource>
         <translation>サンドボックス内のプログラムによる、サンドボックス化されたDLLの読み込みを防止する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="935"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="940"/>
         <source>This feature may reduce compatibility as it also prevents box located processes from writing to host located ones and even starting them.</source>
         <translation>この機能は、ボックス内のプロセスからホスト上のプロセスへの書き込みや起動も防止するため、互換性が低下する場合があります。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="942"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="947"/>
         <source>This feature can cause a decline in the user experience because it also prevents normal screenshots.</source>
         <translation>この機能は通常のスクリーンショットも防止するため、ユーザーエクスペリエンスが低下する可能性があります。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="947"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="952"/>
         <source>Shared Template</source>
         <translation>共有テンプレート</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="948"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="953"/>
         <source>Shared template mode</source>
         <translation>共有テンプレートモード</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="949"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="954"/>
         <source>This setting adds a local template or its settings to the sandbox configuration so that the settings in that template are shared between sandboxes.
 However, if &apos;use as a template&apos; option is selected as the sharing mode, some settings may not be reflected in the user interface.
 To change the template&apos;s settings, simply locate the &apos;%1&apos; template in the App Templates list under Sandbox Options, then double-click on it to edit it.
@@ -178,62 +178,62 @@ To disable this template for a sandbox, simply uncheck it in the template list.<
 サンドボックスでこのテンプレートを無効にするには、テンプレートリストでその項目のチェックを外すだけです。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="955"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="960"/>
         <source>This option does not add any settings to the box configuration and does not remove the default box settings based on the removal settings within the template.</source>
         <translation>このオプションは、ボックス構成に設定を追加せず、またテンプレート内の削除設定に基づいてデフォルト設定を削除することもありません。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="956"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="961"/>
         <source>This option adds the shared template to the box configuration as a local template and may also remove the default box settings based on the removal settings within the template.</source>
         <translation>このオプションは、共有テンプレートをローカルテンプレートとしてボックス構成に追加し、テンプレート内の削除設定に基づいてデフォルト設定を削除する場合があります。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="957"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="962"/>
         <source>This option adds the settings from the shared template to the box configuration and may also remove the default box settings based on the removal settings within the template.</source>
         <translation>このオプションは、共有テンプレートの設定をボックス構成に追加し、テンプレート内の削除設定に基づいてデフォルト設定を削除する場合があります。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="958"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="963"/>
         <source>This option does not add any settings to the box configuration, but may remove the default box settings based on the removal settings within the template.</source>
         <translation>このオプションは、ボックス構成に設定を追加しませんが、テンプレート内の削除設定に基づいてデフォルト設定を削除する場合があります。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="966"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="971"/>
         <source>Remove defaults if set</source>
         <translation>設定に従いデフォルトを削除</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="973"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="978"/>
         <source>Shared template selection</source>
         <translation>共有テンプレートの選択</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="995"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1000"/>
         <source>This option specifies the template to be used in shared template mode. (%1)</source>
         <translation>このオプションは、共有テンプレートモードで使用するテンプレートを指定します。(%1)</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="960"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="965"/>
         <source>Disabled</source>
         <translation>無効</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="927"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="932"/>
         <source>Advanced Options</source>
         <translation>詳細設定</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="941"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="946"/>
         <source>Prevent sandboxed windows from being captured</source>
         <translation>サンドボックス化されたウィンドウのキャプチャを防止する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="962"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="967"/>
         <source>Use as a template</source>
         <translation>テンプレートとして使用する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="964"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="969"/>
         <source>Append to the configuration</source>
         <translation>構成に追加する</translation>
     </message>
@@ -473,14 +473,14 @@ Leet（L337）のような変更を加えると512ビットに増加し、完全
         <translation type="obsolete">ファイル名を選択</translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="647"/>
+        <location filename="BoxTransfer.cpp" line="673"/>
         <source>7-Zip Archive (*.7z);;Zip Archive (*.zip)</source>
         <translation type="unfinished">7-Zip アーカイブ (.7z);;Zip アーカイブ (.zip)</translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="630"/>
-        <location filename="BoxTransfer.cpp" line="640"/>
-        <location filename="BoxTransfer.cpp" line="653"/>
+        <location filename="BoxTransfer.cpp" line="656"/>
+        <location filename="BoxTransfer.cpp" line="666"/>
+        <location filename="BoxTransfer.cpp" line="679"/>
         <source>Exporting: %1</source>
         <translation type="unfinished">エクスポート中: %1</translation>
     </message>
@@ -490,99 +490,99 @@ Leet（L337）のような変更を加えると512ビットに増加し、完全
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="447"/>
-        <location filename="BoxTransfer.cpp" line="1009"/>
+        <location filename="BoxTransfer.cpp" line="473"/>
+        <location filename="BoxTransfer.cpp" line="1035"/>
         <source>7-Zip library is not available.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="462"/>
+        <location filename="BoxTransfer.cpp" line="488"/>
         <source>Cannot export: Sandbox has running processes.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="481"/>
+        <location filename="BoxTransfer.cpp" line="507"/>
         <source>Nothing selected for export.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="486"/>
+        <location filename="BoxTransfer.cpp" line="512"/>
         <source>No boxes selected for separate file export.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="529"/>
+        <location filename="BoxTransfer.cpp" line="555"/>
         <source>Sandbox &apos;%1&apos; has running processes. Skip it?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="550"/>
+        <location filename="BoxTransfer.cpp" line="576"/>
         <source>Mount &apos;%1&apos; for Export</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="553"/>
+        <location filename="BoxTransfer.cpp" line="579"/>
         <source>Encrypted sandbox &apos;%1&apos; is not mounted. Skip it?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="564"/>
+        <location filename="BoxTransfer.cpp" line="590"/>
         <source>Failed to unmount &apos;%1&apos; for remounting.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="574"/>
+        <location filename="BoxTransfer.cpp" line="600"/>
         <source>Failed to mount encrypted sandbox &apos;%1&apos;.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="606"/>
+        <location filename="BoxTransfer.cpp" line="632"/>
         <source>Select Export Folder</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="645"/>
+        <location filename="BoxTransfer.cpp" line="671"/>
         <source>Export Sandbox</source>
         <translation type="unfinished">サンドボックスをエクスポート</translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="940"/>
+        <location filename="BoxTransfer.cpp" line="966"/>
         <source>Password for %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="956"/>
+        <location filename="BoxTransfer.cpp" line="982"/>
         <source>Failed to open archive (%1): %2</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1014"/>
+        <location filename="BoxTransfer.cpp" line="1040"/>
         <source>Select Archives</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1015"/>
+        <location filename="BoxTransfer.cpp" line="1041"/>
         <source>7-Zip Archive (*.7z);;Zip Archive (*.zip);;All Archives (*.7z *.zip)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1052"/>
+        <location filename="BoxTransfer.cpp" line="1078"/>
         <source>The selected archives do not contain any sandbox data.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1078"/>
+        <location filename="BoxTransfer.cpp" line="1104"/>
         <source>Cannot import multiple boxes with the same name &apos;%1&apos;. Please rename them first.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1164"/>
-        <location filename="BoxTransfer.cpp" line="1172"/>
+        <location filename="BoxTransfer.cpp" line="1190"/>
+        <location filename="BoxTransfer.cpp" line="1198"/>
         <source>Importing: %1</source>
         <translation type="unfinished">インポート中: %1</translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="946"/>
+        <location filename="BoxTransfer.cpp" line="972"/>
         <source>Failed to open archive, wrong password?</source>
         <translation type="unfinished">アーカイブを開けませんでした。パスワードが間違っていますか？</translation>
     </message>
@@ -591,12 +591,12 @@ Leet（L337）のような変更を加えると512ビットに増加し、完全
         <translation type="obsolete">アーカイブを開けませんでした (%1)!</translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1066"/>
+        <location filename="BoxTransfer.cpp" line="1092"/>
         <source>Nothing selected for import.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="BoxTransfer.cpp" line="1094"/>
+        <location filename="BoxTransfer.cpp" line="1120"/>
         <source>Sandbox &apos;%1&apos; already exists. Its configuration will be overwritten. Continue?</source>
         <translation type="unfinished"></translation>
     </message>
@@ -604,42 +604,42 @@ Leet（L337）のような変更を加えると512ビットに増加し、完全
 <context>
     <name>CBoxTypePage</name>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="329"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="333"/>
         <source>Create new Sandbox</source>
         <translation>新規サンドボックスの作成</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="341"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="345"/>
         <source>A sandbox isolates your host system from processes running within the box, it prevents them from making permanent changes to other programs and data in your computer. </source>
         <translation>サンドボックスは、ボックス内で実行されるプロセスをホストシステムから隔離し、コンピューター上の他のプログラムやデータに永続的な変更が加えられるのを防ぎます。 </translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="344"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="348"/>
         <source>A sandbox isolates your host system from processes running within the box, it prevents them from making permanent changes to other programs and data in your computer. The level of isolation impacts your security as well as the compatibility with applications, hence there will be a different level of isolation depending on the selected Box Type. Sandboxie can also protect your personal data from being accessed by processes running under its supervision.</source>
         <translation>サンドボックスは、ボックス内で実行されるプロセスをホストシステムから隔離し、コンピューター上の他のプログラムやデータに永続的な変更が加えられるのを防ぎます。隔離レベルは、セキュリティやアプリケーションとの互換性に影響するため、選択するボックスの種類によって異なります。また、Sandboxieは管理下で実行されるプロセスによる個人データへのアクセスを防ぐこともできます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="359"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="363"/>
         <source>Alias:</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="377"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="381"/>
         <source>Enter box name:</source>
         <translation>ボックス名を入力:</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="394"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="398"/>
         <source>Select box type:</source>
         <translation>ボックスの種類を選択:</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="434"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="438"/>
         <source>&lt;a href=&quot;sbie://docs/security-mode&quot;&gt;Security Hardened&lt;/a&gt; Sandbox with &lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;Data Protection&lt;/a&gt;</source>
         <translation>&lt;a href=&quot;sbie://docs/security-mode&quot;&gt;セキュリティ強化&lt;/a&gt;機能を備えた&lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;データ保護&lt;/a&gt;サンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="435"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="439"/>
         <source>This box type offers the highest level of protection by significantly reducing the attack surface exposed to sandboxed processes. 
 It strictly limits access to user data, allowing processes within this box to only access C:\Windows and C:\Program Files directories. 
 The entire user profile remains hidden, ensuring maximum security.</source>
@@ -648,64 +648,64 @@ The entire user profile remains hidden, ensuring maximum security.</source>
 ユーザープロファイル全体が非表示に保たれるため、最大限のセキュリティが確保されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="438"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="442"/>
         <source>&lt;a href=&quot;sbie://docs/security-mode&quot;&gt;Security Hardened&lt;/a&gt; Sandbox</source>
         <translation>&lt;a href=&quot;sbie://docs/security-mode&quot;&gt;セキュリティ強化&lt;/a&gt;サンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="439"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="443"/>
         <source>This box type offers the highest level of protection by significantly reducing the attack surface exposed to sandboxed processes.</source>
         <translation>このボックスタイプは、サンドボックス化されたプロセスに公開される攻撃対象領域（アタックサーフェス）を大幅に削減することにより、最高レベルの保護を提供します。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="440"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="444"/>
         <source>Sandbox with &lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;Data Protection&lt;/a&gt;</source>
         <translation>&lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;データ保護&lt;/a&gt;サンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="441"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="445"/>
         <source>In this box type, sandboxed processes are prevented from accessing any personal user files or data. The focus is on protecting user data, and as such, 
 only C:\Windows and C:\Program Files directories are accessible to processes running within this sandbox. This ensures that personal files remain secure.</source>
         <translation>このボックスタイプは、サンドボックス化されたプロセスによる個人ユーザーファイルやデータへのアクセスを防止します。
 ユーザーデータの保護を重視しており、サンドボックス内のプロセスはC:\WindowsおよびC:\Program Filesディレクトリにのみアクセス可能です。これにより、個人ファイルが安全に保護されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="443"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="447"/>
         <source>Standard Sandbox</source>
         <translation>スタンダードサンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="444"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="448"/>
         <source>This box type offers the default behavior of Sandboxie classic. It provides users with a familiar and reliable sandboxing scheme. 
 Applications can be run within this sandbox, ensuring they operate within a controlled and isolated space.</source>
         <translation>このボックスタイプは、Sandboxie Classicのデフォルトの動作を提供します。これにより、ユーザーは使い慣れた信頼性の高いサンドボックスの仕組みを利用できます。
 アプリケーションはこのサンドボックス内で実行でき、管理・隔離された空間での動作が保証されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="446"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="450"/>
         <source>&lt;a href=&quot;sbie://docs/compartment-mode&quot;&gt;Application Compartment&lt;/a&gt; Box with &lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;Data Protection&lt;/a&gt;</source>
         <translation>&lt;a href=&quot;sbie://docs/privacy-mode&quot;&gt;データ保護&lt;/a&gt;付き&lt;a href=&quot;sbie://docs/compartment-mode&quot;&gt;アプリケーションコンパートメント&lt;/a&gt;ボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="447"/>
-        <location filename="Wizards/NewBoxWizard.cpp" line="450"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="451"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="454"/>
         <source>This box type prioritizes compatibility while still providing a good level of isolation. It is designed for running trusted applications within separate compartments. 
 While the level of isolation is reduced compared to other box types, it offers improved compatibility with a wide range of applications, ensuring smooth operation within the sandboxed environment.</source>
         <translation>このボックスタイプは、十分なレベルの隔離を提供しつつ、互換性を優先します。信頼されたアプリケーションを個別のコンパートメント内で実行するように設計されています。
 他のボックスタイプと比較して隔離レベルは低下しますが、その分、幅広いアプリケーションとの互換性が向上しており、サンドボックス化された環境でのスムーズな動作を保証します。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="449"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="453"/>
         <source>&lt;a href=&quot;sbie://docs/compartment-mode&quot;&gt;Application Compartment&lt;/a&gt; Box</source>
         <translation>&lt;a href=&quot;sbie://docs/compartment-mode&quot;&gt;アプリケーションコンパートメント&lt;/a&gt;ボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="458"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="462"/>
         <source>&lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;Encrypt&lt;/a&gt; Box content and set &lt;a href=&quot;sbie://docs/black-box&quot;&gt;Confidential&lt;/a&gt;</source>
         <translation>ボックスの内容を&lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;暗号化&lt;/a&gt;し、&lt;a href=&quot;sbie://docs/black-box&quot;&gt;機密&lt;/a&gt;に設定</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="459"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="463"/>
         <source>In this box type the sandbox uses an encrypted disk image as its root folder. This provides an additional layer of privacy and security. 
 Access to the virtual disk when mounted is restricted to programs running within the sandbox. Sandboxie prevents other processes on the host system from accessing the sandboxed processes. 
 This ensures the utmost level of privacy and data protection within the confidential sandbox environment.</source>
@@ -714,57 +714,57 @@ This ensures the utmost level of privacy and data protection within the confiden
 これにより、機密性の高いサンドボックス環境において、最大限のプライバシーとデータ保護が確保されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="481"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="485"/>
         <source>Hardened Sandbox with Data Protection</source>
         <translation>データ保護付き強化サンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="482"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="486"/>
         <source>Security Hardened Sandbox</source>
         <translation>セキュリティ強化サンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="483"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="487"/>
         <source>Sandbox with Data Protection</source>
         <translation>データ保護付きサンドボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="484"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="488"/>
         <source>Standard Isolation Sandbox (Default)</source>
         <translation>標準隔離サンドボックス (デフォルト)</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="486"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="490"/>
         <source>Application Compartment with Data Protection</source>
         <translation>データ保護付きアプリケーションコンパートメント</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="487"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="491"/>
         <source>Application Compartment Box</source>
         <translation>アプリケーションコンパートメントボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="488"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="492"/>
         <source>Confidential Encrypted Box</source>
         <translation>機密暗号化ボックス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="506"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="510"/>
         <source>Remove after use</source>
         <translation>使用後に削除</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="507"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="511"/>
         <source>After the last process in the box terminates, all data in the box will be deleted and the box itself will be removed.</source>
         <translation>ボックス内の最後のプロセスが終了すると、ボックス内のすべてのデータが削除され、ボックス自体も削除されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="512"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="516"/>
         <source>Configure advanced options</source>
         <translation>詳細オプションを構成</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="616"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="620"/>
         <source>To use encrypted boxes you need to install the ImDisk driver, do you want to download and install it?</source>
         <translation>暗号化ボックスを使用するには、ImDiskドライバーをインストールする必要があります。ダウンロードしてインストールしますか？</translation>
     </message>
@@ -1311,6 +1311,604 @@ You can click Finish to close this wizard.</source>
     </message>
 </context>
 <context>
+    <name>CFileHistoryWindow</name>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="236"/>
+        <source>%1 B</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="238"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="250"/>
+        <source>%1 KiB</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="240"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="252"/>
+        <source>%1 MiB</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="241"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="253"/>
+        <source>%1 GiB</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="248"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="259"/>
+        <source>unlimited</source>
+        <translation type="unfinished">無制限</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="470"/>
+        <source>%1 - Retained File Versions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="476"/>
+        <source>All fields</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="477"/>
+        <source>Path</source>
+        <translation type="unfinished">パス</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="478"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="521"/>
+        <source>Version</source>
+        <translation type="unfinished">バージョン</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="479"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="523"/>
+        <source>Operation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="480"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="526"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1079"/>
+        <source>Process</source>
+        <translation type="unfinished">プロセス</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="481"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="524"/>
+        <source>State</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="482"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="525"/>
+        <source>Size</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="483"/>
+        <source>Date</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="484"/>
+        <source>Extension</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="485"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="527"/>
+        <source>Hash / Blob</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="489"/>
+        <source>Search</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="490"/>
+        <source>Hide 0-byte files</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="494"/>
+        <source>Hide retained evidence with an empty binary file.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="495"/>
+        <source>Hide reused files</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="500"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="647"/>
+        <source>Refreshing...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="502"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="647"/>
+        <source>Loading...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="504"/>
+        <source>Refresh</source>
+        <translation type="unfinished">更新</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="520"/>
+        <source>File / Evidence</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="522"/>
+        <source>Captured</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="543"/>
+        <source>Configure Limits and Options...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="551"/>
+        <source>Remove Retained Versions...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="552"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1101"/>
+        <source>Open Evidence Folder</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="553"/>
+        <source>Close</source>
+        <translation type="unfinished">閉じる</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="591"/>
+        <source>Resize All Columns to Contents</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="725"/>
+        <source>(Unknown path) [%1]</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="745"/>
+        <source>Pending version</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="745"/>
+        <source>Captured version</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="761"/>
+        <source>Available</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="787"/>
+        <source>PID %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="787"/>
+        <source> (PID %1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="815"/>
+        <source> (reused blob)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="815"/>
+        <source> (blob)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="819"/>
+        <source>SHA-256: %1
+Blob: %2
+Content reused: %3</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="821"/>
+        <source>(not available)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="822"/>
+        <source>yes</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="822"/>
+        <source>no</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="825"/>
+        <source>Artifact: %1
+Binary: %2
+Metadata: %3</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="827"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="828"/>
+        <source>(missing)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="830"/>
+        <source>Metadata only</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="830"/>
+        <source> (metadata only)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="832"/>
+        <source>Missing or invalid metadata</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="888"/>
+        <source>Usage / limits: %1 / %2 non-empty versions; %3 / %4 total size. Limits: %5 non-empty versions per file; %6 per capture.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="985"/>
+        <source>Hide %1 retained 0-byte evidence item(s).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="988"/>
+        <source>Hide %1 retained evidence item(s) whose content reused an existing blob.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="991"/>
+        <source>Listed: %1 of %2 file(s), %3 of %4 evidence item(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1039"/>
+        <source>Open in External Editor</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1040"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1062"/>
+        <source>Unsandboxed</source>
+        <translation type="unfinished">非サンドボックス化</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1046"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1064"/>
+        <source>Sandboxed</source>
+        <translation type="unfinished">サンドボックス化</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1060"/>
+        <source>Compare</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1076"/>
+        <source>Exclude for Next Run</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1077"/>
+        <source>Full Path</source>
+        <translation type="unfinished">フルパス</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1078"/>
+        <source>File Name Only</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1106"/>
+        <source>Use as Filter</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1122"/>
+        <source>Delete Selected Retained Versions...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1124"/>
+        <source>Delete This Retained Version...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1125"/>
+        <source>Delete All Retained Versions for This File...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1142"/>
+        <source>This retained-file exclusion already exists:
+
+%1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1155"/>
+        <source>Added for the next sandbox run: KeepFileVersionsExclude=%1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1202"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1245"/>
+        <source>%1 pending evidence item(s) cannot be opened until they are finalized. Pending evidence is still linked to the sandbox file and opening it in an editor could change both.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1211"/>
+        <source>Open %1 selected retained evidence files outside the sandbox in the configured external editor?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1231"/>
+        <source>%1 retained evidence file(s) could not be opened in the configured external editor.
+
+%2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1254"/>
+        <source>Open %1 selected retained evidence files inside sandbox %2 in the configured external editor?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1283"/>
+        <source>%1 retained evidence file(s) could not be prepared for editing without changing other retained versions.
+
+%2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1314"/>
+        <source>%1 retained evidence file(s) could not be prepared for comparison without changing other retained versions.
+
+%2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1334"/>
+        <source>The external comparison tool could not be started.
+
+%1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1354"/>
+        <source>The hard-link state of %1 retained evidence file(s) could not be checked, so they will not be opened.
+
+%2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1366"/>
+        <source>%1 selected evidence file(s) share their data with another retained version through NTFS hard links.
+
+If the external program writes to one of these files, every linked version may be changed. Detach creates an independent copy first. If your external program is read-only, you may continue without detaching.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1372"/>
+        <source>Detach and Continue</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1374"/>
+        <source>Continue Anyway</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1464"/>
+        <source>Delete protection is enabled for this sandbox.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1469"/>
+        <source>Retained file versions cannot be deleted while the sandbox is running.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1480"/>
+        <source>Configure Retained File Version Limits and Options</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1484"/>
+        <source>Enter 0 for unlimited. Leave a field empty to inherit its global or template value, or the built-in default. Changes apply to newly started sandboxed processes. Migrated-file capture retains the host-derived baseline. The rule tabs edit box-local settings only; inherited rules remain active.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1513"/>
+        <source>One KeepFileVersions rule per line</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1515"/>
+        <source>One KeepFileVersionsExclude rule per line</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1519"/>
+        <source>BCompare.exe /readonly /solo &quot;%1&quot; &quot;%2&quot;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1521"/>
+        <source>Enter a complete command containing two to five contiguous path placeholders starting with %1. The highest placeholder sets the maximum selection count. Compare is shown for two up to that maximum, and unused placeholder arguments are omitted. Paths are quoted automatically when needed.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1528"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1531"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1534"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1537"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1543"/>
+        <source>Inherited (currently %1)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1544"/>
+        <source>enabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1544"/>
+        <source>disabled</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1546"/>
+        <source>Enabled</source>
+        <translation type="unfinished">有効</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1547"/>
+        <source>Disabled</source>
+        <translation type="unfinished">無効</translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1556"/>
+        <source>Maximum total non-empty versions:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1558"/>
+        <source>Maximum non-empty versions per file:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1559"/>
+        <source>Maximum total size (KiB):</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1561"/>
+        <source>Maximum capture size (KiB):</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1563"/>
+        <source>Capture migrated-file baseline:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1564"/>
+        <source>External compare command:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1568"/>
+        <source>Tracked Files</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1569"/>
+        <source>Excluded Files</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1571"/>
+        <source>Enter one [process,]path-pattern rule per line. Rules inherited from global settings or templates are not listed here.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1605"/>
+        <source>Maximum total non-empty versions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1607"/>
+        <source>Maximum non-empty versions per file</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1608"/>
+        <source>Maximum total size</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1610"/>
+        <source>Maximum capture size</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1613"/>
+        <source>The external compare command must contain two to five contiguous path placeholders starting with %1. For example:
+
+BCompare.exe /readonly /solo &quot;%1&quot; &quot;%2&quot;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1621"/>
+        <source>Enter a non-negative whole number for:
+
+%1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1730"/>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1763"/>
+        <source>
+... and %1 more</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1733"/>
+        <source>Delete %1 retained version evidence item(s) for %2 file(s)?
+
+This removes only copies stored in the sandbox&apos;s FileHistory archive. It does not delete the current files inside the sandbox.
+
+Affected sandbox path(s):
+%3</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1765"/>
+        <source>%1 retained version evidence file(s) could not be deleted.
+
+%2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1777"/>
+        <source>Do you really want to remove all retained file versions for sandbox %1?
+
+This permanently deletes all retained evidence from the FileHistory archive. Current files inside the sandbox are not deleted.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/FileHistoryWindow.cpp" line="1793"/>
+        <source>Removing retained file versions...</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>CFileView</name>
     <message>
         <location filename="Views/FileView.cpp" line="589"/>
@@ -1351,84 +1949,89 @@ You can click Finish to close this wizard.</source>
 <context>
     <name>CFilesPage</name>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="634"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="638"/>
         <source>Sandbox location and behavior</source>
         <translation>サンドボックスの場所と動作</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="635"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="639"/>
         <source>On this page the sandbox location and its behavior can be customized.
 You can use %USER% to save each users sandbox to an own folder.</source>
         <translation>このページでは、サンドボックスの場所とその動作をカスタマイズできます。
 「%USER%」を使用すると、各ユーザーのサンドボックスを個別のフォルダに保存できます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="640"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="644"/>
         <source>Sandboxed Files</source>
         <translation>サンドボックス化されたファイル</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="663"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="667"/>
         <source>Select Directory</source>
         <translation>ディレクトリを選択</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="671"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="675"/>
         <source>Virtualization scheme</source>
         <translation>仮想化方式</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="675"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="679"/>
         <source>Version 1</source>
         <translation>バージョン1</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="676"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="680"/>
         <source>Version 2</source>
         <translation>バージョン2</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="682"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="681"/>
+        <source>Version 3</source>
+        <translation type="unfinished">バージョン 3</translation>
+    </message>
+    <message>
+        <location filename="Wizards/NewBoxWizard.cpp" line="687"/>
         <source>Separate user folders</source>
         <translation>ユーザーごとにフォルダを分ける</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="687"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="692"/>
         <source>Use volume serial numbers for drives</source>
         <translation>ドライブにボリュームシリアル番号を使用する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="692"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="697"/>
         <source>Auto delete content when last process terminates</source>
         <translation>最後のプロセス終了時に、内容を自動削除する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="699"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="704"/>
         <source>Enable Immediate Recovery of files from recovery locations</source>
         <translation>復元場所からのファイルの即時復元を有効にする</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="743"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="748"/>
         <source>A sandbox cannot be located at the root of a partition, please select a folder.</source>
         <translation>サンドボックスはパーティションのルートには配置できません。フォルダを選択してください。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="747"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="752"/>
         <source>A sandbox cannot be located on a network share, please select a local folder.</source>
         <translation>サンドボックスはネットワーク共有上には配置できません。ローカルフォルダを選択してください。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="751"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="756"/>
         <source>The selected box location is not a valid path.</source>
         <translation>選択されたボックスの場所は、有効なパスではありません。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="756"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="761"/>
         <source>The selected box location exists and is not empty, it is recommended to pick a new or empty folder. Are you sure you want to use an existing folder?</source>
         <translation>選択された場所は既に存在し、空ではありません。新規または空のフォルダを選択することを推奨します。既存のフォルダを使用しますか？</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="761"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="766"/>
         <source>The selected box location is not placed on a currently available drive.</source>
         <translation>選択されたボックスの場所は、現在利用可能なドライブ上に配置されていません。</translation>
     </message>
@@ -1668,83 +2271,83 @@ You can use %USER% to save each users sandbox to an own folder.</source>
 <context>
     <name>CIsolationPage</name>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="777"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="782"/>
         <source>Sandbox Isolation options</source>
         <translation>サンドボックスの隔離オプション</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="778"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="783"/>
         <source>On this page sandbox isolation options can be configured.</source>
         <translation>このページでは、サンドボックスの隔離オプションを設定できます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="783"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="788"/>
         <source>Network Access</source>
         <translation>ネットワークアクセス</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="791"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="796"/>
         <source>Allow network/internet access</source>
         <translation>ネットワーク/インターネットへのアクセスを許可する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="792"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="797"/>
         <source>Block network/internet by denying access to Network devices</source>
         <translation>ネットワークデバイスへのアクセスを拒否して、ネットワーク/インターネットをブロックする</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="794"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="799"/>
         <source>Block network/internet using Windows Filtering Platform</source>
         <translation>Windows Filtering Platformを使用して、ネットワーク/インターネットをブロックする</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="800"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="805"/>
         <source>Allow access to network files and folders</source>
         <translation>ネットワーク上のファイルやフォルダへのアクセスを許可する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="801"/>
-        <location filename="Wizards/NewBoxWizard.cpp" line="828"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="806"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="833"/>
         <source>This option is not recommended for Hardened boxes</source>
         <translation>このオプションは、強化ボックスでの使用は推奨されません</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="806"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="811"/>
         <source>Prompt user whether to allow an exemption from the blockade</source>
         <translation>ブロックの例外を許可するかどうかユーザーに確認する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="812"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="817"/>
         <source>Admin Options</source>
         <translation>管理者オプション</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="816"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="821"/>
         <source>Drop rights from Administrators and Power Users groups</source>
         <translation>管理者およびPower Usersグループから権限を削除する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="822"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="827"/>
         <source>Make applications think they are running elevated</source>
         <translation>アプリケーションに昇格状態で実行されているように見せかける</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="827"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="832"/>
         <source>Allow MSIServer to run with a sandboxed system token</source>
         <translation>MSIServerをサンドボックス化されたシステムトークンで実行することを許可する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="834"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="839"/>
         <source>Box Options</source>
         <translation>ボックスオプション</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="838"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="843"/>
         <source>Use a Sandboxie login instead of an anonymous token</source>
         <translation>匿名トークンの代わりにSandboxieログインを使用する</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="839"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="844"/>
         <source>Using a custom Sandboxie Token allows to isolate individual sandboxes from each other better, and it shows in the user column of task managers the name of the box a process belongs to. Some 3rd party security solutions may however have problems with custom tokens.</source>
         <translation>カスタムのSandboxieトークンを使用すると、個々のサンドボックスを互いにより効果的に隔離できます。また、タスクマネージャーのユーザー列にプロセスが属するボックス名が表示されるようになります。ただし、一部のサードパーティ製セキュリティソリューションでは、カスタムトークンで問題が発生する場合があります。</translation>
     </message>
@@ -1837,7 +2440,7 @@ You can use %USER% to save each users sandbox to an own folder.</source>
     </message>
     <message>
         <location filename="Wizards/NewBoxWizard.cpp" line="85"/>
-        <location filename="Wizards/NewBoxWizard.cpp" line="301"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="305"/>
         <source>Don&apos;t show this message again.</source>
         <translation>このメッセージを再表示しない。</translation>
     </message>
@@ -1853,9 +2456,13 @@ You can use %USER% to save each users sandbox to an own folder.</source>
         <translation>共有テンプレート</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="298"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="302"/>
+        <source>The new sandbox has been created using the new &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-delete-v2&quot;&gt;Virtualization Scheme Version 2/3&lt;/a&gt;, if you experience any unexpected issues with this box, please switch to the Virtualization Scheme to Version 1 and report the issue, the option to change this preset can be found in the Box Options in the Box Structure group.</source>
+        <translation type="unfinished">新しい&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-delete-v2&quot;&gt;仮想化方式バージョン2&lt;/a&gt;を使用して、新規サンドボックスが作成されました。このボックスで予期しない問題が発生した場合は、仮想化方式をバージョン1に切り替えて問題を報告してください。この設定を変更するオプションは、「ボックスオプション」の「ボックスの構造」グループにあります。 {2&quot;?} {2/3&lt;?} {1 ?}</translation>
+    </message>
+    <message>
         <source>The new sandbox has been created using the new &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-delete-v2&quot;&gt;Virtualization Scheme Version 2&lt;/a&gt;, if you experience any unexpected issues with this box, please switch to the Virtualization Scheme to Version 1 and report the issue, the option to change this preset can be found in the Box Options in the Box Structure group.</source>
-        <translation>新しい&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-delete-v2&quot;&gt;仮想化方式バージョン2&lt;/a&gt;を使用して、新規サンドボックスが作成されました。このボックスで予期しない問題が発生した場合は、仮想化方式をバージョン1に切り替えて問題を報告してください。この設定を変更するオプションは、「ボックスオプション」の「ボックスの構造」グループにあります。</translation>
+        <translation type="vanished">新しい&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-delete-v2&quot;&gt;仮想化方式バージョン2&lt;/a&gt;を使用して、新規サンドボックスが作成されました。このボックスで予期しない問題が発生した場合は、仮想化方式をバージョン1に切り替えて問題を報告してください。この設定を変更するオプションは、「ボックスオプション」の「ボックスの構造」グループにあります。</translation>
     </message>
 </context>
 <context>
@@ -2134,8 +2741,8 @@ Note: The update check is often behind the latest GitHub release to ensure that 
         <location filename="Windows/OptionsWindow.cpp" line="1434"/>
         <location filename="Windows/OptionsAccess.cpp" line="422"/>
         <location filename="Windows/OptionsAccess.cpp" line="653"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="718"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="820"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="765"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="890"/>
         <location filename="Windows/OptionsNetwork.cpp" line="358"/>
         <location filename="Windows/OptionsNetwork.cpp" line="646"/>
         <location filename="Windows/OptionsNetwork.cpp" line="739"/>
@@ -2148,8 +2755,8 @@ Note: The update check is often behind the latest GitHub release to ensure that 
         <location filename="Windows/OptionsAccess.cpp" line="649"/>
         <location filename="Windows/OptionsAdvanced.cpp" line="986"/>
         <location filename="Windows/OptionsAdvanced.cpp" line="1061"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="713"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="816"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="760"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="886"/>
         <location filename="Windows/OptionsNetwork.cpp" line="641"/>
         <location filename="Windows/OptionsNetwork.cpp" line="735"/>
         <location filename="Windows/OptionsNetwork.cpp" line="848"/>
@@ -2164,17 +2771,17 @@ Note: The update check is often behind the latest GitHub release to ensure that 
         <translation>プログラムを入力:</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1875"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1876"/>
         <source>Autocomplete Consent Required</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1877"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1878"/>
         <source>Autocomplete feature requires your consent to proceed.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1879"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1880"/>
         <source>If you are unsure about the settings displayed in the autocomplete popup, we strongly recommend consulting the software&apos;s documentation or source code before proceeding. Enabling this feature without proper understanding may lead to unintended consequences, for which you will be solely responsible.
 
 Choose autocomplete mode:
@@ -2183,32 +2790,32 @@ Choose autocomplete mode:
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1887"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1888"/>
         <source>Manual</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1888"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1889"/>
         <source>Triggers autocomplete suggestions with %1.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1890"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1891"/>
         <source>While Typing</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1891"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1892"/>
         <source>Triggers autocomplete suggestions while typing.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1894"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1895"/>
         <source>Keeps autocomplete suggestions disabled.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsWindow.cpp" line="1893"/>
+        <location filename="Windows/OptionsWindow.cpp" line="1894"/>
         <source>Cancel</source>
         <translation type="unfinished">キャンセル</translation>
     </message>
@@ -2321,6 +2928,7 @@ Choose autocomplete mode:
     </message>
     <message>
         <location filename="Windows/OptionsAccess.cpp" line="359"/>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="181"/>
         <source>Registry</source>
         <translation>レジストリ</translation>
     </message>
@@ -2386,7 +2994,7 @@ Choose autocomplete mode:
     <message>
         <location filename="Windows/OptionsAccess.cpp" line="628"/>
         <location filename="Windows/OptionsAdvanced.cpp" line="1037"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="786"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="845"/>
         <location filename="Windows/OptionsGrouping.cpp" line="236"/>
         <location filename="Windows/OptionsGrouping.cpp" line="260"/>
         <location filename="Windows/OptionsNetwork.cpp" line="714"/>
@@ -2767,147 +3375,189 @@ Choose autocomplete mode:
         <translation>バージョン 2</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="263"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="204"/>
+        <source>Version 3</source>
+        <translation type="unfinished">バージョン 3</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="205"/>
+        <source>Legacy Delete V1 tracking. Recommended only for compatibility fallback.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="206"/>
+        <source>Delete V2 tracking with .dat file only, no journal.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="207"/>
+        <source>Delete V3: new file format with journal and full escaping. Requires empty box.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="218"/>
+        <source>Delete version can only be changed when the box is empty.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="273"/>
         <source>Browse for Program</source>
         <translation>プログラムを参照</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="364"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="374"/>
         <source>Open Box Options</source>
         <translation>ボックスのオプションを開く</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="365"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="375"/>
         <source>Browse Content</source>
         <translation>コンテンツを参照</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="366"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="376"/>
         <source>Start File Recovery</source>
         <translation>ファイルの復元を開始</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="367"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="377"/>
         <source>Show Run Dialog</source>
         <translation>実行ダイアログの表示</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="395"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="417"/>
         <source>Indeterminate</source>
         <translation>不確定</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="415"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="438"/>
         <source>Backup Image Header</source>
         <translation>イメージヘッダーをバックアップ</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="416"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="439"/>
         <source>Restore Image Header</source>
         <translation>イメージヘッダーを復元</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="420"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="443"/>
         <source>Change Password</source>
         <translation>パスワードを変更</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="684"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="791"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="729"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="850"/>
         <source>Always copy</source>
         <translation>常にコピー</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="685"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="792"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="730"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="851"/>
         <source>Don&apos;t copy</source>
         <translation>コピーしない</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="686"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="793"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="731"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="852"/>
         <source>Copy empty</source>
         <translation>空にしてコピー</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="687"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="794"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="732"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="853"/>
         <source>Copy newer</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="930"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="733"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="854"/>
+        <source>Keep file versions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="734"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="855"/>
+        <source>Exclude from file versions</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="862"/>
+        <source>Keeping file versions can cause high disk I/O and consume significant storage space. Avoid broad rules on RAM disks or encrypted disks, and make sure the storage has enough free space.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsGeneral.cpp" line="1000"/>
         <source>kilobytes (%1)</source>
         <translation>キロバイト (%1)</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1038"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1108"/>
         <source>Select color</source>
         <translation>色を選択</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1126"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1196"/>
         <source>Select Program</source>
         <translation>プログラムを選択</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1126"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1196"/>
         <source>Executables (*.exe *.cmd)</source>
         <translation>実行可能ファイル (*.exe *.cmd)</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1130"/>
-        <location filename="Windows/OptionsGeneral.cpp" line="1151"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1200"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1221"/>
         <source>Please enter a menu title</source>
         <translation>メニュータイトルを入力してください</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1147"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1217"/>
         <source>Please enter a command</source>
         <translation>コマンドを入力してください</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1313"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1383"/>
         <source>The image file does not exist</source>
         <translation>イメージファイルが存在しません</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1314"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1384"/>
         <source>The password is wrong</source>
         <translation>パスワードが間違っています</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1315"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1385"/>
         <source>Unexpected error: %1</source>
         <translation>予期せぬエラー: %1</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1343"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1413"/>
         <source>Image Password Changed</source>
         <translation>イメージのパスワードが変更されました</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1345"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1415"/>
         <source>Failed to Change Password</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1354"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1424"/>
         <source>Backup Image Header for %1</source>
         <translation>%1 のイメージヘッダーをバックアップ</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1362"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1432"/>
         <source>Image Header Backuped</source>
         <translation>イメージヘッダーがバックアップされました</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1369"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1439"/>
         <source>Restore Image Header for %1</source>
         <translation>%1 のイメージヘッダーを復元</translation>
     </message>
     <message>
-        <location filename="Windows/OptionsGeneral.cpp" line="1377"/>
+        <location filename="Windows/OptionsGeneral.cpp" line="1447"/>
         <source>Image Header Restored</source>
         <translation>イメージヘッダーが復元されました</translation>
     </message>
@@ -3112,6 +3762,238 @@ Please select a folder which contains this file.</source>
 
 選択された場所にはこのファイルが含まれていません。
 このファイルを含むフォルダーを選択してください。</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="27"/>
+        <source>Refresh debounce</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="31"/>
+        <source>Debounce window before the V3 path tree is refreshed from journal updates.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="32"/>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="59"/>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="77"/>
+        <source> ms</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="36"/>
+        <source>Journal size limit</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="40"/>
+        <source>Maximum journal size before compaction into the .dat file is triggered.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="41"/>
+        <source> KB</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="45"/>
+        <source>Journal line limit</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="49"/>
+        <source>Maximum number of incremental journal entries before compaction is triggered.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="50"/>
+        <source> lines</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="54"/>
+        <source>Keep journal open</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="58"/>
+        <source>Keep the append handle open for a short time to reduce reopen overhead during bursts.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="63"/>
+        <source>Busy threshold</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="67"/>
+        <source>Writes per second threshold that marks the journal as busy and defers compaction.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="68"/>
+        <source> writes/s</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="72"/>
+        <source>Busy hold window</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="76"/>
+        <source>How long compaction remains deferred after a busy burst is detected.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="82"/>
+        <source>Current / Custom</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="83"/>
+        <source>Default</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="84"/>
+        <source>Low Latency</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="85"/>
+        <source>Low IO</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="86"/>
+        <source>Write Heavy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="155"/>
+        <source>Delete V3 Advanced Settings</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="161"/>
+        <source>Tune Delete V3 journaling for this box. A preset provides the base values; edited values remain individual box overrides.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="164"/>
+        <source>Dialog OK button stages changes only. Use Apply or OK in the main Options window to persist them.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="167"/>
+        <source>Clear Global Settings affects all boxes that inherit global Delete V3 values. Box-specific overrides are not removed by this action.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="180"/>
+        <source>File</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="185"/>
+        <source>OK (Stage)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="302"/>
+        <source>A preset is stored as one box setting. Individual settings override the preset and are highlighted. Changing a preset does not reset those overrides.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="307"/>
+        <source>Preset</source>
+        <translation type="unfinished">プリセット</translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="313"/>
+        <source>Reset Box</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="314"/>
+        <source>Clear Global Settings</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="315"/>
+        <source>Remove the box-specific Delete V3 preset and individual settings for this tab when you save the options.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="316"/>
+        <source>Clear shared global settings for this tab when the main Options dialog is saved. This affects all boxes that inherit global settings; boxes with local overrides keep their own values.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="353"/>
+        <source>Max</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="354"/>
+        <source>Set this value to its maximum allowed value.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="370"/>
+        <source>Automatically compact Delete V3 metadata when the box closes</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="371"/>
+        <source>Compacts V3 metadata after the last sandboxed process exits. It is skipped when AutoDelete or AutoRemove is enabled, and while the box is being deleted.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="443"/>
+        <source>This individual setting overrides the selected Delete V3 preset. </source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="454"/>
+        <source>shared global defaults will be cleared on main save</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="464"/>
+        <source>preset: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="466"/>
+        <source>individual overrides are active</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="468"/>
+        <source>box inherits global/default values</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="470"/>
+        <source>Status: %1.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="470"/>
+        <source>, </source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="517"/>
+        <source>Delete V3 advanced settings</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Windows/OptionsDeleteV3.cpp" line="518"/>
+        <source>Delete V3 advanced settings are available only when Version 3 is selected.</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -3637,22 +4519,22 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
 <context>
     <name>CSandBox</name>
     <message>
-        <location filename="SandMan.cpp" line="5066"/>
+        <location filename="SandMan.cpp" line="5122"/>
         <source>Waiting for folder: %1</source>
         <translation>フォルダを待機中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5067"/>
+        <location filename="SandMan.cpp" line="5123"/>
         <source>Deleting folder: %1</source>
         <translation>フォルダを削除中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5068"/>
+        <location filename="SandMan.cpp" line="5124"/>
         <source>Merging folders: %1 &amp;gt;&amp;gt; %2</source>
         <translation>フォルダをマージ中: %1 &amp;gt;&amp;gt; %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5069"/>
+        <location filename="SandMan.cpp" line="5125"/>
         <source>Finishing Snapshot Merge...</source>
         <translation>スナップショットのマージを完了中...</translation>
     </message>
@@ -3665,77 +4547,77 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
 <context>
     <name>CSandBoxPlus</name>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="597"/>
+        <location filename="SbiePlusAPI.cpp" line="657"/>
         <source>Disabled</source>
         <translation>無効</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="608"/>
+        <location filename="SbiePlusAPI.cpp" line="668"/>
         <source>OPEN Root Access</source>
         <translation>オープンルートアクセス</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="610"/>
+        <location filename="SbiePlusAPI.cpp" line="670"/>
         <source>Application Compartment</source>
         <translation>アプリケーションコンパートメント</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="612"/>
+        <location filename="SbiePlusAPI.cpp" line="672"/>
         <source>NOT SECURE</source>
         <translation>安全でない</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="614"/>
+        <location filename="SbiePlusAPI.cpp" line="674"/>
         <source>Reduced Isolation</source>
         <translation>緩和された隔離</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="616"/>
+        <location filename="SbiePlusAPI.cpp" line="676"/>
         <source>Enhanced Isolation</source>
         <translation>強化された隔離</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="619"/>
+        <location filename="SbiePlusAPI.cpp" line="679"/>
         <source>Privacy Enhanced</source>
         <translation>プライバシー強化</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="623"/>
+        <location filename="SbiePlusAPI.cpp" line="683"/>
         <source>No INet (with Exceptions)</source>
         <translation>INetなし(例外あり)</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="625"/>
+        <location filename="SbiePlusAPI.cpp" line="685"/>
         <source>No INet</source>
         <translation>INetなし</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="628"/>
+        <location filename="SbiePlusAPI.cpp" line="688"/>
         <source>Net Share</source>
         <translation>Net共有</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="630"/>
+        <location filename="SbiePlusAPI.cpp" line="690"/>
         <source>No Admin</source>
         <translation>管理者権限なし</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="633"/>
+        <location filename="SbiePlusAPI.cpp" line="693"/>
         <source>Auto Delete</source>
         <translation>自動削除</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="638"/>
+        <location filename="SbiePlusAPI.cpp" line="698"/>
         <source>Normal</source>
         <translation>標準</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="642"/>
+        <location filename="SbiePlusAPI.cpp" line="702"/>
         <source> (Portable)</source>
         <translation> (ポータブル)</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="645"/>
+        <location filename="SbiePlusAPI.cpp" line="705"/>
         <source> (Virtual)</source>
         <translation> (仮想)</translation>
     </message>
@@ -3749,13 +4631,13 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
     </message>
     <message>
         <location filename="SandMan.cpp" line="516"/>
-        <location filename="SandMan.cpp" line="2823"/>
+        <location filename="SandMan.cpp" line="2858"/>
         <source>Sandboxie-Plus Insider [%1]</source>
         <translation>Sandboxie-Plus Insider [%1]</translation>
     </message>
     <message>
         <location filename="SandMan.cpp" line="518"/>
-        <location filename="SandMan.cpp" line="2825"/>
+        <location filename="SandMan.cpp" line="2860"/>
         <source>Sandboxie-Plus v%1</source>
         <translation>Sandboxie-Plus v%1</translation>
     </message>
@@ -3901,7 +4783,7 @@ Unlike the preview channel, it does not include untested, potentially breaking, 
     </message>
     <message>
         <location filename="SandMan.cpp" line="834"/>
-        <location filename="SandMan.cpp" line="5004"/>
+        <location filename="SandMan.cpp" line="5060"/>
         <source>About Sandboxie-Plus</source>
         <translation>Sandboxie-Plus について</translation>
     </message>
@@ -4315,10 +5197,10 @@ Do you want to do the clean up?</source>
     <message>
         <location filename="SandMan.cpp" line="1729"/>
         <location filename="SandMan.cpp" line="2329"/>
-        <location filename="SandMan.cpp" line="2864"/>
-        <location filename="SandMan.cpp" line="3935"/>
-        <location filename="SandMan.cpp" line="4394"/>
-        <location filename="SandMan.cpp" line="4410"/>
+        <location filename="SandMan.cpp" line="2899"/>
+        <location filename="SandMan.cpp" line="3970"/>
+        <location filename="SandMan.cpp" line="4431"/>
+        <location filename="SandMan.cpp" line="4447"/>
         <source>Don&apos;t show this message again.</source>
         <translation>今後このメッセージを表示しない。</translation>
     </message>
@@ -4411,77 +5293,77 @@ Do you want to do the clean up?</source>
         <translation>USBサンドボックスが見つかりません。作成中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2538"/>
+        <location filename="SandMan.cpp" line="2551"/>
         <source>Executing OnBoxDelete: %1</source>
         <translation>OnBoxDelete を実行中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2563"/>
+        <location filename="SandMan.cpp" line="2576"/>
         <source>Auto Deleting %1 Content</source>
         <translation>%1 のコンテンツを自動削除中</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2645"/>
+        <location filename="SandMan.cpp" line="2659"/>
         <source>Removed Shortcut: %1</source>
         <translation>ショートカットを削除: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2734"/>
+        <location filename="SandMan.cpp" line="2748"/>
         <source>Updated Shortcut to: %1</source>
         <translation>ショートカットを更新: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2736"/>
+        <location filename="SandMan.cpp" line="2750"/>
         <source>Added Shortcut to: %1</source>
         <translation>ショートカットを追加: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2768"/>
+        <location filename="SandMan.cpp" line="2784"/>
         <source>Executing OnBoxTerminate: %1</source>
         <translation>OnBoxTerminate を実行中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2801"/>
+        <location filename="SandMan.cpp" line="2817"/>
         <source>Auto deleting content of %1</source>
         <translation>%1 のコンテンツを自動削除中</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2813"/>
+        <location filename="SandMan.cpp" line="2848"/>
         <source>Auto removing sandbox %1</source>
         <translation>サンドボックス %1 を自動削除中</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2837"/>
+        <location filename="SandMan.cpp" line="2872"/>
         <source>%1 Directory: %2</source>
         <translation>%1 ディレクトリ: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2837"/>
+        <location filename="SandMan.cpp" line="2872"/>
         <source>Application</source>
         <translation>アプリケーション</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2837"/>
+        <location filename="SandMan.cpp" line="2872"/>
         <source>Installation</source>
         <translation>インストール</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2838"/>
+        <location filename="SandMan.cpp" line="2873"/>
         <source>Sandboxie-Plus Version: %1 (%2)</source>
         <translation>Sandboxie-Plus バージョン: %1 (%2)</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2839"/>
+        <location filename="SandMan.cpp" line="2874"/>
         <source>Current Config: %1</source>
         <translation>現在の構成: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2840"/>
+        <location filename="SandMan.cpp" line="2875"/>
         <source>Data Directory: %1</source>
         <translation>データディレクトリ: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2861"/>
+        <location filename="SandMan.cpp" line="2896"/>
         <source>Sandboxie-Plus was started in portable mode, do you want to put the Sandbox folder into its parent directory?
 Yes will choose: %1
 No will choose: %2</source>
@@ -4490,22 +5372,22 @@ No will choose: %2</source>
 「いいえ」を選択した場合: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2903"/>
+        <location filename="SandMan.cpp" line="2938"/>
         <source> for Personal use</source>
         <translation> 個人利用向け</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2905"/>
+        <location filename="SandMan.cpp" line="2940"/>
         <source>   -   for Non-Commercial use ONLY</source>
         <translation>   -   非商用利用のみ</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2933"/>
+        <location filename="SandMan.cpp" line="2968"/>
         <source>Default sandbox not found; creating: %1</source>
         <translation>デフォルトのサンドボックスが見つかりません。作成中: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2970"/>
+        <location filename="SandMan.cpp" line="3005"/>
         <source>Your Windows build %1 exceeds the current support capabilities of your Sandboxie version, resulting in the disabling of token-based security isolation. Consequently, all applications will operate in application compartment mode without secure isolation.
 Please check if there is an update for sandboxie.</source>
         <oldsource>Your Windows build %1 exceeds the current support capabilities of your Sandboxie version, resulting in the disabling of token-based security isolation. Consequently, all applications will operate in application compartment mode without secure isolation.<byte value="xd"/>
@@ -4514,22 +5396,22 @@ Please check if there is an update for sandboxie.</oldsource>
 Sandboxieの更新があるか確認してください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2979"/>
+        <location filename="SandMan.cpp" line="3014"/>
         <source>Don&apos;t show this message again for the current build.</source>
         <translation>現在のビルドではこのメッセージを再表示しない。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2986"/>
+        <location filename="SandMan.cpp" line="3021"/>
         <source>Your Windows build %1 exceeds the current known support capabilities of your Sandboxie version, Sandboxie will attempt to use the last-known offsets which may cause system instability.</source>
         <translation>ご使用のWindowsビルド %1 は、現在お使いのSandboxieバージョンで既知のサポート範囲を超えています。Sandboxieは最後に確認されたオフセットを使用しようとしますが、これによりシステムが不安定になる可能性があります。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="2997"/>
+        <location filename="SandMan.cpp" line="3032"/>
         <source>Do you want the setup wizard to be omitted?</source>
         <translation>セットアップウィザードを省略しますか？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3004"/>
+        <location filename="SandMan.cpp" line="3039"/>
         <source>Sandman did not finish enumerating installed windows updates last time, it probably hangs.
 Do you want to disable Windows Updates scanning from the software compatibility detection?</source>
         <oldsource>Sandman die not finish enumerating installed windows updates last time, it probably hang.
@@ -4538,576 +5420,581 @@ Do you want to disable Windows Updates scanning from the the software compatibil
 ソフトウェア互換性検出から、Windows Updateのスキャンを無効にしますか？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3014"/>
+        <location filename="SandMan.cpp" line="3049"/>
         <source>   -   NOT connected</source>
         <translation>   -   未接続</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3208"/>
+        <location filename="SandMan.cpp" line="3243"/>
         <source>Failed to configure hotkey %1, error: %2</source>
         <translation>ホットキー %1 の設定に失敗しました。エラー: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3383"/>
-        <location filename="SandMan.cpp" line="3387"/>
-        <location filename="SandMan.cpp" line="3393"/>
-        <location filename="SandMan.cpp" line="3395"/>
+        <location filename="SandMan.cpp" line="3418"/>
+        <location filename="SandMan.cpp" line="3422"/>
+        <location filename="SandMan.cpp" line="3428"/>
+        <location filename="SandMan.cpp" line="3430"/>
         <source> (%1)</source>
         <translation> (%1)</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3489"/>
+        <location filename="SandMan.cpp" line="3524"/>
         <source>The box %1 is configured to use features exclusively available to project supporters.</source>
         <translation>ボックス %1 は、プロジェクト支援者限定の機能を使用するように設定されています。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3490"/>
-        <location filename="SandMan.cpp" line="3498"/>
-        <location filename="SandMan.cpp" line="3510"/>
-        <location filename="SandMan.cpp" line="3597"/>
+        <location filename="SandMan.cpp" line="3525"/>
+        <location filename="SandMan.cpp" line="3533"/>
+        <location filename="SandMan.cpp" line="3545"/>
+        <location filename="SandMan.cpp" line="3632"/>
         <source>&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;Become a project supporter&lt;/a&gt;, and receive a &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;supporter certificate&lt;/a&gt;</source>
         <translation>&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;プロジェクト支援者になる&lt;/a&gt;と、&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;支援者証明書&lt;/a&gt;を受け取れます</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3494"/>
+        <location filename="SandMan.cpp" line="3529"/>
         <source>The box %1 is configured to use features which require an &lt;b&gt;advanced&lt;/b&gt; supporter certificate.</source>
         <translation>ボックス %1 は、&lt;b&gt;上級&lt;/b&gt;支援者証明書が必要な機能を使用するように設定されています。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3496"/>
-        <location filename="SandMan.cpp" line="3595"/>
+        <location filename="SandMan.cpp" line="3531"/>
+        <location filename="SandMan.cpp" line="3630"/>
         <source>&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-upgrade-cert&quot;&gt;Upgrade your Certificate&lt;/a&gt; to unlock advanced features.</source>
         <translation>&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-upgrade-cert&quot;&gt;証明書をアップグレード&lt;/a&gt;して、上級機能のロックを解除してください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3507"/>
+        <location filename="SandMan.cpp" line="3542"/>
         <source>The program %1 started in box %2 will be terminated in 5 minutes because the box was configured to use features exclusively available to project supporters.</source>
         <translation>ボックス %2 がプロジェクト支援者限定の機能を使用するように設定されているため、このボックスで開始されたプログラム %1 は5分後に強制終了されます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3509"/>
+        <location filename="SandMan.cpp" line="3544"/>
         <source>The box %1 is configured to use features exclusively available to project supporters, these presets will be ignored.</source>
         <translation>ボックス %1 は、プロジェクト支援者限定の機能を使用するように設定されています。これらのプリセットは無視されます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3591"/>
+        <location filename="SandMan.cpp" line="3626"/>
         <source>The selected feature requires an &lt;b&gt;advanced&lt;/b&gt; supporter certificate.</source>
         <translation>選択された機能には&lt;b&gt;上級&lt;/b&gt;支援者証明書が必要です。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3593"/>
+        <location filename="SandMan.cpp" line="3628"/>
         <source>&lt;br /&gt;you need to be on the Great Patreon level or higher to unlock this feature.</source>
         <translation>&lt;br /&gt;この機能のロックを解除するには、PatreonのGreatレベル以上である必要があります。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3605"/>
+        <location filename="SandMan.cpp" line="3640"/>
         <source>The selected feature set is only available to project supporters.&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;Become a project supporter&lt;/a&gt;, and receive a &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;supporter certificate&lt;/a&gt;</source>
         <translation>選択された機能セットはプロジェクト支援者のみが利用できます。&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;プロジェクト支援者になる&lt;/a&gt;と、&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;支援者証明書&lt;/a&gt;を受け取れます</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3608"/>
+        <location filename="SandMan.cpp" line="3643"/>
         <source>The selected feature set is only available to project supporters. Processes started in a box with this feature set enabled without a supporter certificate will be terminated after 5 minutes.&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;Become a project supporter&lt;/a&gt;, and receive a &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;supporter certificate&lt;/a&gt;</source>
         <translation>選択された機能セットはプロジェクト支援者のみが利用できます。支援者証明書なしでこの機能セットが有効化されたボックスで開始されたプロセスは、5分後に強制終了されます。&lt;br /&gt;&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get-cert&quot;&gt;プロジェクト支援者になる&lt;/a&gt;と、&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-cert&quot;&gt;支援者証明書&lt;/a&gt;を受け取れます</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3651"/>
+        <location filename="SandMan.cpp" line="3686"/>
         <source>The certificate you are attempting to use has been blocked, meaning it has been invalidated for cause. Any attempt to use it constitutes a breach of its terms of use!</source>
         <translation>使用しようとしている証明書はブロックされています。これは正当な理由により無効化されたことを意味します。この証明書を使用しようとするいかなる試みも、その利用規約への違反となります！</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3663"/>
+        <location filename="SandMan.cpp" line="3698"/>
         <source>The Certificate Signature is invalid!</source>
         <translation>証明書の署名が無効です！</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3664"/>
+        <location filename="SandMan.cpp" line="3699"/>
         <source>The Certificate is not suitable for this product.</source>
         <translation>この証明書はこの製品には適していません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3665"/>
+        <location filename="SandMan.cpp" line="3700"/>
         <source>The Certificate is node locked.</source>
         <translation>この証明書はノードロックされています。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3669"/>
+        <location filename="SandMan.cpp" line="3704"/>
         <source>The support certificate is not valid.
 Error: %1</source>
         <translation>支援者証明書は無効です。
 エラー: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3733"/>
+        <location filename="SandMan.cpp" line="3768"/>
         <source>The evaluation period has expired!!!</source>
         <translation>評価期間が終了しました！</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3738"/>
+        <location filename="SandMan.cpp" line="3773"/>
         <source>The supporter certificate is not valid for this build, please get an updated certificate</source>
         <translation>支援者証明書はこのビルドでは無効です。更新された証明書を入手してください</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3741"/>
+        <location filename="SandMan.cpp" line="3776"/>
         <source>The supporter certificate has expired%1, please get an updated certificate</source>
         <translation>支援者証明書の有効期限が切れました%1。更新された証明書を入手してください</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3742"/>
+        <location filename="SandMan.cpp" line="3777"/>
         <source>, but it remains valid for the current build</source>
         <translation>が、現在のビルドでは引き続き有効です</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3744"/>
+        <location filename="SandMan.cpp" line="3779"/>
         <source>The supporter certificate will expire in %1 days, please get an updated certificate</source>
         <translation>支援者証明書は %1 日後に期限切れになります。更新された証明書を入手してください</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3787"/>
+        <location filename="SandMan.cpp" line="3822"/>
         <source>Only Administrators can change the config.</source>
         <translation>管理者のみが設定を変更できます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3797"/>
+        <location filename="SandMan.cpp" line="3832"/>
         <source>Please enter the configuration password.</source>
         <translation>設定パスワードを入力してください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3805"/>
+        <location filename="SandMan.cpp" line="3840"/>
         <source>Login Failed: %1</source>
         <translation>ログイン失敗: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3844"/>
+        <location filename="SandMan.cpp" line="3879"/>
         <source>Do you want to terminate all processes in all sandboxes?</source>
         <translation>すべてのサンドボックス内の全プロセスを強制終了しますか？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3845"/>
-        <location filename="SandMan.cpp" line="3870"/>
+        <location filename="SandMan.cpp" line="3880"/>
+        <location filename="SandMan.cpp" line="3905"/>
         <source>Don&apos;t ask in future</source>
         <translation>今後は確認しない</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3869"/>
+        <location filename="SandMan.cpp" line="3904"/>
         <source>Do you want to terminate all processes in encrypted sandboxes, and unmount them?</source>
         <translation>暗号化されたサンドボックス内の全プロセスを強制終了し、アンマウントしますか？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3895"/>
+        <location filename="SandMan.cpp" line="3930"/>
         <source>Please enter the duration, in seconds, for disabling Forced Programs rules.</source>
         <translation>Forced Programs ルールを一時的に無効化する時間を秒単位で入力してください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3910"/>
+        <location filename="SandMan.cpp" line="3945"/>
         <source>No Recovery</source>
         <translation>復元なし</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3916"/>
+        <location filename="SandMan.cpp" line="3951"/>
         <source>No Messages</source>
         <translation>メッセージなし</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3934"/>
+        <location filename="SandMan.cpp" line="3969"/>
         <source>Sandboxie-Plus was started in portable mode and it needs to create necessary services. This will prompt for administrative privileges.</source>
         <translation>Sandboxie-Plusはポータブルモードで起動されました。必要なサービスを作成するため、管理者権限の昇格が要求されます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3968"/>
+        <location filename="SandMan.cpp" line="4003"/>
         <source>CAUTION: Another agent (probably SbieCtrl.exe) is already managing this Sandboxie session, please close it first and reconnect to take over.</source>
         <translation>注意: 他のエージェント (おそらくSbieCtrl.exe) が既にこのSandboxieセッションを管理しています。先にそれを閉じてから再接続し、制御を引き継いでください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="3972"/>
+        <location filename="SandMan.cpp" line="4007"/>
         <source>&lt;b&gt;ERROR:&lt;/b&gt; The Sandboxie-Plus Manager (SandMan.exe) does not have a valid signature (SandMan.exe.sig). Please download a trusted release from the &lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get&quot;&gt;official Download page&lt;/a&gt;.</source>
         <translation>&lt;b&gt;エラー:&lt;/b&gt; Sandboxie-Plus マネージャー (SandMan.exe) には有効な署名 (SandMan.exe.sig) がありません。&lt;a href=&quot;https://sandboxie-plus.com/go.php?to=sbie-get&quot;&gt;公式ダウンロードページ&lt;/a&gt;から信頼できるリリースをダウンロードしてください。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4071"/>
-        <location filename="SandMan.cpp" line="4073"/>
-        <location filename="SandMan.cpp" line="4670"/>
+        <location filename="SandMan.cpp" line="4106"/>
+        <location filename="SandMan.cpp" line="4108"/>
+        <location filename="SandMan.cpp" line="4726"/>
         <source>Sandboxie-Plus - Error</source>
         <translation>Sandboxie-Plus - エラー</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4071"/>
+        <location filename="SandMan.cpp" line="4106"/>
         <source>Failed to stop all Sandboxie components</source>
         <translation>すべてのSandboxieコンポーネントの停止に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4073"/>
+        <location filename="SandMan.cpp" line="4108"/>
         <source>Failed to start required Sandboxie components</source>
         <translation>必要なSandboxieコンポーネントの開始に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4075"/>
+        <location filename="SandMan.cpp" line="4110"/>
         <source>Maintenance operation failed (%1)</source>
         <translation>メンテナンス操作に失敗しました (%1)</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4080"/>
+        <location filename="SandMan.cpp" line="4115"/>
         <source>Maintenance operation completed</source>
         <translation>メンテナンス操作が完了しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4100"/>
+        <location filename="SandMan.cpp" line="4135"/>
         <source>Executing maintenance operation, please wait...</source>
         <translation>メンテナンス操作を実行中です。しばらくお待ちください...</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4235"/>
+        <location filename="SandMan.cpp" line="4270"/>
         <source>In the Plus UI, this functionality has been integrated into the main sandbox list view.</source>
         <translation>Plus UIでは、この機能はメインのサンドボックスリストビューに統合されています。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4236"/>
+        <location filename="SandMan.cpp" line="4271"/>
         <source>Using the box/group context menu, you can move boxes and groups to other groups. You can also use drag and drop to move the items around. Alternatively, you can also use the arrow keys while holding ALT down to move items up and down within their group.&lt;br /&gt;You can create new boxes and groups from the Sandbox menu.</source>
         <translation>ボックス/グループのコンテキストメニューを使用して、ボックスやグループを他のグループに移動できます。また、ドラッグ＆ドロップで項目を移動することも可能です。あるいは、ALTキーを押しながら矢印キーを使い、グループ内で項目を上下に移動させることもできます。&lt;br /&gt;新しいボックスやグループは、サンドボックスメニューから作成できます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4304"/>
+        <location filename="SandMan.cpp" line="4339"/>
         <source>Do you also want to reset hidden message boxes (yes), or only all log messages (no)?</source>
         <translation>非表示のメッセージボックスもリセットしますか (はい)、それともログメッセージのみをすべてリセットしますか (いいえ)？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4392"/>
+        <location filename="SandMan.cpp" line="4429"/>
         <source>You are about to edit the Templates.ini, this is generally not recommended.
 This file is part of Sandboxie and all change done to it will be reverted next time Sandboxie is updated.</source>
         <translation>Templates.iniを編集しようとしています。この操作は通常推奨されません。
 このファイルはSandboxieの一部であり、ファイルに加えられたすべての変更は、次回のSandboxie更新時に元に戻ります。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4408"/>
+        <location filename="SandMan.cpp" line="4445"/>
         <source>The changes will be applied automatically whenever the file gets saved.</source>
         <translation>変更は、ファイルが保存されるたびに自動的に適用されます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4409"/>
+        <location filename="SandMan.cpp" line="4446"/>
         <source>The changes will be applied automatically as soon as the editor is closed.</source>
         <translation>変更は、エディターが閉じられるとすぐに自動的に適用されます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4472"/>
+        <location filename="SandMan.cpp" line="4527"/>
         <source>Sandboxie config has been reloaded</source>
         <translation>Sandboxieの設定が再読み込みされました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4599"/>
+        <location filename="SandMan.cpp" line="4654"/>
         <source>Error Status: 0x%1 (%2)</source>
         <translation>エラーステータス: 0x%1 (%2)</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4600"/>
+        <location filename="SandMan.cpp" line="4655"/>
         <source>Unknown</source>
         <translation>不明</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4602"/>
+        <location filename="SandMan.cpp" line="4657"/>
         <source>Administrator rights are required for this operation.</source>
         <translation>この操作には管理者権限が必要です。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4603"/>
+        <location filename="SandMan.cpp" line="4658"/>
         <source>Failed to execute: %1</source>
         <translation>実行に失敗しました: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4604"/>
+        <location filename="SandMan.cpp" line="4659"/>
         <source>Failed to connect to the driver</source>
         <translation>ドライバーへの接続に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4605"/>
+        <location filename="SandMan.cpp" line="4660"/>
         <source>Failed to communicate with Sandboxie Service: %1</source>
         <translation>Sandboxieサービスとの通信に失敗しました: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4606"/>
+        <location filename="SandMan.cpp" line="4661"/>
         <source>An incompatible Sandboxie %1 was found. Compatible versions: %2</source>
         <translation>互換性のないSandboxie %1 が見つかりました。互換性のあるバージョン: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4607"/>
+        <location filename="SandMan.cpp" line="4662"/>
         <source>Can&apos;t find Sandboxie installation path.</source>
         <translation>Sandboxieのインストールパスが見つかりません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4608"/>
+        <location filename="SandMan.cpp" line="4663"/>
         <source>Failed to copy configuration from sandbox %1: %2</source>
         <translation>サンドボックス %1 からの設定のコピーに失敗しました: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4609"/>
+        <location filename="SandMan.cpp" line="4664"/>
         <source>A sandbox of the name %1 already exists</source>
         <translation>名前が %1 のサンドボックスは既に存在します</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4610"/>
+        <location filename="SandMan.cpp" line="4665"/>
         <source>Failed to delete sandbox %1: %2</source>
         <translation>サンドボックス %1 の削除に失敗しました: %2</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4611"/>
+        <location filename="SandMan.cpp" line="4666"/>
         <source>The sandbox name can not be longer than 32 characters.</source>
         <translation>サンドボックス名は32文字を超えることはできません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4612"/>
+        <location filename="SandMan.cpp" line="4667"/>
         <source>The sandbox name can not be a device name.</source>
         <translation>サンドボックス名にデバイス名を使用することはできません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4613"/>
+        <location filename="SandMan.cpp" line="4668"/>
         <source>The sandbox name can contain only letters, digits and underscores which are displayed as spaces.</source>
         <translation>サンドボックス名には、文字、数字、およびスペースとして表示されるアンダースコアのみを含めることができます。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4614"/>
+        <location filename="SandMan.cpp" line="4669"/>
         <source>Failed to terminate all processes</source>
         <translation>全てのプロセスの強制終了に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4615"/>
+        <location filename="SandMan.cpp" line="4670"/>
         <source>Delete protection is enabled for the sandbox</source>
         <translation>サンドボックスの削除保護が有効になっています</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4616"/>
+        <location filename="SandMan.cpp" line="4671"/>
         <source>All sandbox processes must be stopped before the box content can be deleted</source>
         <translation>ボックスのコンテンツを削除する前に、全てのサンドボックスプロセスを停止する必要があります</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4617"/>
+        <location filename="SandMan.cpp" line="4672"/>
         <source>Error deleting sandbox folder: %1</source>
         <translation>サンドボックスフォルダーの削除エラー: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4618"/>
+        <location filename="SandMan.cpp" line="4673"/>
         <source>All processes in a sandbox must be stopped before it can be renamed.</source>
         <translation>サンドボックスの名前を変更する前に、内部の全てのプロセスを停止する必要があります。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4620"/>
+        <location filename="SandMan.cpp" line="4675"/>
         <source>A sandbox must be emptied before it can be deleted.</source>
         <translation>サンドボックスを削除する前に、中身を空にする必要があります。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4621"/>
+        <location filename="SandMan.cpp" line="4676"/>
         <source>Failed to move directory &apos;%1&apos; to &apos;%2&apos;</source>
         <translation>ディレクトリ &apos;%1&apos; を &apos;%2&apos; へ移動できませんでした</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4622"/>
+        <location filename="SandMan.cpp" line="4677"/>
         <source>Failed to move box image &apos;%1&apos; to &apos;%2&apos;</source>
         <translation>ボックスイメージ &apos;%1&apos; を &apos;%2&apos; へ移動できませんでした</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4623"/>
+        <location filename="SandMan.cpp" line="4678"/>
         <source>This Snapshot operation can not be performed while processes are still running in the box.</source>
         <translation>ボックス内でプロセスが実行中の間は、このスナップショット操作は実行できません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4624"/>
+        <location filename="SandMan.cpp" line="4679"/>
         <source>Failed to create directory for new snapshot</source>
         <translation>新規スナップショット用のディレクトリ作成に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4625"/>
+        <location filename="SandMan.cpp" line="4680"/>
         <source>Failed to copy box data files</source>
         <translation>ボックスデータファイルのコピーに失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4626"/>
+        <location filename="SandMan.cpp" line="4681"/>
         <source>Snapshot not found</source>
         <translation>スナップショットが見つかりません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4627"/>
+        <location filename="SandMan.cpp" line="4682"/>
         <source>Error merging snapshot directories &apos;%1&apos; with &apos;%2&apos;, the snapshot has not been fully merged.</source>
         <translation>スナップショットディレクトリ &apos;%1&apos; と &apos;%2&apos; のマージ中にエラーが発生しました。スナップショットは完全にはマージされていません。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4628"/>
+        <location filename="SandMan.cpp" line="4683"/>
         <source>Failed to remove old snapshot directory &apos;%1&apos;</source>
         <translation>古いスナップショットディレクトリ &apos;%1&apos; の削除に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4629"/>
+        <location filename="SandMan.cpp" line="4684"/>
         <source>Can&apos;t remove a snapshot that is shared by multiple later snapshots</source>
         <translation>複数の後続スナップショットによって共有されているスナップショットは削除できません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4630"/>
+        <location filename="SandMan.cpp" line="4685"/>
         <source>Failed to remove old box data files</source>
         <translation>古いボックスデータファイルの削除に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4631"/>
+        <location filename="SandMan.cpp" line="4686"/>
         <source>You are not authorized to update configuration in section &apos;%1&apos;</source>
         <translation>セクション &apos;%1&apos; の設定を更新する権限がありません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4632"/>
+        <location filename="SandMan.cpp" line="4687"/>
         <source>Failed to set configuration setting %1 in section %2: %3</source>
         <translation>セクション %2 での設定項目 %1 の設定に失敗しました: %3</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4633"/>
+        <location filename="SandMan.cpp" line="4688"/>
         <source>Can not create snapshot of an empty sandbox</source>
         <translation>空のサンドボックスのスナップショットは作成できません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4634"/>
+        <location filename="SandMan.cpp" line="4689"/>
         <source>A sandbox with that name already exists</source>
         <translation>その名前のサンドボックスは既に存在します</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4635"/>
+        <location filename="SandMan.cpp" line="4690"/>
         <source>The config password must not be longer than 64 characters</source>
         <translation>設定パスワードは64文字を超えることはできません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4636"/>
+        <location filename="SandMan.cpp" line="4691"/>
         <source>The operation was canceled by the user</source>
         <translation>操作はユーザーによってキャンセルされました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4637"/>
+        <location filename="SandMan.cpp" line="4692"/>
         <source>The content of an unmounted sandbox can not be deleted</source>
         <translation>アンマウントされたサンドボックスのコンテンツは削除できません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4639"/>
+        <location filename="SandMan.cpp" line="4693"/>
+        <source>Not enough free space for the snapshot operation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="SandMan.cpp" line="4695"/>
         <source>%1</source>
         <translation>%1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4641"/>
+        <location filename="SandMan.cpp" line="4697"/>
         <source>Import/Export not available, 7z.dll could not be loaded</source>
         <translation>インポート/エクスポートは利用できません、7z.dllが読み込めませんでした</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4642"/>
+        <location filename="SandMan.cpp" line="4698"/>
         <source>Failed to create the box archive</source>
         <translation>ボックスアーカイブの作成に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4643"/>
+        <location filename="SandMan.cpp" line="4699"/>
         <source>Failed to open the 7z archive</source>
         <translation>7zアーカイブを開けませんでした</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4644"/>
+        <location filename="SandMan.cpp" line="4700"/>
         <source>Failed to unpack the box archive</source>
         <translation>ボックスアーカイブの展開に失敗しました</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4645"/>
+        <location filename="SandMan.cpp" line="4701"/>
         <source>The selected 7z file is NOT a box archive</source>
         <translation>選択された7zファイルはボックスアーカイブではありません</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4646"/>
+        <location filename="SandMan.cpp" line="4702"/>
         <source>Failed to copy directory &apos;%1&apos; to &apos;%2&apos;</source>
         <translation>ディレクトリ &apos;%1&apos; を &apos;%2&apos; へコピーできませんでした</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4648"/>
+        <location filename="SandMan.cpp" line="4704"/>
         <source>Unknown Error Status: 0x%1</source>
         <translation>不明なエラーステータス: 0x%1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4672"/>
+        <location filename="SandMan.cpp" line="4728"/>
         <source>Operation failed for %1 item(s).</source>
         <translation>%1個の項目の操作に失敗しました。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4744"/>
+        <location filename="SandMan.cpp" line="4800"/>
         <source>Do you want to open %1 in a sandboxed or unsandboxed Web browser?</source>
         <translation>%1 をサンドボックス化された、またはサンドボックス化されていないウェブブラウザーで開きますか？</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4745"/>
+        <location filename="SandMan.cpp" line="4801"/>
         <source>Remember choice for later.</source>
         <translation>この選択を記憶する。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4748"/>
+        <location filename="SandMan.cpp" line="4804"/>
         <source>Sandboxed</source>
         <translation>サンドボックス化</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4749"/>
+        <location filename="SandMan.cpp" line="4805"/>
         <source>Unsandboxed</source>
         <translation>非サンドボックス化</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4911"/>
+        <location filename="SandMan.cpp" line="4967"/>
         <source>Reset Columns</source>
         <translation>列をリセット</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4912"/>
+        <location filename="SandMan.cpp" line="4968"/>
         <source>Copy Cell</source>
         <translation>セルをコピー</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4913"/>
+        <location filename="SandMan.cpp" line="4969"/>
         <source>Copy Row</source>
         <translation>行をコピー</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4914"/>
+        <location filename="SandMan.cpp" line="4970"/>
         <source>Copy Panel</source>
         <translation>パネルをコピー</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4915"/>
+        <location filename="SandMan.cpp" line="4971"/>
         <source>Case Sensitive</source>
         <translation>大文字と小文字を区別</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4916"/>
+        <location filename="SandMan.cpp" line="4972"/>
         <source>RegExp</source>
         <translation>正規表現</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4917"/>
+        <location filename="SandMan.cpp" line="4973"/>
         <source>Highlight</source>
         <translation>強調表示</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4918"/>
+        <location filename="SandMan.cpp" line="4974"/>
         <source>Close</source>
         <translation>閉じる</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4919"/>
+        <location filename="SandMan.cpp" line="4975"/>
         <source>&amp;Find ...</source>
         <translation>&amp;検索 ...</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4920"/>
+        <location filename="SandMan.cpp" line="4976"/>
         <source>All columns</source>
         <translation>すべての列</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4973"/>
+        <location filename="SandMan.cpp" line="5029"/>
         <source>&lt;h3&gt;About Sandboxie-Plus&lt;/h3&gt;&lt;p&gt;Version %1&lt;/p&gt;&lt;p&gt;</source>
         <translation>&lt;h3&gt;Sandboxie-Plus について&lt;/h3&gt;&lt;p&gt;バージョン %1&lt;/p&gt;&lt;p&gt;</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4981"/>
+        <location filename="SandMan.cpp" line="5037"/>
         <source>This copy of Sandboxie-Plus is certified for: %1</source>
         <translation>このSandboxie-Plusのコピーは、次の用途で認定されています: %1</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4983"/>
+        <location filename="SandMan.cpp" line="5039"/>
         <source>Sandboxie-Plus is free for personal and non-commercial use.</source>
         <translation>Sandboxie-Plusは、個人利用および非商用利用において無料です。</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="4987"/>
+        <location filename="SandMan.cpp" line="5043"/>
         <source>Sandboxie-Plus is an open source continuation of Sandboxie.&lt;br /&gt;Visit &lt;a href=&quot;https://sandboxie-plus.com&quot;&gt;sandboxie-plus.com&lt;/a&gt; for more information.&lt;br /&gt;&lt;br /&gt;%2&lt;br /&gt;&lt;br /&gt;Features: %3&lt;br /&gt;&lt;br /&gt;Installation: %1&lt;br /&gt;SbieDrv.sys: %4&lt;br /&gt; SbieSvc.exe: %5&lt;br /&gt; SbieDll.dll: %6&lt;br /&gt;&lt;br /&gt;Icons from &lt;a href=&quot;https://icons8.com&quot;&gt;icons8.com&lt;/a&gt;</source>
         <translation>Sandboxie-Plusは、Sandboxieのオープンソース後継版です。&lt;br /&gt;詳細は&lt;a href=&quot;https://sandboxie-plus.com&quot;&gt;sandboxie-plus.com&lt;/a&gt;をご覧ください。&lt;br /&gt;&lt;br /&gt;%2&lt;br /&gt;&lt;br /&gt;機能: %3&lt;br /&gt;&lt;br /&gt;インストール: %1&lt;br /&gt;SbieDrv.sys: %4&lt;br /&gt; SbieSvc.exe: %5&lt;br /&gt; SbieDll.dll: %6&lt;br /&gt;&lt;br /&gt;アイコン提供: &lt;a href=&quot;https://icons8.com&quot;&gt;icons8.com&lt;/a&gt;</translation>
     </message>
@@ -5532,37 +6419,37 @@ This file is part of Sandboxie and all change done to it will be reverted next t
 <context>
     <name>CSbieTemplatesEx</name>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1047"/>
+        <location filename="SbiePlusAPI.cpp" line="1107"/>
         <source>Failed to initialize COM</source>
         <translation>COMの初期化に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1053"/>
+        <location filename="SbiePlusAPI.cpp" line="1113"/>
         <source>Failed to create update session</source>
         <translation>更新セッションの作成に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1059"/>
+        <location filename="SbiePlusAPI.cpp" line="1119"/>
         <source>Failed to create update searcher</source>
         <translation>更新サーチャーの作成に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1065"/>
+        <location filename="SbiePlusAPI.cpp" line="1125"/>
         <source>Failed to set search options</source>
         <translation>検索オプションの設定に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1073"/>
+        <location filename="SbiePlusAPI.cpp" line="1133"/>
         <source>Failed to enumerate installed Windows updates</source>
         <translation>インストール済みのWindows更新プログラムの列挙に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1079"/>
+        <location filename="SbiePlusAPI.cpp" line="1139"/>
         <source>Failed to retrieve update list from search result</source>
         <translation>検索結果から更新リストの取得に失敗しました</translation>
     </message>
     <message>
-        <location filename="SbiePlusAPI.cpp" line="1086"/>
+        <location filename="SbiePlusAPI.cpp" line="1146"/>
         <source>Failed to get update count</source>
         <translation>更新数の取得に失敗しました</translation>
     </message>
@@ -5570,29 +6457,29 @@ This file is part of Sandboxie and all change done to it will be reverted next t
 <context>
     <name>CSbieView</name>
     <message>
-        <location filename="Views/SbieView.cpp" line="133"/>
-        <location filename="Views/SbieView.cpp" line="297"/>
+        <location filename="Views/SbieView.cpp" line="134"/>
+        <location filename="Views/SbieView.cpp" line="300"/>
         <source>Pin to Run Menu</source>
         <translation>「実行」メニューにピン留め</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="135"/>
-        <location filename="Views/SbieView.cpp" line="230"/>
-        <location filename="Views/SbieView.cpp" line="295"/>
-        <location filename="Views/SbieView.cpp" line="411"/>
-        <location filename="Views/SbieView.cpp" line="453"/>
+        <location filename="Views/SbieView.cpp" line="136"/>
+        <location filename="Views/SbieView.cpp" line="231"/>
+        <location filename="Views/SbieView.cpp" line="298"/>
+        <location filename="Views/SbieView.cpp" line="416"/>
+        <location filename="Views/SbieView.cpp" line="458"/>
         <source>Create Shortcut</source>
         <translation>ショートカットを作成</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="176"/>
-        <location filename="Views/SbieView.cpp" line="347"/>
+        <location filename="Views/SbieView.cpp" line="177"/>
+        <location filename="Views/SbieView.cpp" line="350"/>
         <source>Create New Box</source>
         <translation>新規ボックスを作成</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="177"/>
-        <location filename="Views/SbieView.cpp" line="348"/>
+        <location filename="Views/SbieView.cpp" line="178"/>
+        <location filename="Views/SbieView.cpp" line="351"/>
         <source>Create Box Group</source>
         <translation>ボックスグループを作成</translation>
     </message>
@@ -5601,214 +6488,226 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">ボックスをインポート</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="183"/>
-        <location filename="Views/SbieView.cpp" line="354"/>
+        <location filename="Views/SbieView.cpp" line="184"/>
+        <location filename="Views/SbieView.cpp" line="357"/>
         <source>Stop Operations</source>
         <translation>操作を停止</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="187"/>
-        <location filename="Views/SbieView.cpp" line="358"/>
+        <location filename="Views/SbieView.cpp" line="188"/>
+        <location filename="Views/SbieView.cpp" line="361"/>
         <source>Run</source>
         <translation>実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="192"/>
+        <location filename="Views/SbieView.cpp" line="193"/>
         <source>Run Program</source>
         <translation>プログラムを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="193"/>
+        <location filename="Views/SbieView.cpp" line="194"/>
         <source>Run from Start Menu</source>
         <translation>スタートメニューから実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="196"/>
-        <location filename="Views/SbieView.cpp" line="369"/>
+        <location filename="Views/SbieView.cpp" line="197"/>
+        <location filename="Views/SbieView.cpp" line="372"/>
         <source>(Host) Start Menu</source>
         <translation>(ホスト) スタートメニュー</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="202"/>
+        <location filename="Views/SbieView.cpp" line="203"/>
         <source>Execute Autorun Entries</source>
         <translation>自動実行エントリを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="203"/>
+        <location filename="Views/SbieView.cpp" line="204"/>
         <source>Standard Applications</source>
         <translation>標準アプリケーション</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="204"/>
+        <location filename="Views/SbieView.cpp" line="205"/>
         <source>Default Web Browser</source>
         <translation>デフォルトのウェブブラウザ</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="205"/>
+        <location filename="Views/SbieView.cpp" line="206"/>
         <source>Default eMail Client</source>
         <translation>デフォルトのメールクライアント</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="207"/>
+        <location filename="Views/SbieView.cpp" line="208"/>
         <source>Windows Explorer</source>
         <translation>Windows エクスプローラー</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="208"/>
+        <location filename="Views/SbieView.cpp" line="209"/>
         <source>Registry Editor</source>
         <translation>レジストリエディター</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="209"/>
+        <location filename="Views/SbieView.cpp" line="210"/>
         <source>Programs and Features</source>
         <translation>プログラムと機能</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="212"/>
+        <location filename="Views/SbieView.cpp" line="213"/>
         <source>Command Prompt</source>
         <translation>コマンドプロンプト</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="213"/>
+        <location filename="Views/SbieView.cpp" line="214"/>
         <source>Command Prompt (as Admin)</source>
         <translation>コマンドプロンプト (管理者)</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="217"/>
+        <location filename="Views/SbieView.cpp" line="218"/>
         <source>Command Prompt (32-bit)</source>
         <translation>コマンドプロンプト (32-bit)</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="220"/>
+        <location filename="Views/SbieView.cpp" line="221"/>
         <source>Terminate All Programs</source>
         <translation>すべてのプログラムを強制終了</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="226"/>
+        <location filename="Views/SbieView.cpp" line="227"/>
         <source>Box Content</source>
         <translation>ボックスの内容</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="227"/>
+        <location filename="Views/SbieView.cpp" line="228"/>
         <source>Browse Files</source>
         <translation>ファイルを参照</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="229"/>
-        <location filename="Views/SbieView.cpp" line="410"/>
+        <location filename="Views/SbieView.cpp" line="230"/>
+        <location filename="Views/SbieView.cpp" line="415"/>
         <source>Refresh Info</source>
         <translation>情報を更新</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="232"/>
-        <location filename="Views/SbieView.cpp" line="393"/>
+        <location filename="Views/SbieView.cpp" line="233"/>
+        <location filename="Views/SbieView.cpp" line="396"/>
         <source>Explore Content</source>
         <translation>内容を探索</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="233"/>
+        <location filename="Views/SbieView.cpp" line="234"/>
         <source>Open Registry</source>
         <translation>レジストリを開く</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="234"/>
-        <location filename="Views/SbieView.cpp" line="400"/>
+        <location filename="Views/SbieView.cpp" line="235"/>
+        <location filename="Views/SbieView.cpp" line="403"/>
         <source>Snapshots Manager</source>
         <translation>スナップショットマネージャー</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="222"/>
-        <location filename="Views/SbieView.cpp" line="389"/>
+        <location filename="Views/SbieView.cpp" line="223"/>
+        <location filename="Views/SbieView.cpp" line="392"/>
         <source>Mount Box Image</source>
         <translation>ボックスイメージをマウント</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="178"/>
-        <location filename="Views/SbieView.cpp" line="349"/>
+        <location filename="Views/SbieView.cpp" line="179"/>
+        <location filename="Views/SbieView.cpp" line="352"/>
         <source>Import Boxes</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="223"/>
-        <location filename="Views/SbieView.cpp" line="390"/>
+        <location filename="Views/SbieView.cpp" line="224"/>
+        <location filename="Views/SbieView.cpp" line="393"/>
         <source>Unmount Box Image</source>
         <translation>ボックスイメージをアンマウント</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="224"/>
+        <location filename="Views/SbieView.cpp" line="225"/>
         <source>Recover Files</source>
         <translation>ファイルを復元</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="225"/>
-        <location filename="Views/SbieView.cpp" line="392"/>
+        <location filename="Views/SbieView.cpp" line="226"/>
+        <location filename="Views/SbieView.cpp" line="395"/>
         <source>Delete Content</source>
         <translation>コンテンツを削除</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="236"/>
+        <location filename="Views/SbieView.cpp" line="237"/>
         <source>Sandbox Options</source>
         <translation>サンドボックスのオプション</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="241"/>
+        <location filename="Views/SbieView.cpp" line="242"/>
         <source>Sandbox Presets</source>
         <translation>サンドボックスのプリセット</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="243"/>
+        <location filename="Views/SbieView.cpp" line="244"/>
         <source>Ask for UAC Elevation</source>
         <translation>UAC昇格を要求</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="244"/>
+        <location filename="Views/SbieView.cpp" line="245"/>
         <source>Drop Admin Rights</source>
         <translation>管理者権限を破棄</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="245"/>
+        <location filename="Views/SbieView.cpp" line="246"/>
         <source>Emulate Admin Rights</source>
         <translation>管理者権限をエミュレート</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="253"/>
+        <location filename="Views/SbieView.cpp" line="254"/>
         <source>Block Internet Access</source>
         <translation>インターネットアクセスをブロック</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="255"/>
+        <location filename="Views/SbieView.cpp" line="256"/>
         <source>Allow Network Shares</source>
         <translation>ネットワーク共有を許可</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="259"/>
+        <location filename="Views/SbieView.cpp" line="260"/>
         <source>Immediate Recovery</source>
         <translation>即時復元</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="261"/>
+        <location filename="Views/SbieView.cpp" line="262"/>
         <source>Disable Force Rules</source>
         <translation>強制ルールを無効化</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="264"/>
-        <location filename="Views/SbieView.cpp" line="398"/>
+        <location filename="Views/SbieView.cpp" line="265"/>
+        <location filename="Views/SbieView.cpp" line="401"/>
         <source>Sandbox Tools</source>
         <translation>サンドボックスツール</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="265"/>
-        <location filename="Views/SbieView.cpp" line="402"/>
-        <source>Browse NT Namespace</source>
+        <location filename="Views/SbieView.cpp" line="266"/>
+        <location filename="Views/SbieView.cpp" line="405"/>
+        <source>Retained File Versions</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="Views/SbieView.cpp" line="267"/>
+        <location filename="Views/SbieView.cpp" line="406"/>
+        <source>Browse NT Namespace</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Views/SbieView.cpp" line="268"/>
+        <location filename="Views/SbieView.cpp" line="407"/>
+        <source>Compact DeleteV3 Metadata</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Views/SbieView.cpp" line="270"/>
         <source>Duplicate Box Config</source>
         <translation>ボックス設定を複製</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="268"/>
+        <location filename="Views/SbieView.cpp" line="271"/>
         <source>Duplicate Box with Content</source>
         <translation>コンテンツごとボックスを複製</translation>
     </message>
@@ -5817,242 +6716,242 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">ボックスをエクスポート</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="269"/>
+        <location filename="Views/SbieView.cpp" line="272"/>
         <source>Export Boxes</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="273"/>
-        <location filename="Views/SbieView.cpp" line="414"/>
+        <location filename="Views/SbieView.cpp" line="276"/>
+        <location filename="Views/SbieView.cpp" line="419"/>
         <source>Rename Sandbox</source>
         <translation>サンドボックスの名前を変更</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="274"/>
-        <location filename="Views/SbieView.cpp" line="415"/>
+        <location filename="Views/SbieView.cpp" line="277"/>
+        <location filename="Views/SbieView.cpp" line="420"/>
         <source>Move Sandbox</source>
         <translation>サンドボックスを移動</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="275"/>
-        <location filename="Views/SbieView.cpp" line="416"/>
+        <location filename="Views/SbieView.cpp" line="278"/>
+        <location filename="Views/SbieView.cpp" line="421"/>
         <source>Move Up</source>
         <translation>上へ移動</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="280"/>
-        <location filename="Views/SbieView.cpp" line="421"/>
+        <location filename="Views/SbieView.cpp" line="283"/>
+        <location filename="Views/SbieView.cpp" line="426"/>
         <source>Move Down</source>
         <translation>下へ移動</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="288"/>
-        <location filename="Views/SbieView.cpp" line="429"/>
+        <location filename="Views/SbieView.cpp" line="291"/>
+        <location filename="Views/SbieView.cpp" line="434"/>
         <source>Remove Sandbox</source>
         <translation>サンドボックスを削除</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="293"/>
-        <location filename="Views/SbieView.cpp" line="451"/>
+        <location filename="Views/SbieView.cpp" line="296"/>
+        <location filename="Views/SbieView.cpp" line="456"/>
         <source>Terminate</source>
         <translation>強制終了</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="296"/>
+        <location filename="Views/SbieView.cpp" line="299"/>
         <source>Preset</source>
         <translation>プリセット</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="299"/>
+        <location filename="Views/SbieView.cpp" line="302"/>
         <source>Block and Terminate</source>
         <translation>ブロックして強制終了</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="303"/>
+        <location filename="Views/SbieView.cpp" line="306"/>
         <source>Allow internet access</source>
         <translation>インターネットアクセスを許可</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="305"/>
+        <location filename="Views/SbieView.cpp" line="308"/>
         <source>Force into this sandbox</source>
         <translation>このサンドボックスで強制実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="307"/>
+        <location filename="Views/SbieView.cpp" line="310"/>
         <source>Set Linger Process</source>
         <translation>残留プロセスを設定</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="309"/>
+        <location filename="Views/SbieView.cpp" line="312"/>
         <source>Set Leader Process</source>
         <translation>リーダープロセスを設定</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="311"/>
+        <location filename="Views/SbieView.cpp" line="314"/>
         <source>Suspend</source>
         <translation>一時停止</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="312"/>
+        <location filename="Views/SbieView.cpp" line="315"/>
         <source>Resume</source>
         <translation>再開</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="363"/>
+        <location filename="Views/SbieView.cpp" line="366"/>
         <source>Run Web Browser</source>
         <translation>ウェブブラウザーを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="364"/>
+        <location filename="Views/SbieView.cpp" line="367"/>
         <source>Run eMail Reader</source>
         <translation>メールソフトを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="365"/>
+        <location filename="Views/SbieView.cpp" line="368"/>
         <source>Run Any Program</source>
         <translation>任意のプログラムを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="366"/>
+        <location filename="Views/SbieView.cpp" line="369"/>
         <source>Run From Start Menu</source>
         <translation>スタートメニューから実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="374"/>
+        <location filename="Views/SbieView.cpp" line="377"/>
         <source>Run Windows Explorer</source>
         <translation>Windows エクスプローラーを実行</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="388"/>
+        <location filename="Views/SbieView.cpp" line="391"/>
         <source>Terminate Programs</source>
         <translation>プログラムを強制終了</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="391"/>
+        <location filename="Views/SbieView.cpp" line="394"/>
         <source>Quick Recover</source>
         <translation>クイック復元</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="396"/>
+        <location filename="Views/SbieView.cpp" line="399"/>
         <source>Sandbox Settings</source>
         <translation>サンドボックス設定</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="399"/>
+        <location filename="Views/SbieView.cpp" line="402"/>
         <source>Browse Content</source>
         <translation>コンテンツを参照</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="404"/>
+        <location filename="Views/SbieView.cpp" line="409"/>
         <source>Duplicate Sandbox Config</source>
         <translation>サンドボックス設定を複製</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="405"/>
+        <location filename="Views/SbieView.cpp" line="410"/>
         <source>Duplicate Sandbox with Content</source>
         <translation>コンテンツごとサンドボックスを複製</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="406"/>
+        <location filename="Views/SbieView.cpp" line="411"/>
         <source>Export Sandbox</source>
         <translation>サンドボックスをエクスポート</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="472"/>
+        <location filename="Views/SbieView.cpp" line="477"/>
         <source>Rename Group</source>
         <translation>グループの名前を変更</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="473"/>
+        <location filename="Views/SbieView.cpp" line="478"/>
         <source>Move Group</source>
         <translation>グループを移動</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="474"/>
+        <location filename="Views/SbieView.cpp" line="479"/>
         <source>Remove Group</source>
         <translation>グループを削除</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="615"/>
+        <location filename="Views/SbieView.cpp" line="620"/>
         <source>    File root: %1
 </source>
         <translation>    ファイルルート: %1
 </translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="616"/>
+        <location filename="Views/SbieView.cpp" line="621"/>
         <source>    Registry root: %1
 </source>
         <translation>    レジストリルート: %1
 </translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="617"/>
+        <location filename="Views/SbieView.cpp" line="622"/>
         <source>    IPC root: %1
 </source>
         <translation>    IPCルート: %1
 </translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="619"/>
+        <location filename="Views/SbieView.cpp" line="624"/>
         <source>    Disk root: %1
 </source>
         <translation>    ディスクルート: %1
 </translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="621"/>
+        <location filename="Views/SbieView.cpp" line="626"/>
         <source>Options:
     </source>
         <translation>オプション:
     </translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="638"/>
+        <location filename="Views/SbieView.cpp" line="643"/>
         <source>    CPU: %1  |  Memory: %2  |  Private Bytes: %3
 </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="641"/>
+        <location filename="Views/SbieView.cpp" line="646"/>
         <source>    Sandbox: %1
 </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="643"/>
+        <location filename="Views/SbieView.cpp" line="648"/>
         <source>    Image: %1
 </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="646"/>
+        <location filename="Views/SbieView.cpp" line="651"/>
         <source>    Start Time: %1
 </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="940"/>
+        <location filename="Views/SbieView.cpp" line="955"/>
         <source>[None]</source>
         <translation>[なし]</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1113"/>
+        <location filename="Views/SbieView.cpp" line="1128"/>
         <source>Please enter a new name for the Group.</source>
         <translation>グループの新しい名前を入力してください。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1125"/>
+        <location filename="Views/SbieView.cpp" line="1140"/>
         <source>Do you really want to remove the selected group(s)?</source>
         <translation>選択したグループを本当に削除しますか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1189"/>
+        <location filename="Views/SbieView.cpp" line="1204"/>
         <source>Move entries by (negative values move up, positive values move down):</source>
         <translation>エントリを移動 (負の値は上へ、正の値は下へ移動):</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1296"/>
+        <location filename="Views/SbieView.cpp" line="1311"/>
         <source>A group can not be its own parent.</source>
         <translation>グループは自分自身の親として設定できません。</translation>
     </message>
@@ -6073,79 +6972,79 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">インポート中: %1</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1377"/>
+        <location filename="Views/SbieView.cpp" line="1392"/>
         <source>Please enter a new group name</source>
         <translation>新しいグループ名を入力してください</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1407"/>
+        <location filename="Views/SbieView.cpp" line="1422"/>
         <source>The Sandbox name and Box Group name cannot use the &apos;,()&apos; symbol or control characters.</source>
         <oldsource>The Sandbox name and Box Group name cannot use the &apos;,()&apos; symbol or control charakters.</oldsource>
         <translation>サンドボックス名とボックスグループ名には、「,()」の記号や制御文字を使用できません。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1412"/>
+        <location filename="Views/SbieView.cpp" line="1427"/>
         <source>This name is already used for a Box Group.</source>
         <translation>この名前は既にボックスグループとして使用されています。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1417"/>
+        <location filename="Views/SbieView.cpp" line="1432"/>
         <source>This name is already used for a Sandbox.</source>
         <translation>この名前は既にサンドボックスとして使用されています。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1486"/>
-        <location filename="Views/SbieView.cpp" line="1562"/>
-        <location filename="Views/SbieView.cpp" line="1915"/>
+        <location filename="Views/SbieView.cpp" line="1501"/>
+        <location filename="Views/SbieView.cpp" line="1600"/>
+        <location filename="Views/SbieView.cpp" line="1953"/>
         <source>Don&apos;t show this message again.</source>
         <translation>今後このメッセージを表示しない。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1553"/>
-        <location filename="Views/SbieView.cpp" line="1573"/>
-        <location filename="Views/SbieView.cpp" line="2093"/>
+        <location filename="Views/SbieView.cpp" line="1591"/>
+        <location filename="Views/SbieView.cpp" line="1611"/>
+        <location filename="Views/SbieView.cpp" line="2131"/>
         <source>This Sandbox is empty.</source>
         <translation>このサンドボックスは空です。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1581"/>
+        <location filename="Views/SbieView.cpp" line="1619"/>
         <source>Don&apos;t show this warning in future</source>
         <translation>今後この警告を表示しない</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1643"/>
+        <location filename="Views/SbieView.cpp" line="1681"/>
         <source>Please enter a new name for the duplicated Sandbox.</source>
         <translation>複製されたサンドボックスの新しい名前を入力してください。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1643"/>
-        <location filename="Views/SbieView.cpp" line="1666"/>
+        <location filename="Views/SbieView.cpp" line="1681"/>
+        <location filename="Views/SbieView.cpp" line="1704"/>
         <source>%1 Copy</source>
         <translation>%1 のコピー</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1663"/>
-        <location filename="Views/SbieView.cpp" line="1679"/>
+        <location filename="Views/SbieView.cpp" line="1701"/>
+        <location filename="Views/SbieView.cpp" line="1717"/>
         <source>Not Created</source>
         <translation>作成されていません</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1683"/>
+        <location filename="Views/SbieView.cpp" line="1721"/>
         <source>Copying: %1</source>
         <translation>コピー中: %1</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1783"/>
+        <location filename="Views/SbieView.cpp" line="1821"/>
         <source>Do you really want to remove the following sandbox(es)?&lt;br /&gt;&lt;br /&gt;%1&lt;br /&gt;&lt;br /&gt;Warning: The box content will also be deleted!</source>
         <translation>以下のサンドボックスを本当に削除しますか？&lt;br /&gt;&lt;br /&gt;%1&lt;br /&gt;&lt;br /&gt;警告: ボックスのコンテンツも削除されます！</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1848"/>
+        <location filename="Views/SbieView.cpp" line="1886"/>
         <source>Do you want to delete the content of the following sandbox?&lt;br /&gt;&lt;br /&gt;%1</source>
         <translation>以下のサンドボックスのコンテンツを削除しますか？&lt;br /&gt;&lt;br /&gt;%1</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1863"/>
+        <location filename="Views/SbieView.cpp" line="1901"/>
         <source>Do you really want to delete the content of the following sandboxes?&lt;br /&gt;&lt;br /&gt;%1</source>
         <translation>以下のサンドボックスのコンテンツを削除しますか？&lt;br /&gt;&lt;br /&gt;%1</translation>
     </message>
@@ -6154,17 +7053,17 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">7-Zip アーカイブ (.7z);;Zip アーカイブ (.zip)</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1447"/>
+        <location filename="Views/SbieView.cpp" line="1462"/>
         <source>&lt;br /&gt;</source>
         <translation>&lt;br /&gt;</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1449"/>
+        <location filename="Views/SbieView.cpp" line="1464"/>
         <source>... and %1 more</source>
         <translation>...他 %1 件</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1580"/>
+        <location filename="Views/SbieView.cpp" line="1618"/>
         <source>WARNING: The opened registry editor is not sandboxed, please be careful and only do changes to the preselected sandbox locations.</source>
         <translation>警告: 開かれたレジストリエディターはサンドボックス化されていません。注意して、事前に選択されたサンドボックスの場所にのみ変更を加えてください。</translation>
     </message>
@@ -6189,7 +7088,7 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">選択したサンドボックスを削除します。本当によろしいですか？&lt;br /&gt;&lt;br /&gt;警告：ボックスの内容物も一緒に削除されます！</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1836"/>
+        <location filename="Views/SbieView.cpp" line="1874"/>
         <source>This Sandbox is already empty.</source>
         <translation>このサンドボックスは既に空です。</translation>
     </message>
@@ -6198,8 +7097,8 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">選択したサンドボックスの全ての内容を削除してもよろしいですか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1853"/>
-        <location filename="Views/SbieView.cpp" line="1876"/>
+        <location filename="Views/SbieView.cpp" line="1891"/>
+        <location filename="Views/SbieView.cpp" line="1914"/>
         <source>Also delete all Snapshots</source>
         <translation>すべてのスナップショットも削除する</translation>
     </message>
@@ -6208,44 +7107,44 @@ This file is part of Sandboxie and all change done to it will be reverted next t
         <translation type="vanished">選択したサンドボックスの全ての内容を削除します。本当によろしいですか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1897"/>
+        <location filename="Views/SbieView.cpp" line="1935"/>
         <source>Do you want to terminate all processes in the selected sandbox(es)?</source>
         <translation>選択したサンドボックス内のすべてのプロセスを強制終了しますか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1898"/>
-        <location filename="Views/SbieView.cpp" line="1994"/>
+        <location filename="Views/SbieView.cpp" line="1936"/>
+        <location filename="Views/SbieView.cpp" line="2032"/>
         <source>Terminate without asking</source>
         <translation>確認なしで強制終了する</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1913"/>
+        <location filename="Views/SbieView.cpp" line="1951"/>
         <source>The Sandboxie Start Menu will now be displayed. Select an application from the menu, and Sandboxie will create a new shortcut icon on your real desktop, which you can use to invoke the selected application under the supervision of Sandboxie.</source>
         <translation>Sandboxie スタートメニューが表示されます。メニューからアプリケーションを選択すると、Sandboxieは実際のデスクトップに新しいショートカットアイコンを作成します。このショートカットを使用すると、選択したアプリケーションをSandboxieの監視下で起動できます。</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1968"/>
-        <location filename="Views/SbieView.cpp" line="2022"/>
+        <location filename="Views/SbieView.cpp" line="2006"/>
+        <location filename="Views/SbieView.cpp" line="2060"/>
         <source>Create Shortcut to sandbox %1</source>
         <translation>サンドボックス %1 へのショートカットを作成</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1993"/>
+        <location filename="Views/SbieView.cpp" line="2031"/>
         <source>Do you want to terminate %1?</source>
         <translation>%1 を強制終了しますか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="1993"/>
+        <location filename="Views/SbieView.cpp" line="2031"/>
         <source>the selected processes</source>
         <translation>選択されたプロセス</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="2052"/>
+        <location filename="Views/SbieView.cpp" line="2090"/>
         <source>This box does not have Internet restrictions in place, do you want to enable them?</source>
         <translation>このボックスにはインターネット制限が設定されていません。有効にしますか？</translation>
     </message>
     <message>
-        <location filename="Views/SbieView.cpp" line="2144"/>
+        <location filename="Views/SbieView.cpp" line="2182"/>
         <source>This sandbox is currently disabled or restricted to specific groups or users. Would you like to allow access for everyone?</source>
         <oldsource>This sandbox is disabled or restricted to a group/user, do you want to allow box for everybody ?</oldsource>
         <translation>このサンドボックスは現在無効化されているか、特定のグループまたはユーザーにアクセスが制限されています。すべてのユーザーにアクセスを許可しますか？</translation>
@@ -7314,47 +8213,47 @@ Try submitting without the log attached.</source>
 <context>
     <name>CSummaryPage</name>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1059"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1064"/>
         <source>Create the new Sandbox</source>
         <translation>新しいサンドボックスを作成</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1070"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1075"/>
         <source>Almost complete, click Finish to create a new sandbox and conclude the wizard.</source>
         <translation>ほぼ完了です。「完了」をクリックして新しいサンドボックスを作成し、ウィザードを終了します。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1079"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1084"/>
         <source>Save options as new defaults</source>
         <translation>オプションを新しいデフォルトとして保存</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1090"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1095"/>
         <source>Skip this summary page when advanced options are not set</source>
         <translation>詳細オプションが設定されていない場合は、この概要ページをスキップ</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1107"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1112"/>
         <source>
 The actual sandbox name is: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1112"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1117"/>
         <source>
 This Sandbox will be saved to: %1</source>
         <translation>
 このサンドボックスの保存先: %1</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1115"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1120"/>
         <source>
 This box&apos;s content will be DISCARDED when it&apos;s closed, and the box will be removed.</source>
         <translation>
 このボックスは、閉じると内容が破棄され、ボックス自体も削除されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1117"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1122"/>
         <source>
 This box will DISCARD its content when it&apos;s closed, it&apos;s suitable only for temporary data.</source>
         <oldsource>
@@ -7363,35 +8262,35 @@ This box will DISCARD its content when its closed, its suitable only for tempora
 このボックスは、閉じると内容が破棄され、一時的なデータにのみ適しています。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1119"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1124"/>
         <source>
 Processes in this box will not be able to access the internet or the local network, this ensures all accessed data to stay confidential.</source>
         <translation>
 このボックス内のプロセスはインターネットやローカルネットワークにアクセスできません。これにより、アクセスされたすべてのデータの機密性が確保されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1121"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1126"/>
         <source>
 This box will run the MSIServer (*.msi installer service) with a system token, this improves the compatibility but reduces the security isolation.</source>
         <translation>
 このボックスは、MSIServer (*.msi インストーラーサービス) をシステムトークンで実行します。これにより互換性は向上しますが、セキュリティの分離レベルは低下します。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1123"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1128"/>
         <source>
 Processes in this box will think they are run with administrative privileges, without actually having them, hence installers can be used even in a security hardened box.</source>
         <translation>
 このボックス内のプロセスは、実際には管理者権限を持っていなくても、管理者権限で実行されているように認識します。これにより、セキュリティ強化されたボックスでもインストーラーが使用できます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1125"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1130"/>
         <source>
 Processes in this box will be running with a custom process token indicating the sandbox they belong to.</source>
         <translation>
 このボックス内のプロセスは、属しているサンドボックスを示すカスタムプロセストークンを使って実行されます。</translation>
     </message>
     <message>
-        <location filename="Wizards/NewBoxWizard.cpp" line="1164"/>
+        <location filename="Wizards/NewBoxWizard.cpp" line="1169"/>
         <source>Failed to create new box: %1</source>
         <translation>新しいボックスの作成に失敗しました: %1</translation>
     </message>
@@ -8172,17 +9071,17 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>ファイルオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="557"/>
+        <location filename="Forms/OptionsWindow.ui" line="573"/>
         <source>Disk/File access</source>
         <translation>ディスク/ファイルアクセス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="486"/>
+        <location filename="Forms/OptionsWindow.ui" line="502"/>
         <source>Use volume serial numbers for drives, like: \drive\C~1234-ABCD</source>
         <translation>ドライブにボリュームシリアル番号を使用する (例: \drive\C~1234-ABCD)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="517"/>
+        <location filename="Forms/OptionsWindow.ui" line="533"/>
         <source>Encrypt sandbox content</source>
         <translation>サンドボックスのコンテンツを暗号化する</translation>
     </message>
@@ -8193,7 +9092,7 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>最後のサンドボックス化されたプロセスが終了すると、コンテンツの変更を自動削除します</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="531"/>
+        <location filename="Forms/OptionsWindow.ui" line="547"/>
         <source>When &lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;Box Encryption&lt;/a&gt; is enabled the box&apos;s root folder, including its registry hive, is stored in an encrypted disk image, using &lt;a href=&quot;https://diskcryptor.org&quot;&gt;Disk Cryptor&apos;s&lt;/a&gt; AES-XTS implementation.</source>
         <oldsource>When &lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;Box Encryption&lt;/a&gt; is enabled the box’s root folder, including its registry hive, is stored in an encrypted disk image, using &lt;a href=&quot;https://diskcryptor.org&quot;&gt;Disk Cryptor&apos;s&lt;/a&gt; AES-XTS implementation.</oldsource>
         <translation>&lt;a href=&quot;sbie://docs/boxencryption&quot;&gt;ボックスの暗号化&lt;/a&gt;が有効な場合、ボックスのルートフォルダーは、そのレジストリハイブを含め、&lt;a href=&quot;https://diskcryptor.org&quot;&gt;Disk Cryptor&lt;/a&gt;のAES-XTS実装を使用した暗号化ディスクイメージに保存されます。</translation>
@@ -8204,7 +9103,7 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>ボックスの削除オプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="544"/>
+        <location filename="Forms/OptionsWindow.ui" line="560"/>
         <source>Allow elevated sandboxed applications to read the harddrive</source>
         <translation>昇格されたサンドボックス化アプリケーションがハードドライブを読み取ることを許可する</translation>
     </message>
@@ -8219,7 +9118,7 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>このサンドボックスを削除や内容の消去から保護する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="479"/>
+        <location filename="Forms/OptionsWindow.ui" line="495"/>
         <source>&lt;a href=&quot;addon://ImDisk&quot;&gt;Install ImDisk&lt;/a&gt; driver to enable Ram Disk and Disk Image support.</source>
         <translation>&lt;a href=&quot;addon://ImDisk&quot;&gt;ImDisk&lt;/a&gt; ドライバーをインストールして、ラムディスクとディスクイメージのサポートを有効にします。</translation>
     </message>
@@ -8234,48 +9133,48 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>ボックスの構造</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="577"/>
+        <location filename="Forms/OptionsWindow.ui" line="593"/>
         <source>Store the sandbox content in a Ram Disk</source>
         <translation>サンドボックスのコンテンツをラムディスクに保存する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="524"/>
+        <location filename="Forms/OptionsWindow.ui" line="540"/>
         <source>Warn when an application opens a harddrive handle</source>
         <translation>アプリケーションがハードドライブハンドルを開いたときに警告する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="510"/>
+        <location filename="Forms/OptionsWindow.ui" line="526"/>
         <source>Set Password</source>
         <translation>パスワードを設定</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="493"/>
+        <location filename="Forms/OptionsWindow.ui" line="509"/>
         <source>Virtualization scheme</source>
         <translation>仮想化スキーム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="503"/>
+        <location filename="Forms/OptionsWindow.ui" line="519"/>
         <source>The box structure can only be changed when the sandbox is empty</source>
         <translation>ボックスの構造は、サンドボックスが空の場合にのみ変更できます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="607"/>
-        <location filename="Forms/OptionsWindow.ui" line="647"/>
+        <location filename="Forms/OptionsWindow.ui" line="623"/>
+        <location filename="Forms/OptionsWindow.ui" line="663"/>
         <source>File Migration</source>
         <translation>ファイルの移行</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="627"/>
+        <location filename="Forms/OptionsWindow.ui" line="643"/>
         <source>Copy file size limit:</source>
         <translation>コピーファイルサイズの上限:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="634"/>
+        <location filename="Forms/OptionsWindow.ui" line="650"/>
         <source>Prompt user for large file migration</source>
         <translation>大きなファイルの移行時にユーザーに確認する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="654"/>
+        <location filename="Forms/OptionsWindow.ui" line="670"/>
         <source>2113: Content of migrated file was discarded
 2114: File was not migrated, write access to file was denied
 2115: File was not migrated, file will be opened read only</source>
@@ -8284,447 +9183,447 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
 2115: ファイルは移行されませんでした。ファイルは読み取り専用で開かれます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="659"/>
+        <location filename="Forms/OptionsWindow.ui" line="675"/>
         <source>Issue message 2113/2114/2115 when a file is not fully migrated</source>
         <translation>ファイルが完全に移行されない場合にメッセージ 2113/2114/2115 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="676"/>
+        <location filename="Forms/OptionsWindow.ui" line="692"/>
         <source>kilobytes</source>
         <translation>キロバイト</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="683"/>
+        <location filename="Forms/OptionsWindow.ui" line="699"/>
         <source>Add Pattern</source>
         <translation>パターンを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="690"/>
+        <location filename="Forms/OptionsWindow.ui" line="706"/>
         <source>Remove Pattern</source>
         <translation>パターンを削除</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="723"/>
-        <location filename="Forms/OptionsWindow.ui" line="1560"/>
-        <location filename="Forms/OptionsWindow.ui" line="2178"/>
-        <location filename="Forms/OptionsWindow.ui" line="2296"/>
-        <location filename="Forms/OptionsWindow.ui" line="2457"/>
-        <location filename="Forms/OptionsWindow.ui" line="2607"/>
-        <location filename="Forms/OptionsWindow.ui" line="2706"/>
-        <location filename="Forms/OptionsWindow.ui" line="2863"/>
-        <location filename="Forms/OptionsWindow.ui" line="2939"/>
-        <location filename="Forms/OptionsWindow.ui" line="3046"/>
-        <location filename="Forms/OptionsWindow.ui" line="3172"/>
-        <location filename="Forms/OptionsWindow.ui" line="3267"/>
-        <location filename="Forms/OptionsWindow.ui" line="3407"/>
-        <location filename="Forms/OptionsWindow.ui" line="3832"/>
-        <location filename="Forms/OptionsWindow.ui" line="4315"/>
-        <location filename="Forms/OptionsWindow.ui" line="4422"/>
-        <location filename="Forms/OptionsWindow.ui" line="4796"/>
-        <location filename="Forms/OptionsWindow.ui" line="5029"/>
-        <location filename="Forms/OptionsWindow.ui" line="5100"/>
+        <location filename="Forms/OptionsWindow.ui" line="739"/>
+        <location filename="Forms/OptionsWindow.ui" line="1576"/>
+        <location filename="Forms/OptionsWindow.ui" line="2194"/>
+        <location filename="Forms/OptionsWindow.ui" line="2312"/>
+        <location filename="Forms/OptionsWindow.ui" line="2473"/>
+        <location filename="Forms/OptionsWindow.ui" line="2623"/>
+        <location filename="Forms/OptionsWindow.ui" line="2722"/>
+        <location filename="Forms/OptionsWindow.ui" line="2879"/>
+        <location filename="Forms/OptionsWindow.ui" line="2955"/>
+        <location filename="Forms/OptionsWindow.ui" line="3062"/>
+        <location filename="Forms/OptionsWindow.ui" line="3188"/>
+        <location filename="Forms/OptionsWindow.ui" line="3283"/>
+        <location filename="Forms/OptionsWindow.ui" line="3423"/>
+        <location filename="Forms/OptionsWindow.ui" line="3848"/>
+        <location filename="Forms/OptionsWindow.ui" line="4331"/>
+        <location filename="Forms/OptionsWindow.ui" line="4438"/>
+        <location filename="Forms/OptionsWindow.ui" line="4812"/>
+        <location filename="Forms/OptionsWindow.ui" line="5045"/>
+        <location filename="Forms/OptionsWindow.ui" line="5116"/>
         <source>Show Templates</source>
         <translation>テンプレートを表示</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="734"/>
-        <location filename="Forms/OptionsWindow.ui" line="1670"/>
-        <location filename="Forms/OptionsWindow.ui" line="3809"/>
-        <location filename="Forms/OptionsWindow.ui" line="4936"/>
+        <location filename="Forms/OptionsWindow.ui" line="750"/>
+        <location filename="Forms/OptionsWindow.ui" line="1686"/>
+        <location filename="Forms/OptionsWindow.ui" line="3825"/>
+        <location filename="Forms/OptionsWindow.ui" line="4952"/>
         <source>Action</source>
         <translation>アクション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="739"/>
-        <location filename="Forms/OptionsWindow.ui" line="2962"/>
-        <location filename="Forms/OptionsWindow.ui" line="3062"/>
-        <location filename="Forms/OptionsWindow.ui" line="3195"/>
-        <location filename="Forms/OptionsWindow.ui" line="3315"/>
-        <location filename="Forms/OptionsWindow.ui" line="3389"/>
-        <location filename="Forms/OptionsWindow.ui" line="3804"/>
-        <location filename="Forms/OptionsWindow.ui" line="3909"/>
-        <location filename="Forms/OptionsWindow.ui" line="4038"/>
-        <location filename="Forms/OptionsWindow.ui" line="4783"/>
+        <location filename="Forms/OptionsWindow.ui" line="755"/>
+        <location filename="Forms/OptionsWindow.ui" line="2978"/>
+        <location filename="Forms/OptionsWindow.ui" line="3078"/>
+        <location filename="Forms/OptionsWindow.ui" line="3211"/>
+        <location filename="Forms/OptionsWindow.ui" line="3331"/>
+        <location filename="Forms/OptionsWindow.ui" line="3405"/>
+        <location filename="Forms/OptionsWindow.ui" line="3820"/>
+        <location filename="Forms/OptionsWindow.ui" line="3925"/>
+        <location filename="Forms/OptionsWindow.ui" line="4054"/>
+        <location filename="Forms/OptionsWindow.ui" line="4799"/>
         <source>Program</source>
         <translation>プログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="744"/>
+        <location filename="Forms/OptionsWindow.ui" line="760"/>
         <source>Pattern</source>
         <translation>パターン</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="752"/>
+        <location filename="Forms/OptionsWindow.ui" line="768"/>
         <source>Sandboxie does not allow writing to host files, unless permitted by the user. When a sandboxed application attempts to modify a file, the entire file must be copied into the sandbox, for large files this can take a significate amount of time. Sandboxie offers options for handling these cases, which can be configured on this page.</source>
         <translation>Sandboxieは、ユーザーに許可されない限り、ホストファイルへの書き込みを許可しません。サンドボックス化されたアプリケーションがファイルを変更しようとすると、ファイル全体をサンドボックスにコピーする必要があります。大きなファイルの場合、これにはかなりの時間がかかることがあります。Sandboxieはこれらのケースを処理するためのオプションを提供しており、このページで設定できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="762"/>
+        <location filename="Forms/OptionsWindow.ui" line="778"/>
         <source>Using wildcard patterns file specific behavior can be configured in the list below:</source>
         <translation>ワイルドカードパターンを使用すると、ファイル固有の動作を以下のリストで設定できます:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="769"/>
+        <location filename="Forms/OptionsWindow.ui" line="785"/>
         <source>Issue message 2102 when a file is too large</source>
         <translation>ファイルが大きすぎる場合にメッセージ 2102 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="776"/>
+        <location filename="Forms/OptionsWindow.ui" line="792"/>
         <source>When a file cannot be migrated, open it in read-only mode instead</source>
         <translation>ファイルを移行できない場合は、代わりに読み取り専用モードで開きます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="786"/>
+        <location filename="Forms/OptionsWindow.ui" line="802"/>
         <source>Restrictions</source>
         <translation>制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="905"/>
+        <location filename="Forms/OptionsWindow.ui" line="921"/>
         <source>Prevent sandboxed processes from interfering with power operations (Experimental)</source>
         <translation>サンドボックス化されたプロセスが電源操作を妨害するのを防ぎます (実験的)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="877"/>
+        <location filename="Forms/OptionsWindow.ui" line="893"/>
         <source>Open Windows Credentials Store (user mode)</source>
         <translation>Windows 資格情報ストアを開く (ユーザーモード)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="884"/>
+        <location filename="Forms/OptionsWindow.ui" line="900"/>
         <source>Block read access to the clipboard</source>
         <translation>クリップボードへの読み取りアクセスをブロックする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4173"/>
+        <location filename="Forms/OptionsWindow.ui" line="4189"/>
         <source>Prevent change to network and firewall parameters (user mode)</source>
         <translation>ネットワークとファイアウォールのパラメーターの変更を防ぐ (ユーザーモード)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="891"/>
+        <location filename="Forms/OptionsWindow.ui" line="907"/>
         <source>Allow to read memory of unsandboxed processes (not recommended)</source>
         <translation>サンドボックス化されていないプロセスのメモリの読み取りを許可する (非推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="808"/>
+        <location filename="Forms/OptionsWindow.ui" line="824"/>
         <source>Block access to the printer spooler</source>
         <translation>プリンタースプーラーへのアクセスをブロックする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="828"/>
+        <location filename="Forms/OptionsWindow.ui" line="844"/>
         <source>Allow the print spooler to print to files outside the sandbox</source>
         <translation>プリンタースプーラーがサンドボックス外のファイルに印刷するのを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4233"/>
+        <location filename="Forms/OptionsWindow.ui" line="4249"/>
         <source>Block network files and folders, unless specifically opened.</source>
         <translation>特別に開かれている場合を除き、ネットワークのファイルとフォルダーをブロックする。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="815"/>
+        <location filename="Forms/OptionsWindow.ui" line="831"/>
         <source>Remove spooler restriction, printers can be installed outside the sandbox</source>
         <translation>スプーラーの制限を解除し、サンドボックス外へのプリンターのインストールを許可します</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="851"/>
+        <location filename="Forms/OptionsWindow.ui" line="867"/>
         <source>Open System Protected Storage</source>
         <translation>システム保護ストレージを開く</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="898"/>
+        <location filename="Forms/OptionsWindow.ui" line="914"/>
         <source>Issue message 2111 when a process access is denied</source>
         <translation>プロセスアクセスが拒否されたときにメッセージ 2111 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="798"/>
-        <location filename="Forms/OptionsWindow.ui" line="841"/>
-        <location filename="Forms/OptionsWindow.ui" line="1348"/>
+        <location filename="Forms/OptionsWindow.ui" line="814"/>
+        <location filename="Forms/OptionsWindow.ui" line="857"/>
         <location filename="Forms/OptionsWindow.ui" line="1364"/>
-        <location filename="Forms/OptionsWindow.ui" line="1407"/>
-        <location filename="Forms/OptionsWindow.ui" line="1774"/>
-        <location filename="Forms/OptionsWindow.ui" line="4163"/>
-        <location filename="Forms/OptionsWindow.ui" line="4186"/>
+        <location filename="Forms/OptionsWindow.ui" line="1380"/>
+        <location filename="Forms/OptionsWindow.ui" line="1423"/>
+        <location filename="Forms/OptionsWindow.ui" line="1790"/>
+        <location filename="Forms/OptionsWindow.ui" line="4179"/>
+        <location filename="Forms/OptionsWindow.ui" line="4202"/>
         <source>Protect the system from sandboxed processes</source>
         <translation>サンドボックス化されたプロセスからシステムを保護する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="844"/>
+        <location filename="Forms/OptionsWindow.ui" line="860"/>
         <source>Other restrictions</source>
         <translation>その他の制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="801"/>
+        <location filename="Forms/OptionsWindow.ui" line="817"/>
         <source>Printing restrictions</source>
         <translation>印刷の制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4166"/>
+        <location filename="Forms/OptionsWindow.ui" line="4182"/>
         <source>Network restrictions</source>
         <translation>ネットワークの制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1057"/>
+        <location filename="Forms/OptionsWindow.ui" line="1073"/>
         <source>Run Menu</source>
         <translation>実行メニュー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1087"/>
-        <location filename="Forms/OptionsWindow.ui" line="1715"/>
-        <location filename="Forms/OptionsWindow.ui" line="2234"/>
-        <location filename="Forms/OptionsWindow.ui" line="2303"/>
-        <location filename="Forms/OptionsWindow.ui" line="2493"/>
-        <location filename="Forms/OptionsWindow.ui" line="2624"/>
-        <location filename="Forms/OptionsWindow.ui" line="2699"/>
-        <location filename="Forms/OptionsWindow.ui" line="2870"/>
-        <location filename="Forms/OptionsWindow.ui" line="2946"/>
-        <location filename="Forms/OptionsWindow.ui" line="3080"/>
-        <location filename="Forms/OptionsWindow.ui" line="3179"/>
-        <location filename="Forms/OptionsWindow.ui" line="3260"/>
-        <location filename="Forms/OptionsWindow.ui" line="3373"/>
-        <location filename="Forms/OptionsWindow.ui" line="3629"/>
-        <location filename="Forms/OptionsWindow.ui" line="3786"/>
-        <location filename="Forms/OptionsWindow.ui" line="3927"/>
-        <location filename="Forms/OptionsWindow.ui" line="3954"/>
-        <location filename="Forms/OptionsWindow.ui" line="4322"/>
-        <location filename="Forms/OptionsWindow.ui" line="4408"/>
-        <location filename="Forms/OptionsWindow.ui" line="4760"/>
-        <location filename="Forms/OptionsWindow.ui" line="4849"/>
-        <location filename="Forms/OptionsWindow.ui" line="5190"/>
-        <location filename="Forms/OptionsWindow.ui" line="5385"/>
-        <location filename="Forms/OptionsWindow.ui" line="5857"/>
+        <location filename="Forms/OptionsWindow.ui" line="1103"/>
+        <location filename="Forms/OptionsWindow.ui" line="1731"/>
+        <location filename="Forms/OptionsWindow.ui" line="2250"/>
+        <location filename="Forms/OptionsWindow.ui" line="2319"/>
+        <location filename="Forms/OptionsWindow.ui" line="2509"/>
+        <location filename="Forms/OptionsWindow.ui" line="2640"/>
+        <location filename="Forms/OptionsWindow.ui" line="2715"/>
+        <location filename="Forms/OptionsWindow.ui" line="2886"/>
+        <location filename="Forms/OptionsWindow.ui" line="2962"/>
+        <location filename="Forms/OptionsWindow.ui" line="3096"/>
+        <location filename="Forms/OptionsWindow.ui" line="3195"/>
+        <location filename="Forms/OptionsWindow.ui" line="3276"/>
+        <location filename="Forms/OptionsWindow.ui" line="3389"/>
+        <location filename="Forms/OptionsWindow.ui" line="3645"/>
+        <location filename="Forms/OptionsWindow.ui" line="3802"/>
+        <location filename="Forms/OptionsWindow.ui" line="3943"/>
+        <location filename="Forms/OptionsWindow.ui" line="3970"/>
+        <location filename="Forms/OptionsWindow.ui" line="4338"/>
+        <location filename="Forms/OptionsWindow.ui" line="4424"/>
+        <location filename="Forms/OptionsWindow.ui" line="4776"/>
+        <location filename="Forms/OptionsWindow.ui" line="4865"/>
+        <location filename="Forms/OptionsWindow.ui" line="5206"/>
+        <location filename="Forms/OptionsWindow.ui" line="5401"/>
+        <location filename="Forms/OptionsWindow.ui" line="5873"/>
         <source>Remove</source>
         <translation>削除</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1106"/>
+        <location filename="Forms/OptionsWindow.ui" line="1122"/>
         <source>Add program</source>
         <translation>プログラムを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1130"/>
-        <location filename="Forms/OptionsWindow.ui" line="2226"/>
-        <location filename="Forms/OptionsWindow.ui" line="2338"/>
-        <location filename="Forms/OptionsWindow.ui" line="2436"/>
-        <location filename="Forms/OptionsWindow.ui" line="2599"/>
-        <location filename="Forms/OptionsWindow.ui" line="2671"/>
-        <location filename="Forms/OptionsWindow.ui" line="2898"/>
-        <location filename="Forms/OptionsWindow.ui" line="3660"/>
-        <location filename="Forms/OptionsWindow.ui" line="4284"/>
-        <location filename="Forms/OptionsWindow.ui" line="4400"/>
-        <location filename="Forms/OptionsWindow.ui" line="4625"/>
-        <location filename="Forms/OptionsWindow.ui" line="5788"/>
-        <location filename="Forms/OptionsWindow.ui" line="5947"/>
-        <location filename="Forms/OptionsWindow.ui" line="6033"/>
+        <location filename="Forms/OptionsWindow.ui" line="1146"/>
+        <location filename="Forms/OptionsWindow.ui" line="2242"/>
+        <location filename="Forms/OptionsWindow.ui" line="2354"/>
+        <location filename="Forms/OptionsWindow.ui" line="2452"/>
+        <location filename="Forms/OptionsWindow.ui" line="2615"/>
+        <location filename="Forms/OptionsWindow.ui" line="2687"/>
+        <location filename="Forms/OptionsWindow.ui" line="2914"/>
+        <location filename="Forms/OptionsWindow.ui" line="3676"/>
+        <location filename="Forms/OptionsWindow.ui" line="4300"/>
+        <location filename="Forms/OptionsWindow.ui" line="4416"/>
+        <location filename="Forms/OptionsWindow.ui" line="4641"/>
+        <location filename="Forms/OptionsWindow.ui" line="5804"/>
+        <location filename="Forms/OptionsWindow.ui" line="5963"/>
+        <location filename="Forms/OptionsWindow.ui" line="6049"/>
         <source>Name</source>
         <translation>名前</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1135"/>
+        <location filename="Forms/OptionsWindow.ui" line="1151"/>
         <source>Command Line</source>
         <translation>コマンドライン</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1155"/>
-        <location filename="Forms/OptionsWindow.ui" line="3991"/>
+        <location filename="Forms/OptionsWindow.ui" line="1171"/>
+        <location filename="Forms/OptionsWindow.ui" line="4007"/>
         <source>Move Up</source>
         <translation>上へ移動</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1174"/>
-        <location filename="Forms/OptionsWindow.ui" line="4002"/>
+        <location filename="Forms/OptionsWindow.ui" line="1190"/>
+        <location filename="Forms/OptionsWindow.ui" line="4018"/>
         <source>Move Down</source>
         <translation>下へ移動</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1181"/>
+        <location filename="Forms/OptionsWindow.ui" line="1197"/>
         <source>You can configure custom entries for the sandbox run menu.</source>
         <translation>サンドボックスの実行メニューにカスタムエントリを設定できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1209"/>
+        <location filename="Forms/OptionsWindow.ui" line="1225"/>
         <source>Security Options</source>
         <translation>セキュリティオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1219"/>
+        <location filename="Forms/OptionsWindow.ui" line="1235"/>
         <source>Security Hardening</source>
         <translation>セキュリティ強化</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1394"/>
+        <location filename="Forms/OptionsWindow.ui" line="1410"/>
         <source>Use the original token only for approved NT system calls</source>
         <translation>承認されたNTシステムコールに対してのみ元のトークンを使用する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1328"/>
+        <location filename="Forms/OptionsWindow.ui" line="1344"/>
         <source>Enable all security enhancements (make security hardened box)</source>
         <translation>すべてのセキュリティ強化を有効にする (セキュリティ強化ボックスを作成する)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1351"/>
+        <location filename="Forms/OptionsWindow.ui" line="1367"/>
         <source>Elevation restrictions</source>
         <translation>昇格の制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1374"/>
+        <location filename="Forms/OptionsWindow.ui" line="1390"/>
         <source>Make applications think they are running elevated (allows to run installers safely)</source>
         <translation>アプリケーションに昇格して実行されていると思わせる (インストーラーを安全に実行できる)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1387"/>
+        <location filename="Forms/OptionsWindow.ui" line="1403"/>
         <source>(Recommended)</source>
         <translation>(推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1227"/>
+        <location filename="Forms/OptionsWindow.ui" line="1243"/>
         <source>Restrict driver/device access to only approved ones</source>
         <translation>ドライバー/デバイスへのアクセスを承認されたもののみに制限する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1410"/>
+        <location filename="Forms/OptionsWindow.ui" line="1426"/>
         <source>Security enhancements</source>
         <translation>セキュリティ強化</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1289"/>
+        <location filename="Forms/OptionsWindow.ui" line="1305"/>
         <source>Allow MSIServer to run with a sandboxed system token and apply other exceptions if required</source>
         <translation>MSIServerをサンドボックス化されたシステムトークンで実行し、必要に応じて他の例外を適用することを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1335"/>
+        <location filename="Forms/OptionsWindow.ui" line="1351"/>
         <source>Drop rights from Administrators and Power Users groups</source>
         <translation>管理者およびPower Usersグループから権限を削除する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1302"/>
+        <location filename="Forms/OptionsWindow.ui" line="1318"/>
         <source>CAUTION: When running under the built in administrator, processes can not drop administrative privileges.</source>
         <translation>注意: 組み込みの管理者で実行している場合、プロセスは管理者権限を削除できません。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1234"/>
+        <location filename="Forms/OptionsWindow.ui" line="1250"/>
         <source>Note: Msi Installer Exemptions should not be required, but if you encounter issues installing a msi package which you trust, this option may help the installation complete successfully. You can also try disabling drop admin rights.</source>
         <translation>注意: MSIインストーラーの除外は不要なはずですが、信頼できるMSIパッケージのインストールで問題が発生した場合、このオプションがインストールの正常な完了に役立つことがあります。管理者権限の削除を無効にすることも試せます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1318"/>
+        <location filename="Forms/OptionsWindow.ui" line="1334"/>
         <source>Security note: Elevated applications running under the supervision of Sandboxie, with an admin or system token, have more opportunities to bypass isolation and modify the system outside the sandbox.</source>
         <translation>セキュリティノート: Sandboxieの監視下で、管理者またはシステムトークンを使用して実行される昇格されたアプリケーションは、分離をバイパスしてサンドボックス外のシステムを変更する機会が多くなります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1427"/>
+        <location filename="Forms/OptionsWindow.ui" line="1443"/>
         <source>Security Isolation</source>
         <translation>セキュリティ分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1518"/>
+        <location filename="Forms/OptionsWindow.ui" line="1534"/>
         <source>Various isolation features can break compatibility with some applications. If you are using this sandbox &lt;b&gt;NOT for Security&lt;/b&gt; but for application portability, by changing these options you can restore compatibility by sacrificing some security.</source>
         <translation>様々な分離機能は、一部のアプリケーションとの互換性を損なう可能性があります。このサンドボックスを&lt;b&gt;セキュリティ目的ではなく&lt;/b&gt;、アプリケーションのポータビリティのために使用している場合、これらのオプションを変更することで、いくらかのセキュリティを犠牲にして互換性を回復できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1488"/>
+        <location filename="Forms/OptionsWindow.ui" line="1504"/>
         <source>Disable Security Isolation</source>
         <translation>セキュリティ分離を無効にする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="991"/>
+        <location filename="Forms/OptionsWindow.ui" line="1007"/>
         <source>Open access to Windows Security Account Manager</source>
         <translation>Windows セキュリティアカウントマネージャーへのアクセスを開く</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1481"/>
+        <location filename="Forms/OptionsWindow.ui" line="1497"/>
         <source>Disable Security Filtering (not recommended)</source>
         <translation>セキュリティフィルタリングを無効にする (非推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1495"/>
+        <location filename="Forms/OptionsWindow.ui" line="1511"/>
         <source>Security Filtering used by Sandboxie to enforce filesystem and registry access restrictions, as well as to restrict process access.</source>
         <translation>セキュリティフィルタリングは、Sandboxieがファイルシステムとレジストリへのアクセス制限を強制し、プロセスアクセスを制限するために使用します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1471"/>
+        <location filename="Forms/OptionsWindow.ui" line="1487"/>
         <source>Security Isolation through the usage of a heavily restricted process token is Sandboxie&apos;s primary means of enforcing sandbox restrictions, when this is disabled the box is operated in the application compartment mode, i.e. it&apos;s no longer providing reliable security, just simple application compartmentalization.</source>
         <oldsource>Security Isolation through the usage of a heavily restricted process token is Sandboxie&apos;s primary means of enforcing sandbox restrictions, when this is disabled the box is operated in the application compartment mode, i.e. it’s no longer providing reliable security, just simple application compartmentalization.</oldsource>
         <translation>厳しく制限されたプロセストークンの使用によるセキュリティ分離は、Sandboxieがサンドボックスの制限を強制する主要な手段です。これが無効になると、ボックスはアプリケーションコンパートメントモードで動作します。つまり、信頼性の高いセキュリティはもはや提供されず、単純なアプリケーションの区画化のみとなります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="984"/>
+        <location filename="Forms/OptionsWindow.ui" line="1000"/>
         <source>Open access to Windows Local Security Authority</source>
         <translation>Windows ローカルセキュリティ機関へのアクセスを開く</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1017"/>
-        <location filename="Forms/OptionsWindow.ui" line="1461"/>
-        <location filename="Forms/OptionsWindow.ui" line="1534"/>
-        <location filename="Forms/OptionsWindow.ui" line="1606"/>
-        <location filename="Forms/OptionsWindow.ui" line="1898"/>
-        <location filename="Forms/OptionsWindow.ui" line="2038"/>
-        <location filename="Forms/OptionsWindow.ui" line="2094"/>
-        <location filename="Forms/OptionsWindow.ui" line="4608"/>
+        <location filename="Forms/OptionsWindow.ui" line="1033"/>
+        <location filename="Forms/OptionsWindow.ui" line="1477"/>
+        <location filename="Forms/OptionsWindow.ui" line="1550"/>
+        <location filename="Forms/OptionsWindow.ui" line="1622"/>
+        <location filename="Forms/OptionsWindow.ui" line="1914"/>
+        <location filename="Forms/OptionsWindow.ui" line="2054"/>
+        <location filename="Forms/OptionsWindow.ui" line="2110"/>
+        <location filename="Forms/OptionsWindow.ui" line="4624"/>
         <source>Protect the sandbox integrity itself</source>
         <translation>サンドボックス自体の整合性を保護する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1464"/>
+        <location filename="Forms/OptionsWindow.ui" line="1480"/>
         <source>Security Isolation &amp; Filtering</source>
         <translation>セキュリティ分離とフィルタリング</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1020"/>
+        <location filename="Forms/OptionsWindow.ui" line="1036"/>
         <source>Access Isolation</source>
         <translation>アクセス分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1040"/>
+        <location filename="Forms/OptionsWindow.ui" line="1056"/>
         <source>Allow sandboxed programs to manage Hardware/Devices</source>
         <translation>サンドボックス化されたプログラムにハードウェア/デバイスの管理を許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="974"/>
+        <location filename="Forms/OptionsWindow.ui" line="990"/>
         <source>The below options can be used safely when you don&apos;t grant admin rights.</source>
         <translation>以下のオプションは、管理者権限を付与しない場合に安全に使用できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1554"/>
-        <location filename="Forms/OptionsWindow.ui" line="1609"/>
+        <location filename="Forms/OptionsWindow.ui" line="1570"/>
+        <location filename="Forms/OptionsWindow.ui" line="1625"/>
         <source>Box Protection</source>
         <translation>ボックスの保護</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1616"/>
+        <location filename="Forms/OptionsWindow.ui" line="1632"/>
         <source>Deny Process</source>
         <translation>プロセスを拒否</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1567"/>
+        <location filename="Forms/OptionsWindow.ui" line="1583"/>
         <source>Issue message 1318/1317 when a host process tries to access a sandboxed process/the box root</source>
         <translation>ホストプロセスがサンドボックス化されたプロセス/ボックスルートにアクセスしようとしたときにメッセージ 1318/1317 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1665"/>
-        <location filename="Forms/OptionsWindow.ui" line="5127"/>
+        <location filename="Forms/OptionsWindow.ui" line="1681"/>
+        <location filename="Forms/OptionsWindow.ui" line="5143"/>
         <source>Process</source>
         <translation>プロセス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1651"/>
+        <location filename="Forms/OptionsWindow.ui" line="1667"/>
         <source>Sandboxie-Plus is able to create confidential sandboxes that provide robust protection against unauthorized surveillance or tampering by host processes. By utilizing an encrypted sandbox image, this feature delivers the highest level of operational confidentiality, ensuring the safety and integrity of sandboxed processes.</source>
         <translation>Sandboxie-Plusは、ホストプロセスによる不正な監視や改ざんに対して堅牢な保護を提供する、機密性の高いサンドボックスを作成できます。暗号化されたサンドボックスイメージを利用することで、この機能は最高レベルの運用上の機密性を提供し、サンドボックス化されたプロセスの安全性と整合性を保証します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1637"/>
+        <location filename="Forms/OptionsWindow.ui" line="1653"/>
         <source>Allow Process</source>
         <translation>プロセスを許可</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1729"/>
+        <location filename="Forms/OptionsWindow.ui" line="1745"/>
         <source>Protect processes in this box from being accessed by specified unsandboxed host processes.</source>
         <translation>このボックス内のプロセスを、指定されたサンドボックス化されていないホストプロセスによるアクセスから保護します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1722"/>
+        <location filename="Forms/OptionsWindow.ui" line="1738"/>
         <source>Allow useful Windows processes access to protected processes</source>
         <translation>有用なWindowsプロセスに保護されたプロセスへのアクセスを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1630"/>
+        <location filename="Forms/OptionsWindow.ui" line="1646"/>
         <source>Protect processes within this box from host processes</source>
         <translation>このボックス内のプロセスをホストプロセスから保護する</translation>
     </message>
@@ -8734,248 +9633,248 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation>マウント時に保護を強制する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1623"/>
+        <location filename="Forms/OptionsWindow.ui" line="1639"/>
         <source>Prevent processes from capturing window images from sandboxed windows</source>
         <oldsource>Prevents getting an image of the window in the sandbox.</oldsource>
         <translation>プロセスがサンドボックス化されたウィンドウからウィンドウイメージをキャプチャするのを防ぎます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1987"/>
+        <location filename="Forms/OptionsWindow.ui" line="2003"/>
         <source>Advanced Security</source>
         <translation>高度なセキュリティ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2061"/>
+        <location filename="Forms/OptionsWindow.ui" line="2077"/>
         <source>Use a Sandboxie login instead of an anonymous token</source>
         <translation>匿名トークンの代わりにSandboxieログインを使用する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1901"/>
+        <location filename="Forms/OptionsWindow.ui" line="1917"/>
         <source>Other isolation</source>
         <translation>その他の分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1995"/>
+        <location filename="Forms/OptionsWindow.ui" line="2011"/>
         <source>Start the sandboxed RpcSs as a SYSTEM process (not recommended)</source>
         <translation>サンドボックス化されたRpcSsをSYSTEMプロセスとして開始する (非推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2041"/>
+        <location filename="Forms/OptionsWindow.ui" line="2057"/>
         <source>Privilege isolation</source>
         <translation>権限の分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2111"/>
+        <location filename="Forms/OptionsWindow.ui" line="2127"/>
         <source>Protect sandboxed SYSTEM processes from unprivileged processes</source>
         <translation>サンドボックス化されたSYSTEMプロセスを権限のないプロセスから保護する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2097"/>
+        <location filename="Forms/OptionsWindow.ui" line="2113"/>
         <source>Sandboxie token</source>
         <translation>Sandboxie トークン</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2081"/>
-        <location filename="Forms/OptionsWindow.ui" line="2145"/>
+        <location filename="Forms/OptionsWindow.ui" line="2097"/>
+        <location filename="Forms/OptionsWindow.ui" line="2161"/>
         <source>(Security Critical)</source>
         <translation>(セキュリティ上重要)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2104"/>
+        <location filename="Forms/OptionsWindow.ui" line="2120"/>
         <source>Drop critical privileges from processes running with a SYSTEM token</source>
         <translation>SYSTEMトークンで実行されているプロセスから重要な権限を削除する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2068"/>
+        <location filename="Forms/OptionsWindow.ui" line="2084"/>
         <source>Do not start sandboxed services using a system token (recommended)</source>
         <translation>サンドボックス化されたサービスをシステムトークンを使用して開始しない (推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2015"/>
+        <location filename="Forms/OptionsWindow.ui" line="2031"/>
         <source>Allow only privileged processes to access the Service Control Manager</source>
         <translation>特権プロセスのみにサービスコントロールマネージャーへのアクセスを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1885"/>
+        <location filename="Forms/OptionsWindow.ui" line="1901"/>
         <source>Add sandboxed processes to job objects (recommended)</source>
         <translation>サンドボックス化されたプロセスをジョブオブジェクトに追加する (推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2022"/>
+        <location filename="Forms/OptionsWindow.ui" line="2038"/>
         <source>Using a custom Sandboxie Token allows to isolate individual sandboxes from each other better, and it shows in the user column of task managers the name of the box a process belongs to. Some 3rd party security solutions may however have problems with custom tokens.</source>
         <translation>カスタムのSandboxieトークンを使用すると、個々のサンドボックスを互いにより良く分離でき、タスクマネージャーのユーザー列にプロセスが属するボックスの名前が表示されます。ただし、一部のサードパーティ製セキュリティソリューションでは、カスタムトークンで問題が発生する可能性があります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2170"/>
+        <location filename="Forms/OptionsWindow.ui" line="2186"/>
         <source>Program Groups</source>
         <translation>プログラムグループ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2198"/>
+        <location filename="Forms/OptionsWindow.ui" line="2214"/>
         <source>Add Group</source>
         <translation>グループを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2205"/>
-        <location filename="Forms/OptionsWindow.ui" line="2588"/>
-        <location filename="Forms/OptionsWindow.ui" line="2692"/>
-        <location filename="Forms/OptionsWindow.ui" line="2843"/>
-        <location filename="Forms/OptionsWindow.ui" line="3615"/>
+        <location filename="Forms/OptionsWindow.ui" line="2221"/>
+        <location filename="Forms/OptionsWindow.ui" line="2604"/>
+        <location filename="Forms/OptionsWindow.ui" line="2708"/>
+        <location filename="Forms/OptionsWindow.ui" line="2859"/>
+        <location filename="Forms/OptionsWindow.ui" line="3631"/>
         <source>Add Program</source>
         <translation>プログラムを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2212"/>
+        <location filename="Forms/OptionsWindow.ui" line="2228"/>
         <source>You can group programs together and give them a group name.  Program groups can be used with some of the settings instead of program names. Groups defined for the box overwrite groups defined in templates.</source>
         <translation>プログラムをグループ化してグループ名をつけることができます。プログラムグループは、一部の設定でプログラム名の代わりに使用できます。ボックスに定義されたグループは、テンプレートに定義されたグループを上書きします。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2244"/>
+        <location filename="Forms/OptionsWindow.ui" line="2260"/>
         <source>Program Control</source>
         <translation>プログラム制御</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2266"/>
+        <location filename="Forms/OptionsWindow.ui" line="2282"/>
         <source>Force Programs</source>
         <translation>強制プログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2286"/>
+        <location filename="Forms/OptionsWindow.ui" line="2302"/>
         <source>Programs entered here, or programs started from entered locations, will be put in this sandbox automatically, unless they are explicitly started in another sandbox.</source>
         <translation>ここに入力されたプログラム、または入力された場所から開始されたプログラムは、別のサンドボックスで明示的に開始されない限り、自動的にこのサンドボックスに入れられます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2378"/>
+        <location filename="Forms/OptionsWindow.ui" line="2394"/>
         <source>Force Folder</source>
         <translation>強制フォルダー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2333"/>
-        <location filename="Forms/OptionsWindow.ui" line="2431"/>
-        <location filename="Forms/OptionsWindow.ui" line="2957"/>
-        <location filename="Forms/OptionsWindow.ui" line="3057"/>
-        <location filename="Forms/OptionsWindow.ui" line="3190"/>
-        <location filename="Forms/OptionsWindow.ui" line="3310"/>
-        <location filename="Forms/OptionsWindow.ui" line="3384"/>
-        <location filename="Forms/OptionsWindow.ui" line="5793"/>
+        <location filename="Forms/OptionsWindow.ui" line="2349"/>
+        <location filename="Forms/OptionsWindow.ui" line="2447"/>
+        <location filename="Forms/OptionsWindow.ui" line="2973"/>
+        <location filename="Forms/OptionsWindow.ui" line="3073"/>
+        <location filename="Forms/OptionsWindow.ui" line="3206"/>
+        <location filename="Forms/OptionsWindow.ui" line="3326"/>
+        <location filename="Forms/OptionsWindow.ui" line="3400"/>
+        <location filename="Forms/OptionsWindow.ui" line="5809"/>
         <source>Type</source>
         <translation>種類</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2322"/>
+        <location filename="Forms/OptionsWindow.ui" line="2338"/>
         <source>Force Program</source>
         <translation>強制プログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2346"/>
+        <location filename="Forms/OptionsWindow.ui" line="2362"/>
         <source>Disable forced Process and Folder for this sandbox</source>
         <translation>このサンドボックスの強制プロセスとフォルダーを無効にする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2407"/>
+        <location filename="Forms/OptionsWindow.ui" line="2423"/>
         <source>Breakout Programs</source>
         <translation>ブレイクアウトプログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2464"/>
+        <location filename="Forms/OptionsWindow.ui" line="2480"/>
         <source>Programs entered here will be allowed to break out of this sandbox when they start. It is also possible to capture them into another sandbox, for example to have your web browser always open in a dedicated box.</source>
         <translation>ここに入力されたプログラムは、開始時にこのサンドボックスからブレイクアウトすることが許可されます。例えば、ウェブブラウザを常に専用のボックスで開くように、別のサンドボックスにキャプチャすることも可能です。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2486"/>
+        <location filename="Forms/OptionsWindow.ui" line="2502"/>
         <source>Breakout Folder</source>
         <translation>ブレイクアウトフォルダー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2512"/>
+        <location filename="Forms/OptionsWindow.ui" line="2528"/>
         <source>Breakout Program</source>
         <translation>ブレイクアウトプログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="929"/>
+        <location filename="Forms/OptionsWindow.ui" line="945"/>
         <source>This feature does not block all means of obtaining a screen capture, only some common ones.</source>
         <oldsource>This feature does not block all means of optaining a screen capture only some common once.</oldsource>
         <translation>この機能は、スクリーンキャプチャを取得するすべての手段をブロックするわけではなく、一般的な手段の一部のみをブロックします。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="912"/>
+        <location filename="Forms/OptionsWindow.ui" line="928"/>
         <source>Prevent move mouse, bring in front, and similar operations, this is likely to cause issues with games.</source>
         <oldsource>Prevent move mouse, bring in front, and simmilar operations, this is likely to cause issues with games.</oldsource>
         <translation>マウスの移動、前面への表示、および同様の操作を禁止します。これはゲームで問題を引き起こす可能性があります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="966"/>
+        <location filename="Forms/OptionsWindow.ui" line="982"/>
         <source>Isolation</source>
         <translation>分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1644"/>
+        <location filename="Forms/OptionsWindow.ui" line="1660"/>
         <source>Only Administrator user accounts can make changes to this sandbox</source>
         <translation>管理者ユーザーアカウントのみがこのサンドボックスに変更を加えることができます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2558"/>
-        <location filename="Forms/OptionsWindow.ui" line="2740"/>
+        <location filename="Forms/OptionsWindow.ui" line="2574"/>
+        <location filename="Forms/OptionsWindow.ui" line="2756"/>
         <source>Stop Behaviour</source>
         <translation>停止動作</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2568"/>
+        <location filename="Forms/OptionsWindow.ui" line="2584"/>
         <source>Lingering Programs</source>
         <translation>残留プログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2614"/>
+        <location filename="Forms/OptionsWindow.ui" line="2630"/>
         <source>Lingering programs will be automatically terminated if they are still running after all other processes have been terminated.</source>
         <translation>残留プログラムは、他のすべてのプロセスが終了した後も実行されている場合、自動的に終了させられます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2647"/>
+        <location filename="Forms/OptionsWindow.ui" line="2663"/>
         <source>Leader Programs</source>
         <translation>リーダープログラム</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2713"/>
+        <location filename="Forms/OptionsWindow.ui" line="2729"/>
         <source>If leader processes are defined, all others are treated as lingering processes.</source>
         <translation>リーダープロセスが定義されている場合、他のすべてのプロセスは残留プロセスとして扱われます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2726"/>
+        <location filename="Forms/OptionsWindow.ui" line="2742"/>
         <source>Stop Options</source>
         <translation>停止オプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2747"/>
+        <location filename="Forms/OptionsWindow.ui" line="2763"/>
         <source>Use Linger Leniency</source>
         <translation>残留の猶予を使用</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2757"/>
+        <location filename="Forms/OptionsWindow.ui" line="2773"/>
         <source>Don&apos;t stop lingering processes with windows</source>
         <translation>ウィンドウを持つ残留プロセスを停止しない</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2797"/>
+        <location filename="Forms/OptionsWindow.ui" line="2813"/>
         <source>Start Restrictions</source>
         <translation>起動制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2877"/>
+        <location filename="Forms/OptionsWindow.ui" line="2893"/>
         <source>Issue message 1308 when a program fails to start</source>
         <translation>プログラムの起動に失敗した場合にメッセージ 1308 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2827"/>
+        <location filename="Forms/OptionsWindow.ui" line="2843"/>
         <source>Allow only selected programs to start in this sandbox. *</source>
         <translation>選択されたプログラムのみ、このサンドボックスでの起動を許可する。 *</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2834"/>
+        <location filename="Forms/OptionsWindow.ui" line="2850"/>
         <source>Prevent selected programs from starting in this sandbox.</source>
         <translation>選択されたプログラムがこのサンドボックスで起動するのを防ぐ。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2820"/>
+        <location filename="Forms/OptionsWindow.ui" line="2836"/>
         <source>Allow all programs to start in this sandbox.</source>
         <translation>すべてのプログラムがこのサンドボックスで起動するのを許可する。</translation>
     </message>
@@ -9005,265 +9904,270 @@ If you are a Great Supporter on Patreon already, Sandboxie can check online for 
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="597"/>
+        <location filename="Forms/OptionsWindow.ui" line="485"/>
+        <source>Delete V3 advanced settings</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="Forms/OptionsWindow.ui" line="613"/>
         <source>Allow sandboxed processes to open files protected by EFS</source>
         <translation>サンドボックス化されたプロセスがEFSで保護されたファイルを開くことを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1047"/>
+        <location filename="Forms/OptionsWindow.ui" line="1063"/>
         <source>Open access to Proxy Configurations</source>
         <translation>プロキシ設定へのアクセスを開く</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1367"/>
+        <location filename="Forms/OptionsWindow.ui" line="1383"/>
         <source>File ACLs</source>
         <translation>ファイル ACL</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1739"/>
+        <location filename="Forms/OptionsWindow.ui" line="1755"/>
         <source>When box root is protected require SandMan to run as Administrator in order to access the files</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1747"/>
+        <location filename="Forms/OptionsWindow.ui" line="1763"/>
         <source>Job Object</source>
         <translation>ジョブオブジェクト</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1793"/>
-        <location filename="Forms/OptionsWindow.ui" line="1838"/>
-        <location filename="Forms/OptionsWindow.ui" line="1864"/>
-        <location filename="Forms/OptionsWindow.ui" line="1947"/>
+        <location filename="Forms/OptionsWindow.ui" line="1809"/>
+        <location filename="Forms/OptionsWindow.ui" line="1854"/>
+        <location filename="Forms/OptionsWindow.ui" line="1880"/>
+        <location filename="Forms/OptionsWindow.ui" line="1963"/>
         <source>unlimited</source>
         <translation>無制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1845"/>
+        <location filename="Forms/OptionsWindow.ui" line="1861"/>
         <source>Total CPU Rate Limit (%):</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1861"/>
+        <location filename="Forms/OptionsWindow.ui" line="1877"/>
         <source>Leave it blank to disable the setting (1-100)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1871"/>
+        <location filename="Forms/OptionsWindow.ui" line="1887"/>
         <source>%</source>
         <translation type="unfinished">%</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1931"/>
-        <location filename="Forms/OptionsWindow.ui" line="1964"/>
+        <location filename="Forms/OptionsWindow.ui" line="1947"/>
+        <location filename="Forms/OptionsWindow.ui" line="1980"/>
         <source>bytes</source>
         <translation>バイト</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2118"/>
+        <location filename="Forms/OptionsWindow.ui" line="2134"/>
         <source>Checked: A local group will also be added to the newly created sandboxed token, which allows addressing all sandboxes at once. Would be useful for auditing policies.
 Partially checked: No groups will be added to the newly created sandboxed token.</source>
         <translation>チェック状態: 新しく作成されたサンドボックス化トークンにローカルグループも追加されます。これにより、すべてのサンドボックスを一度にアドレス指定できます。監査ポリシーに役立ちます。
 中間チェック状態: 新しく作成されたサンドボックス化トークンにグループは追加されません。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2132"/>
+        <location filename="Forms/OptionsWindow.ui" line="2148"/>
         <source>Drop ConHost.exe Process Integrity Level</source>
         <translation>ConHost.exeプロセスの整合性レベルを低下させる</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2152"/>
+        <location filename="Forms/OptionsWindow.ui" line="2168"/>
         <source>By default, Sandboxie runs processes with an UNTRUSTED integrity token for maximum isolation.
 Enabling this option uses a LOW integrity token instead, which may improve compatibility but reduces sandbox isolation and security.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2156"/>
+        <location filename="Forms/OptionsWindow.ui" line="2172"/>
         <source>Use LOW integrity token instead of UNTRUSTED (reduces isolation)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2531"/>
+        <location filename="Forms/OptionsWindow.ui" line="2547"/>
         <source>Breakout Document</source>
         <translation>ブレイクアウトドキュメント</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2538"/>
+        <location filename="Forms/OptionsWindow.ui" line="2554"/>
         <source>&lt;b&gt;&lt;font color=&apos;red&apos;&gt;SECURITY ADVISORY&lt;/font&gt;:&lt;/b&gt; Using &lt;a href=&quot;sbie://docs/breakoutfolder&quot;&gt;BreakoutFolder&lt;/a&gt; and/or &lt;a href=&quot;sbie://docs/breakoutprocess&quot;&gt;BreakoutProcess&lt;/a&gt; in combination with Open[File/Pipe]Path directives can compromise security, as can the use of &lt;a href=&quot;sbie://docs/breakoutdocument&quot;&gt;BreakoutDocument&lt;/a&gt; allowing any * or insecure (*.exe;*.dll;*.ocx;*.cmd;*.bat;*.lnk;*.pif;*.url;*.ps1;etc...) extensions. Please review the security section for each option in the documentation before use.</source>
         <oldsource>&lt;b&gt;&lt;font color=&apos;red&apos;&gt;SECURITY ADVISORY&lt;/font&gt;:&lt;/b&gt; Using &lt;a href=&quot;sbie://docs/breakoutfolder&quot;&gt;BreakoutFolder&lt;/a&gt; and/or &lt;a href=&quot;sbie://docs/breakoutprocess&quot;&gt;BreakoutProcess&lt;/a&gt; in combination with Open[File/Pipe]Path directives can compromise security, as can the use of &lt;a href=&quot;sbie://docs/breakoutdocument&quot;&gt;BreakoutDocument&lt;/a&gt; allowing any * or insecure (*.exe;*.dll;*.ocx;*.cmd;*.bat;*.lnk;*.pif;*.url;*.ps1;etc…) extensions. Please review the security section for each option in the documentation before use.</oldsource>
         <translation>&lt;b&gt;&lt;font color=&apos;red&apos;&gt;セキュリティ勧告&lt;/font&gt;:&lt;/b&gt; &lt;a href=&quot;sbie://docs/breakoutfolder&quot;&gt;BreakoutFolder&lt;/a&gt; や &lt;a href=&quot;sbie://docs/breakoutprocess&quot;&gt;BreakoutProcess&lt;/a&gt; を Open[File/Pipe]Path ディレクティブと組み合わせて使用すること、また、&lt;a href=&quot;sbie://docs/breakoutdocument&quot;&gt;BreakoutDocument&lt;/a&gt; で * や安全でない拡張子 (.exe;.dll;.ocx;.cmd;.bat;.lnk;.pif;.url;*.ps1;など) を許可することは、セキュリティを侵害する可能性があります。使用する前に、ドキュメントで各オプションのセキュリティに関するセクションを確認してください。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2810"/>
+        <location filename="Forms/OptionsWindow.ui" line="2826"/>
         <source>* Note: Programs installed to this sandbox won&apos;t be able to start at all.</source>
         <translation>* 注意: このサンドボックスにインストールされたプログラムは一切起動できなくなります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2884"/>
+        <location filename="Forms/OptionsWindow.ui" line="2900"/>
         <source>This setting can be used to prevent programs from running in the sandbox without the user&apos;s knowledge or consent.</source>
         <oldsource>This can be used to prevent a host malicious program from breaking through by launching a pre-designed malicious program into an unlocked encrypted sandbox.</oldsource>
         <translation>この設定は、ユーザーの知識や同意なしにプログラムがサンドボックス内で実行されるのを防ぐために使用できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2887"/>
+        <location filename="Forms/OptionsWindow.ui" line="2903"/>
         <source>Display a pop-up warning before starting a process in the sandbox from an external source</source>
         <oldsource>A pop-up warning before launching a process into the sandbox from an external source.</oldsource>
         <translation>外部ソースからサンドボックス内でプロセスを開始する前に、ポップアップ警告を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2909"/>
+        <location filename="Forms/OptionsWindow.ui" line="2925"/>
         <source>Resource Access</source>
         <translation>リソースアクセス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2919"/>
+        <location filename="Forms/OptionsWindow.ui" line="2935"/>
         <source>Files</source>
         <translation>ファイル</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2967"/>
-        <location filename="Forms/OptionsWindow.ui" line="3067"/>
-        <location filename="Forms/OptionsWindow.ui" line="3200"/>
-        <location filename="Forms/OptionsWindow.ui" line="3320"/>
-        <location filename="Forms/OptionsWindow.ui" line="3394"/>
-        <location filename="Forms/OptionsWindow.ui" line="3665"/>
+        <location filename="Forms/OptionsWindow.ui" line="2983"/>
+        <location filename="Forms/OptionsWindow.ui" line="3083"/>
+        <location filename="Forms/OptionsWindow.ui" line="3216"/>
+        <location filename="Forms/OptionsWindow.ui" line="3336"/>
+        <location filename="Forms/OptionsWindow.ui" line="3410"/>
+        <location filename="Forms/OptionsWindow.ui" line="3681"/>
         <source>Access</source>
         <translation>アクセス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2972"/>
-        <location filename="Forms/OptionsWindow.ui" line="3072"/>
-        <location filename="Forms/OptionsWindow.ui" line="3205"/>
+        <location filename="Forms/OptionsWindow.ui" line="2988"/>
+        <location filename="Forms/OptionsWindow.ui" line="3088"/>
+        <location filename="Forms/OptionsWindow.ui" line="3221"/>
         <source>Path</source>
         <translation>パス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2992"/>
+        <location filename="Forms/OptionsWindow.ui" line="3008"/>
         <source>Add File/Folder</source>
         <translation>ファイル/フォルダーを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3012"/>
+        <location filename="Forms/OptionsWindow.ui" line="3028"/>
         <source>Configure which processes can access Files, Folders and Pipes. 
 &apos;Open&apos; access only applies to program binaries located outside the sandbox, you can use &apos;Open for All&apos; instead to make it apply to all programs, or change this behavior in the Policies tab.</source>
         <translation>どのプロセスがファイル、フォルダー、パイプにアクセスできるかを設定します。
 「オープン」アクセスはサンドボックス外にあるプログラムバイナリにのみ適用されます。すべてのプログラムに適用するには、代わりに「すべてにオープン」を使用するか、「ポリシー」タブでこの動作を変更できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3026"/>
+        <location filename="Forms/OptionsWindow.ui" line="3042"/>
         <source>Registry</source>
         <translation>レジストリ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3099"/>
+        <location filename="Forms/OptionsWindow.ui" line="3115"/>
         <source>Add Reg Key</source>
         <translation>レジストリキーを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3119"/>
+        <location filename="Forms/OptionsWindow.ui" line="3135"/>
         <source>Configure which processes can access the Registry. 
 &apos;Open&apos; access only applies to program binaries located outside the sandbox, you can use &apos;Open for All&apos; instead to make it apply to all programs, or change this behavior in the Policies tab.</source>
         <translation>どのプロセスがレジストリにアクセスできるかを設定します。
 「オープン」アクセスはサンドボックス外にあるプログラムバイナリにのみ適用されます。すべてのプログラムに適用するには、代わりに「すべてにオープン」を使用するか、「ポリシー」タブでこの動作を変更できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3133"/>
+        <location filename="Forms/OptionsWindow.ui" line="3149"/>
         <source>IPC</source>
         <translation>IPC</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3165"/>
+        <location filename="Forms/OptionsWindow.ui" line="3181"/>
         <source>Add IPC Path</source>
         <translation>IPCパスを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3226"/>
+        <location filename="Forms/OptionsWindow.ui" line="3242"/>
         <source>Configure which processes can access NT IPC objects like ALPC ports and other processes memory and context.
 To specify a process use &apos;$:program.exe&apos; as path.</source>
         <translation>どのプロセスがALPCポートや他のプロセスのメモリ、コンテキストなどのNT IPCオブジェクトにアクセスできるかを設定します。
 プロセスを指定するには、パスとして「$:program.exe」を使用します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3240"/>
+        <location filename="Forms/OptionsWindow.ui" line="3256"/>
         <source>Wnd</source>
         <translation>Wnd</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3286"/>
+        <location filename="Forms/OptionsWindow.ui" line="3302"/>
         <source>Add Wnd Class</source>
         <translation>Wndクラスを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3325"/>
+        <location filename="Forms/OptionsWindow.ui" line="3341"/>
         <source>Wnd Class</source>
         <translation>Wnd クラス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3333"/>
+        <location filename="Forms/OptionsWindow.ui" line="3349"/>
         <source>Don&apos;t alter window class names created by sandboxed programs</source>
         <translation>サンドボックス化されたプログラムによって作成されたウィンドウクラス名を変更しない</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3340"/>
+        <location filename="Forms/OptionsWindow.ui" line="3356"/>
         <source>Configure which processes can access Desktop objects like Windows and alike.</source>
         <translation>どのプロセスがウィンドウなどのデスクトップオブジェクトにアクセスできるかを設定します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3353"/>
+        <location filename="Forms/OptionsWindow.ui" line="3369"/>
         <source>COM</source>
         <translation>COM</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3399"/>
+        <location filename="Forms/OptionsWindow.ui" line="3415"/>
         <source>Class Id</source>
         <translation>クラスID</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3426"/>
+        <location filename="Forms/OptionsWindow.ui" line="3442"/>
         <source>Add COM Object</source>
         <translation>COMオブジェクトを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3446"/>
+        <location filename="Forms/OptionsWindow.ui" line="3462"/>
         <source>Configure which processes can access COM objects.</source>
         <translation>どのプロセスがCOMオブジェクトにアクセスできるかを設定します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3458"/>
+        <location filename="Forms/OptionsWindow.ui" line="3474"/>
         <source>Don&apos;t use virtualized COM, Open access to hosts COM infrastructure (not recommended)</source>
         <translation>仮想化されたCOMを使用せず、ホストのCOMインフラストラクチャへのアクセスを開く (非推奨)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3466"/>
+        <location filename="Forms/OptionsWindow.ui" line="3482"/>
         <source>Access Policies</source>
         <translation>アクセスポリシー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3555"/>
+        <location filename="Forms/OptionsWindow.ui" line="3571"/>
         <source>Rule Policies</source>
         <translation>ルールポリシー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4429"/>
+        <location filename="Forms/OptionsWindow.ui" line="4445"/>
         <source>Use the above exclusion list to hide matching files from the Quick Recovery window</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4432"/>
+        <location filename="Forms/OptionsWindow.ui" line="4448"/>
         <source>Requires the &quot;Show All&quot; checkbox to be unchecked in the recovery window.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4493"/>
+        <location filename="Forms/OptionsWindow.ui" line="4509"/>
         <source>Restart forced processes that were launched within a PCA (Program Compatibility Assistant) job object</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4571"/>
+        <location filename="Forms/OptionsWindow.ui" line="4587"/>
         <source>Use heuristics to identify Electron/Chromium based processes</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6168"/>
+        <location filename="Forms/OptionsWindow.ui" line="6184"/>
         <source>&lt;html&gt;
     &lt;body&gt;
         Displays detailed tooltips when hovering over settings.&lt;br&gt;
@@ -9299,7 +10203,7 @@ To specify a process use &apos;$:program.exe&apos; as path.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6236"/>
+        <location filename="Forms/OptionsWindow.ui" line="6252"/>
         <source>&lt;html&gt;
     &lt;body&gt;
         &lt;b&gt;Auto-Completion &amp; Case Correction&lt;/b&gt;&lt;br&gt;
@@ -9345,27 +10249,28 @@ To specify a process use &apos;$:program.exe&apos; as path.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6259"/>
+        <location filename="Forms/OptionsWindow.ui" line="6275"/>
         <source>Complete</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6312"/>
+        <location filename="Forms/OptionsWindow.ui" line="6328"/>
         <source>Editor settings</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6315"/>
+        <location filename="Forms/OptionsWindow.ui" line="488"/>
+        <location filename="Forms/OptionsWindow.ui" line="6331"/>
         <source>⚙</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6186"/>
+        <location filename="Forms/OptionsWindow.ui" line="6202"/>
         <source>Tooltips</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6269"/>
+        <location filename="Forms/OptionsWindow.ui" line="6285"/>
         <source>&lt;html&gt;
     &lt;body&gt;
         &lt;p&gt;When enabled, settings will be checked and highlighted based on the INI file. Turn off to disable checking and highlighting.&lt;/p&gt;
@@ -9397,39 +10302,39 @@ To specify a process use &apos;$:program.exe&apos; as path.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6286"/>
+        <location filename="Forms/OptionsWindow.ui" line="6302"/>
         <source>Validate</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3479"/>
+        <location filename="Forms/OptionsWindow.ui" line="3495"/>
         <source>Apply Close...=!&lt;program&gt;,... rules also to all binaries located in the sandbox.</source>
         <translation>クローズ...=!&lt;program&gt;,... ルールを、サンドボックス内にあるすべてのバイナリにも適用します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3496"/>
+        <location filename="Forms/OptionsWindow.ui" line="3512"/>
         <source>Prioritize rules based on their Specificity and Process Match Level</source>
         <translation>ルールの特異性とプロセスマッチレベルに基づいてルールを優先順位付けする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3472"/>
+        <location filename="Forms/OptionsWindow.ui" line="3488"/>
         <source>Apply File and Key Open directives only to binaries located outside the sandbox.</source>
         <translation>ファイルとキーのオープンディレクティブを、サンドボックス外にあるバイナリにのみ適用する。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3522"/>
+        <location filename="Forms/OptionsWindow.ui" line="3538"/>
         <source>Access Mode</source>
         <translation>アクセスモード</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3562"/>
+        <location filename="Forms/OptionsWindow.ui" line="3578"/>
         <source>The rule specificity is a measure to how well a given rule matches a particular path, simply put the specificity is the length of characters from the begin of the path up to and including the last matching non-wildcard substring. A rule which matches only file types like &quot;*.tmp&quot; would have the highest specificity as it would always match the entire file path.
 The process match level has a higher priority than the specificity and describes how a rule applies to a given process. Rules applying by process name or group have the strongest match level, followed by the match by negation (i.e. rules applying to all processes but the given one), while the lowest match levels have global matches, i.e. rules that apply to any process.</source>
         <translation>ルールの特異性とは、あるルールが特定のパスにどれだけよく一致するかを示す尺度です。簡単に言えば、特異性とは、パスの先頭から、最後に一致する非ワイルドカード部分文字列までを含む文字の長さです。「*.tmp」のようにファイルタイプのみに一致するルールは、常にファイルパス全体に一致するため、最も高い特異性を持ちます。
 プロセスマッチレベルは特異性よりも高い優先順位を持ち、ルールが特定のプロセスにどのように適用されるかを記述します。プロセス名またはグループによって適用されるルールが最も強いマッチレベルを持ち、次に否定によるマッチ（つまり、指定されたものを除くすべてのプロセスに適用されるルール）が続きます。最も低いマッチレベルは、グローバルマッチ（つまり、任意のプロセスに適用されるルール）です。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3542"/>
+        <location filename="Forms/OptionsWindow.ui" line="3558"/>
         <source>Privacy Mode, block file and registry access to all locations except the generic system ones</source>
         <translation>プライバシーモード、一般的なシステムの場所以外のすべての場所へのファイルおよびレジストリアクセスをブロックする</translation>
     </message>
@@ -9444,397 +10349,397 @@ The process match level has a higher priority than the specificity and describes
         <translation>ボックスのメモ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1417"/>
+        <location filename="Forms/OptionsWindow.ui" line="1433"/>
         <source>Use original Access Control Entries for boxed Files and Folders (for MSIServer enable exemptions)</source>
         <oldsource>Use original Access Control Entries for boxed Files and Folders (for MSIServer enable excemptions)</oldsource>
         <translation>ボックス化されたファイルとフォルダーに元のアクセス制御エントリを使用する（MSIServerの除外を有効にする）</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1435"/>
+        <location filename="Forms/OptionsWindow.ui" line="1451"/>
         <source>Run Processes on an own Sandboxed Desktop</source>
         <translation>独自のサンドボックス化されたデスクトップでプロセスを実行する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1537"/>
+        <location filename="Forms/OptionsWindow.ui" line="1553"/>
         <source>Desktop Isolation</source>
         <translation>デスクトップの分離</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1544"/>
+        <location filename="Forms/OptionsWindow.ui" line="1560"/>
         <source>Open Window Station (improves compatibility by reducing desktop isolation)</source>
         <oldsource>Open Window Station (improves compatybility by reducing desktop isolation)</oldsource>
         <translation>ウィンドウステーションを開く (デスクトップの分離を減らして互換性を向上させる)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2122"/>
+        <location filename="Forms/OptionsWindow.ui" line="2138"/>
         <source>Create a new sandboxed token instead of stripping down the original token</source>
         <translation>元のトークンを削る代わりに、新しいサンドボックス化トークンを作成する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="2397"/>
+        <location filename="Forms/OptionsWindow.ui" line="2413"/>
         <source>Force Children</source>
         <translation>子プロセスの強制</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3486"/>
+        <location filename="Forms/OptionsWindow.ui" line="3502"/>
         <source>When the Privacy Mode is enabled, sandboxed processes will be only able to read C:\Windows\*, C:\Program Files\*, and parts of the HKLM registry, all other locations will need explicit access to be readable and/or writable. In this mode, Rule Specificity is always enabled.</source>
         <translation>プライバシーモードが有効な場合、サンドボックス化されたプロセスは C:\Windows*、C:\Program Files*、およびHKLMレジストリの一部のみを読み取ることができます。他のすべての場所は、読み書き可能にするために明示的なアクセスが必要になります。このモードでは、ルールの特異性は常に有効です。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3578"/>
+        <location filename="Forms/OptionsWindow.ui" line="3594"/>
         <source>Network Options</source>
         <translation>ネットワークオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3588"/>
+        <location filename="Forms/OptionsWindow.ui" line="3604"/>
         <source>Process Restrictions</source>
         <translation>プロセス制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3608"/>
+        <location filename="Forms/OptionsWindow.ui" line="3624"/>
         <source>Issue message 1307 when a program is denied internet access</source>
         <translation>プログラムのインターネットアクセスが拒否された場合にメッセージ 1307 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3622"/>
+        <location filename="Forms/OptionsWindow.ui" line="3638"/>
         <source>Prompt user whether to allow an exemption from the blockade.</source>
         <translation>ブロックの例外を許可するかどうかをユーザーに確認する。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3636"/>
+        <location filename="Forms/OptionsWindow.ui" line="3652"/>
         <source>Note: Programs installed to this sandbox won&apos;t be able to access the internet at all.</source>
         <translation>注意: このサンドボックスにインストールされたプログラムは、一切インターネットにアクセスできなくなります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3675"/>
+        <location filename="Forms/OptionsWindow.ui" line="3691"/>
         <source>Set network/internet access for unlisted processes:</source>
         <translation>リストにないプロセスのネットワーク/インターネットアクセスを設定します:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3693"/>
-        <location filename="Forms/OptionsWindow.ui" line="5474"/>
+        <location filename="Forms/OptionsWindow.ui" line="3709"/>
+        <location filename="Forms/OptionsWindow.ui" line="5490"/>
         <source>Network Firewall</source>
         <translation>ネットワークファイアウォール</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3725"/>
+        <location filename="Forms/OptionsWindow.ui" line="3741"/>
         <source>Test Rules, Program:</source>
         <translation>ルールのテスト、プログラム:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3738"/>
+        <location filename="Forms/OptionsWindow.ui" line="3754"/>
         <source>Port:</source>
         <translation>ポート:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3751"/>
+        <location filename="Forms/OptionsWindow.ui" line="3767"/>
         <source>IP:</source>
         <translation>IP:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3764"/>
+        <location filename="Forms/OptionsWindow.ui" line="3780"/>
         <source>Protocol:</source>
         <translation>プロトコル:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3777"/>
+        <location filename="Forms/OptionsWindow.ui" line="3793"/>
         <source>X</source>
         <translation>X</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3793"/>
+        <location filename="Forms/OptionsWindow.ui" line="3809"/>
         <source>Add Rule</source>
         <translation>ルールを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3814"/>
-        <location filename="Forms/OptionsWindow.ui" line="4048"/>
+        <location filename="Forms/OptionsWindow.ui" line="3830"/>
+        <location filename="Forms/OptionsWindow.ui" line="4064"/>
         <source>Port</source>
         <translation>ポート</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3819"/>
-        <location filename="Forms/OptionsWindow.ui" line="3919"/>
-        <location filename="Forms/OptionsWindow.ui" line="4043"/>
+        <location filename="Forms/OptionsWindow.ui" line="3835"/>
+        <location filename="Forms/OptionsWindow.ui" line="3935"/>
+        <location filename="Forms/OptionsWindow.ui" line="4059"/>
         <source>IP</source>
         <translation>IP</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3824"/>
+        <location filename="Forms/OptionsWindow.ui" line="3840"/>
         <source>Protocol</source>
         <translation>プロトコル</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3845"/>
+        <location filename="Forms/OptionsWindow.ui" line="3861"/>
         <source>CAUTION: Windows Filtering Platform is not enabled with the driver, therefore these rules will be applied only in user mode and can not be enforced!!! This means that malicious applications may bypass them.</source>
         <translation>注意: Windows Filtering Platform がドライバーで有効になっていないため、これらのルールはユーザーモードでのみ適用され、強制することはできません!!! これは、悪意のあるアプリケーションがこれらをバイパスする可能性があることを意味します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3858"/>
+        <location filename="Forms/OptionsWindow.ui" line="3874"/>
         <source>DNS Filter</source>
         <translation>DNSフィルター</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3898"/>
+        <location filename="Forms/OptionsWindow.ui" line="3914"/>
         <source>Add Filter</source>
         <translation>フィルターを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3875"/>
+        <location filename="Forms/OptionsWindow.ui" line="3891"/>
         <source>With the DNS filter individual domains can be blocked, on a per process basis. Leave the IP column empty to block or enter an ip to redirect.</source>
         <translation>DNSフィルターを使用すると、プロセスごとに個別のドメインをブロックできます。ブロックするにはIPカラムを空にするか、リダイレクトするにはIPを入力します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3914"/>
+        <location filename="Forms/OptionsWindow.ui" line="3930"/>
         <source>Domain</source>
         <translation>ドメイン</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3937"/>
+        <location filename="Forms/OptionsWindow.ui" line="3953"/>
         <source>Internet Proxy</source>
         <translation>インターネットプロキシ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4027"/>
+        <location filename="Forms/OptionsWindow.ui" line="4043"/>
         <source>Add Proxy</source>
         <translation>プロキシを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4020"/>
+        <location filename="Forms/OptionsWindow.ui" line="4036"/>
         <source>Test Proxy</source>
         <translation>プロキシをテスト</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4053"/>
+        <location filename="Forms/OptionsWindow.ui" line="4069"/>
         <source>Auth</source>
         <translation>認証</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4058"/>
+        <location filename="Forms/OptionsWindow.ui" line="4074"/>
         <source>Login</source>
         <translation>ログイン</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4063"/>
+        <location filename="Forms/OptionsWindow.ui" line="4079"/>
         <source>Password</source>
         <translation>パスワード</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="3961"/>
+        <location filename="Forms/OptionsWindow.ui" line="3977"/>
         <source>Sandboxed programs can be forced to use a preset SOCKS5 proxy.</source>
         <translation>サンドボックス化されたプログラムに、プリセットされたSOCKS5プロキシの使用を強制できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4013"/>
+        <location filename="Forms/OptionsWindow.ui" line="4029"/>
         <source>Resolve hostnames via proxy</source>
         <translation>プロキシ経由でホスト名を解決する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4099"/>
+        <location filename="Forms/OptionsWindow.ui" line="4115"/>
         <source>Other Options</source>
         <translation>その他のオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4226"/>
+        <location filename="Forms/OptionsWindow.ui" line="4242"/>
         <source>Port Blocking</source>
         <translation>ポートのブロック</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4203"/>
+        <location filename="Forms/OptionsWindow.ui" line="4219"/>
         <source>Block common SAMBA ports</source>
         <translation>一般的なSAMBAポートをブロックする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="922"/>
+        <location filename="Forms/OptionsWindow.ui" line="938"/>
         <source>Allow sandboxed windows to cover the taskbar</source>
         <oldsource>Allow sandboxed windows to cover taskbar</oldsource>
         <translation>サンドボックス化されたウィンドウがタスクバーを覆うことを許可する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4150"/>
+        <location filename="Forms/OptionsWindow.ui" line="4166"/>
         <source>Block DNS, UDP port 53</source>
         <translation>DNS、UDPポート53をブロックする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4250"/>
+        <location filename="Forms/OptionsWindow.ui" line="4266"/>
         <source>File Recovery</source>
         <translation>ファイルの復元</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4260"/>
+        <location filename="Forms/OptionsWindow.ui" line="4276"/>
         <source>Quick Recovery</source>
         <translation>クイックリカバリー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4292"/>
+        <location filename="Forms/OptionsWindow.ui" line="4308"/>
         <source>When the Quick Recovery function is invoked, the following folders will be checked for sandboxed content. </source>
         <translation>クイックリカバリー機能が呼び出されると、次のフォルダーでサンドボックス化されたコンテンツがチェックされます。 </translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4329"/>
+        <location filename="Forms/OptionsWindow.ui" line="4345"/>
         <source>Add Folder</source>
         <translation>フォルダーを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4339"/>
+        <location filename="Forms/OptionsWindow.ui" line="4355"/>
         <source>Immediate Recovery</source>
         <translation>即時復元</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4359"/>
+        <location filename="Forms/OptionsWindow.ui" line="4375"/>
         <source>You can exclude folders and file types (or file extensions) from Immediate Recovery.</source>
         <translation>即時復元からフォルダーとファイルの種類 (またはファイル拡張子) を除外できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4369"/>
+        <location filename="Forms/OptionsWindow.ui" line="4385"/>
         <source>Ignore Extension</source>
         <translation>拡張子を無視</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4376"/>
+        <location filename="Forms/OptionsWindow.ui" line="4392"/>
         <source>Enable Immediate Recovery prompt to be able to recover files as soon as they are created.</source>
         <translation>ファイルが作成されるとすぐに復元できるように、即時復元のプロンプトを有効にします。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4415"/>
+        <location filename="Forms/OptionsWindow.ui" line="4431"/>
         <source>Ignore Folder</source>
         <translation>フォルダーを無視</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4449"/>
+        <location filename="Forms/OptionsWindow.ui" line="4465"/>
         <source>Various Options</source>
         <translation>様々なオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4465"/>
-        <location filename="Forms/OptionsWindow.ui" line="4479"/>
+        <location filename="Forms/OptionsWindow.ui" line="4481"/>
+        <location filename="Forms/OptionsWindow.ui" line="4495"/>
         <source>Compatibility</source>
         <translation>互換性</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4544"/>
+        <location filename="Forms/OptionsWindow.ui" line="4560"/>
         <source>Apply ElevateCreateProcess Workaround (legacy behaviour)</source>
         <translation>ElevateCreateProcessの回避策を適用する (レガシーな動作)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4500"/>
+        <location filename="Forms/OptionsWindow.ui" line="4516"/>
         <source>Emulate sandboxed window station for all processes</source>
         <translation>すべてのプロセスに対してサンドボックス化されたウィンドウステーションをエミュレートする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4564"/>
+        <location filename="Forms/OptionsWindow.ui" line="4580"/>
         <source>Disable the use of RpcMgmtSetComTimeout by default (this may resolve compatibility issues)</source>
         <translation>デフォルトでRpcMgmtSetComTimeoutの使用を無効にする (これにより互換性の問題が解決する場合があります)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4486"/>
+        <location filename="Forms/OptionsWindow.ui" line="4502"/>
         <source>Force usage of custom dummy Manifest files (legacy behaviour)</source>
         <translation>カスタムダミーマニフェストファイルを強制的に使用する (レガシーな動作)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4537"/>
+        <location filename="Forms/OptionsWindow.ui" line="4553"/>
         <source>Use desktop object workaround for all processes</source>
         <translation>すべてのプロセスにデスクトップオブジェクトの回避策を使用する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1878"/>
+        <location filename="Forms/OptionsWindow.ui" line="1894"/>
         <source>Allow use of nested job objects (works on Windows 8 and later)</source>
         <translation>ネストされたジョブオブジェクトの使用を許可する (Windows 8 以降で動作)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4520"/>
+        <location filename="Forms/OptionsWindow.ui" line="4536"/>
         <source>When the global hotkey is pressed 3 times in short succession this exception will be ignored.</source>
         <translation>グローバルホットキーが短時間に3回連続で押されると、この例外は無視されます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4523"/>
+        <location filename="Forms/OptionsWindow.ui" line="4539"/>
         <source>Exclude this sandbox from being terminated when &quot;Terminate All Processes&quot; is invoked.</source>
         <translation>「すべてのプロセスを終了」が呼び出されたときに、このサンドボックスを終了対象から除外します。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1777"/>
+        <location filename="Forms/OptionsWindow.ui" line="1793"/>
         <source>Limit restrictions</source>
         <translation>リソース制限</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1790"/>
-        <location filename="Forms/OptionsWindow.ui" line="1835"/>
-        <location filename="Forms/OptionsWindow.ui" line="1944"/>
+        <location filename="Forms/OptionsWindow.ui" line="1806"/>
+        <location filename="Forms/OptionsWindow.ui" line="1851"/>
+        <location filename="Forms/OptionsWindow.ui" line="1960"/>
         <source>Leave it blank to disable the setting</source>
         <translation>空白のままにすると設定が無効になります</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1819"/>
+        <location filename="Forms/OptionsWindow.ui" line="1835"/>
         <source>Total Processes Number Limit:</source>
         <translation>合計プロセス数の上限:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1954"/>
+        <location filename="Forms/OptionsWindow.ui" line="1970"/>
         <source>Total Processes Memory Limit:</source>
         <translation>合計プロセスメモリの上限:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="1908"/>
+        <location filename="Forms/OptionsWindow.ui" line="1924"/>
         <source>Single Process Memory Limit:</source>
         <translation>単一プロセスメモリの上限:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4068"/>
+        <location filename="Forms/OptionsWindow.ui" line="4084"/>
         <source>Bypass IPs</source>
         <translation>バイパスするIP</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4189"/>
+        <location filename="Forms/OptionsWindow.ui" line="4205"/>
         <source>Bind to Adapter IP</source>
         <translation>アダプターのIPにバインドする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4127"/>
+        <location filename="Forms/OptionsWindow.ui" line="4143"/>
         <source>IPv6:</source>
         <translation>IPv6:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4210"/>
+        <location filename="Forms/OptionsWindow.ui" line="4226"/>
         <source>IPv4:</source>
         <translation>IPv4:</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4120"/>
+        <location filename="Forms/OptionsWindow.ui" line="4136"/>
         <source>0000:0000:0000:0000:0000:0000:0000:0000</source>
         <translation>0000:0000:0000:0000:0000:0000:0000:0000</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4089"/>
+        <location filename="Forms/OptionsWindow.ui" line="4105"/>
         <source>Use in-process proxy relay threads instead of modifying the socket directly (resolves rare compatibility issues)</source>
         <translation>ソケットを直接変更する代わりに、インプロセスのプロキシリレースレッドを使用する (まれな互換性の問題を解決します)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4196"/>
+        <location filename="Forms/OptionsWindow.ui" line="4212"/>
         <source>000.000.000.000</source>
         <translation>000.000.000.000</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4530"/>
+        <location filename="Forms/OptionsWindow.ui" line="4546"/>
         <source>Restart force process before they begin to execute</source>
         <translation>強制プロセスを実行開始前に再起動する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4581"/>
+        <location filename="Forms/OptionsWindow.ui" line="4597"/>
         <source>Dlls &amp;&amp; Extensions</source>
         <translation>DLLと拡張機能</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4611"/>
+        <location filename="Forms/OptionsWindow.ui" line="4627"/>
         <source>Image Protection</source>
         <translation>イメージ保護</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4630"/>
+        <location filename="Forms/OptionsWindow.ui" line="4646"/>
         <source>Description</source>
         <translation>説明</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4638"/>
+        <location filename="Forms/OptionsWindow.ui" line="4654"/>
         <source>Sandboxie&apos;s resource access rules often discriminate against program binaries located inside the sandbox. OpenFilePath and OpenKeyPath work only for application binaries located on the host natively. In order to define a rule without this restriction, OpenPipePath or OpenConfPath must be used. Likewise, all Closed(File|Key|Ipc)Path directives which are defined by negation e.g. &apos;ClosedFilePath=!iexplore.exe,C:Users*&apos; will be always closed for binaries located inside a sandbox. Both restriction policies can be disabled on the &quot;Access policies&quot; page.
 This is done to prevent rogue processes inside the sandbox from creating a renamed copy of themselves and accessing protected resources. Another exploit vector is the injection of a library into an authorized process to get access to everything it is allowed to access. Using Host Image Protection, this can be prevented by blocking applications (installed on the host) running inside a sandbox from loading libraries from the sandbox itself.</source>
         <oldsource>Sandboxie’s resource access rules often discriminate against program binaries located inside the sandbox. OpenFilePath and OpenKeyPath work only for application binaries located on the host natively. In order to define a rule without this restriction, OpenPipePath or OpenConfPath must be used. Likewise, all Closed(File|Key|Ipc)Path directives which are defined by negation e.g. ‘ClosedFilePath=! iexplore.exe,C:Users*’ will be always closed for binaries located inside a sandbox. Both restriction policies can be disabled on the “Access policies” page.
@@ -9843,228 +10748,228 @@ This is done to prevent rogue processes inside the sandbox from creating a renam
 これは、サンドボックス内の不正なプロセスが、名前を変更した自身のコピーを作成して保護されたリソースにアクセスするのを防ぐために行われます。もう一つのエクスプロイトベクターは、承認されたプロセスにライブラリをインジェクションして、そのプロセスがアクセスを許可されているすべてのものへのアクセス権を取得することです。ホストイメージ保護を使用すると、サンドボックス内で実行されている（ホストにインストールされた）アプリケーションがサンドボックス自体からライブラリを読み込むのをブロックすることで、これを防ぐことができます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4642"/>
+        <location filename="Forms/OptionsWindow.ui" line="4658"/>
         <source>Prevent sandboxed programs installed on the host from loading DLLs from the sandbox</source>
         <oldsource>Prevent sandboxes programs installed on host from loading dll&apos;s from the sandbox</oldsource>
         <translation>ホスト上のサンドボックス化プログラムがサンドボックスからDLLを読み込むのを防ぐ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4649"/>
+        <location filename="Forms/OptionsWindow.ui" line="4665"/>
         <source>Issue message 1305 when a program tries to load a sandboxed dll</source>
         <translation>プログラムがサンドボックス化されたDLLを読み込もうとしたときにメッセージ 1305 を表示する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4662"/>
+        <location filename="Forms/OptionsWindow.ui" line="4678"/>
         <source>Sandboxie&apos;s functionality can be enhanced by using optional DLLs which can be loaded into each sandboxed process on start by the SbieDll.dll file, the add-on manager in the global settings offers a couple of useful extensions, once installed they can be enabled here for the current box.</source>
         <translation>Sandboxieの機能は、SbieDll.dllファイルによって開始時に各サンドボックス化プロセスに読み込まれるオプションのDLLを使用することで強化できます。グローバル設定のアドオンマネージャーは、いくつか便利な拡張機能を提供しており、インストールされると、現在のボックスに対してここで有効にできます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4705"/>
+        <location filename="Forms/OptionsWindow.ui" line="4721"/>
         <source>Advanced Options</source>
         <translation>高度なオプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4721"/>
+        <location filename="Forms/OptionsWindow.ui" line="4737"/>
         <source>Miscellaneous</source>
         <translation>その他</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4753"/>
+        <location filename="Forms/OptionsWindow.ui" line="4769"/>
         <source>Add Option</source>
         <translation>オプションを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4767"/>
+        <location filename="Forms/OptionsWindow.ui" line="4783"/>
         <source>Here you can configure advanced per process options to improve compatibility and/or customize sandboxing behavior.</source>
         <translation>ここでは、互換性の向上やサンドボックスの動作をカスタマイズするために、プロセスごとの高度なオプションを設定できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4778"/>
+        <location filename="Forms/OptionsWindow.ui" line="4794"/>
         <source>Option</source>
         <translation>オプション</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4788"/>
-        <location filename="Forms/OptionsWindow.ui" line="5798"/>
-        <location filename="Forms/OptionsWindow.ui" line="6038"/>
+        <location filename="Forms/OptionsWindow.ui" line="4804"/>
+        <location filename="Forms/OptionsWindow.ui" line="5814"/>
+        <location filename="Forms/OptionsWindow.ui" line="6054"/>
         <source>Value</source>
         <translation>値</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4819"/>
+        <location filename="Forms/OptionsWindow.ui" line="4835"/>
         <source>Triggers</source>
         <translation>トリガー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4952"/>
+        <location filename="Forms/OptionsWindow.ui" line="4968"/>
         <source>On Box Terminate</source>
         <translation>ボックス終了時</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5019"/>
+        <location filename="Forms/OptionsWindow.ui" line="5035"/>
         <source>This command will be run before the box content will be deleted</source>
         <translation>このコマンドは、ボックスのコンテンツが削除される前に実行されます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4881"/>
-        <location filename="Forms/OptionsWindow.ui" line="5022"/>
-        <location filename="Forms/OptionsWindow.ui" line="5067"/>
-        <location filename="Forms/OptionsWindow.ui" line="5086"/>
+        <location filename="Forms/OptionsWindow.ui" line="4897"/>
+        <location filename="Forms/OptionsWindow.ui" line="5038"/>
+        <location filename="Forms/OptionsWindow.ui" line="5083"/>
+        <location filename="Forms/OptionsWindow.ui" line="5102"/>
         <source>Run Command</source>
         <translation>コマンドを実行</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4931"/>
+        <location filename="Forms/OptionsWindow.ui" line="4947"/>
         <source>Event</source>
         <translation>イベント</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4856"/>
-        <location filename="Forms/OptionsWindow.ui" line="4914"/>
+        <location filename="Forms/OptionsWindow.ui" line="4872"/>
+        <location filename="Forms/OptionsWindow.ui" line="4930"/>
         <source>These commands are run UNBOXED just before the box content is deleted</source>
         <translation>これらのコマンドは、ボックスのコンテンツが削除される直前にサンドボックス外で実行されます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4859"/>
+        <location filename="Forms/OptionsWindow.ui" line="4875"/>
         <source>On File Recovery</source>
         <translation>ファイル復元時</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4984"/>
+        <location filename="Forms/OptionsWindow.ui" line="5000"/>
         <source>This command will be run before a file is being recovered and the file path will be passed as the first argument. If this command returns anything other than 0, the recovery will be blocked</source>
         <translation>このコマンドは、ファイルが復元される前に実行され、ファイルパスが最初の引数として渡されます。このコマンドが0以外を返した場合、復元はブロックされます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4987"/>
+        <location filename="Forms/OptionsWindow.ui" line="5003"/>
         <source>Run File Checker</source>
         <translation>ファイルチェッカーを実行</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4888"/>
+        <location filename="Forms/OptionsWindow.ui" line="4904"/>
         <source>These commands are executed only when a box is initialized. To make them run again, the box content must be deleted.</source>
         <translation>これらのコマンドは、ボックスが初期化されたときにのみ実行されます。再度実行させるには、ボックスのコンテンツを削除する必要があります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4891"/>
+        <location filename="Forms/OptionsWindow.ui" line="4907"/>
         <source>On Box Init</source>
         <translation>ボックス初期化時</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4962"/>
+        <location filename="Forms/OptionsWindow.ui" line="4978"/>
         <source>Here you can specify actions to be executed automatically on various box events.</source>
         <translation>ここでは、様々なボックスイベントで自動的に実行されるアクションを指定できます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4994"/>
+        <location filename="Forms/OptionsWindow.ui" line="5010"/>
         <source>These events are executed each time a box is started</source>
         <translation>これらのイベントは、ボックスが開始されるたびに実行されます</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4997"/>
+        <location filename="Forms/OptionsWindow.ui" line="5013"/>
         <source>On Box Start</source>
         <translation>ボックス開始時</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5048"/>
+        <location filename="Forms/OptionsWindow.ui" line="5064"/>
         <source>Start Service</source>
         <translation>サービスを開始</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4917"/>
+        <location filename="Forms/OptionsWindow.ui" line="4933"/>
         <source>On Delete Content</source>
         <translation>コンテンツ削除時</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="915"/>
+        <location filename="Forms/OptionsWindow.ui" line="931"/>
         <source>Prevent interference with the user interface (Experimental)</source>
         <translation>ユーザーインターフェースへの干渉を防ぐ (実験的)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="932"/>
+        <location filename="Forms/OptionsWindow.ui" line="948"/>
         <source>Prevent sandboxed processes from capturing window images (Experimental, may cause UI glitches)</source>
         <translation>サンドボックス化されたプロセスがウィンドウイメージをキャプチャするのを防ぐ (実験的、UIの不具合を引き起こす可能性があります)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5197"/>
+        <location filename="Forms/OptionsWindow.ui" line="5213"/>
         <source>Add Process</source>
         <translation>プロセスを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5183"/>
+        <location filename="Forms/OptionsWindow.ui" line="5199"/>
         <source>Don&apos;t allow sandboxed processes to see processes running in other boxes</source>
         <translation>サンドボックス化されたプロセスが他のボックスで実行中のプロセスを参照するのを許可しない</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5160"/>
+        <location filename="Forms/OptionsWindow.ui" line="5176"/>
         <source>Hide host processes from processes running in the sandbox.</source>
         <translation>サンドボックス内で実行中のプロセスからホストプロセスを隠す。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5221"/>
+        <location filename="Forms/OptionsWindow.ui" line="5237"/>
         <source>Privacy</source>
         <translation>プライバシー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5230"/>
+        <location filename="Forms/OptionsWindow.ui" line="5246"/>
         <source>Hide Firmware Information</source>
         <oldsource>Hide Firmware Informations</oldsource>
         <translation>ファームウェア情報を隠す</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5107"/>
+        <location filename="Forms/OptionsWindow.ui" line="5123"/>
         <source>Some programs read system details through WMI (a Windows built-in database) instead of normal ways. For example, &quot;tasklist.exe&quot; could get full processes list through accessing WMI, even if &quot;HideOtherBoxes&quot; is used. Enable this option to stop this behaviour.</source>
         <oldsource>Some programs read system deatils through WMI(A Windows built-in database) instead of normal ways. For example,&quot;tasklist.exe&quot; could get full processes list even if &quot;HideOtherBoxes&quot; is opened through accessing WMI. Enable this option to stop these behaviour.</oldsource>
         <translation>一部のプログラムは、通常の方法ではなく、WMI（Windowsに組み込まれたデータベース）を介してシステムの詳細を読み取ります。例えば、「tasklist.exe」は「HideOtherBoxes」が使用されていても、WMIにアクセスすることで完全なプロセスリストを取得できます。この動作を停止するには、このオプションを有効にします。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5110"/>
+        <location filename="Forms/OptionsWindow.ui" line="5126"/>
         <source>Prevent sandboxed processes from accessing system details through WMI (see tooltip for more info)</source>
         <oldsource>Prevent sandboxed processes from accessing system deatils through WMI (see tooltip for more Info)</oldsource>
         <translation>サンドボックス化されたプロセスがWMIを介してシステムの詳細にアクセスするのを防ぐ (詳細はツールチップを参照)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5153"/>
+        <location filename="Forms/OptionsWindow.ui" line="5169"/>
         <source>Process Hiding</source>
         <translation>プロセスの非表示</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5297"/>
+        <location filename="Forms/OptionsWindow.ui" line="5313"/>
         <source>Use a custom Locale/LangID</source>
         <translation>カスタムのロケール/LangIDを使用する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5290"/>
+        <location filename="Forms/OptionsWindow.ui" line="5306"/>
         <source>Data Protection</source>
         <translation>データ保護</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5264"/>
+        <location filename="Forms/OptionsWindow.ui" line="5280"/>
         <source>Dump the current Firmware Tables to HKCU\System\SbieCustom</source>
         <oldsource>Dump the current Firmare Tables to HKCU\System\SbieCustom</oldsource>
         <translation>現在のファームウェアテーブルを HKCU\System\SbieCustom にダンプする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5267"/>
+        <location filename="Forms/OptionsWindow.ui" line="5283"/>
         <source>Dump FW Tables</source>
         <translation>FWテーブルをダンプ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5337"/>
+        <location filename="Forms/OptionsWindow.ui" line="5353"/>
         <source>Users</source>
         <translation>ユーザー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5355"/>
+        <location filename="Forms/OptionsWindow.ui" line="5371"/>
         <source>Restrict Resource Access monitor to administrators only</source>
         <translation>リソースアクセスモニターを管理者のみに制限する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5362"/>
+        <location filename="Forms/OptionsWindow.ui" line="5378"/>
         <source>Add User</source>
         <translation>ユーザーを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5392"/>
+        <location filename="Forms/OptionsWindow.ui" line="5408"/>
         <source>Add user accounts and user groups to the list below to limit use of the sandbox to only those accounts.  If the list is empty, the sandbox can be used by all user accounts.
 
 Note:  Forced Programs and Force Folders settings for a sandbox do not apply to user accounts which cannot use the sandbox.</source>
@@ -10073,52 +10978,52 @@ Note:  Forced Programs and Force Folders settings for a sandbox do not apply to 
 注意: サンドボックスの強制プログラムおよび強制フォルダーの設定は、そのサンドボックスを使用できないユーザーアカウントには適用されません。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5405"/>
+        <location filename="Forms/OptionsWindow.ui" line="5421"/>
         <source>Tracing</source>
         <translation>トレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5602"/>
+        <location filename="Forms/OptionsWindow.ui" line="5618"/>
         <source>API call Trace (traces all SBIE hooks)</source>
         <translation>APIコールトレース (すべてのSBIEフックをトレース)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5595"/>
+        <location filename="Forms/OptionsWindow.ui" line="5611"/>
         <source>Key Trace</source>
         <translation>キートレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5427"/>
+        <location filename="Forms/OptionsWindow.ui" line="5443"/>
         <source>DNS Request Logging</source>
         <translation>DNSリクエストのロギング</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5454"/>
+        <location filename="Forms/OptionsWindow.ui" line="5470"/>
         <source>GUI Trace</source>
         <translation>GUIトレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5494"/>
+        <location filename="Forms/OptionsWindow.ui" line="5510"/>
         <source>Log Debug Output to the Trace Log</source>
         <translation>デバッグ出力をトレースログに記録する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5588"/>
+        <location filename="Forms/OptionsWindow.ui" line="5604"/>
         <source>Log all SetError&apos;s to Trace log (creates a lot of output)</source>
         <translation>すべてのSetErrorをトレースログに記録する (大量の出力が生成されます)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5467"/>
+        <location filename="Forms/OptionsWindow.ui" line="5483"/>
         <source>Access Tracing</source>
         <translation>アクセストレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5541"/>
+        <location filename="Forms/OptionsWindow.ui" line="5557"/>
         <source>Syscall Trace (creates a lot of output)</source>
         <translation>Syscallトレース (大量の出力が生成されます)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5555"/>
+        <location filename="Forms/OptionsWindow.ui" line="5571"/>
         <source>Log all access events as seen by the driver to the resource access log.
 
 This options set the event mask to &quot;*&quot; - All access events
@@ -10137,172 +11042,172 @@ iniファイルで以下を指定することで、ロギングをカスタマ�
 「*」の代わりに。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5514"/>
+        <location filename="Forms/OptionsWindow.ui" line="5530"/>
         <source>Resource Access Monitor</source>
         <translation>リソースアクセスモニター</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5501"/>
+        <location filename="Forms/OptionsWindow.ui" line="5517"/>
         <source>COM Class Trace</source>
         <translation>COMクラストレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5534"/>
+        <location filename="Forms/OptionsWindow.ui" line="5550"/>
         <source>Pipe Trace</source>
         <translation>パイプトレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5548"/>
+        <location filename="Forms/OptionsWindow.ui" line="5564"/>
         <source>File Trace</source>
         <translation>ファイルトレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5413"/>
+        <location filename="Forms/OptionsWindow.ui" line="5429"/>
         <source>Disable Resource Access Monitor</source>
         <translation>リソースアクセスモニターを無効にする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5420"/>
+        <location filename="Forms/OptionsWindow.ui" line="5436"/>
         <source>IPC Trace</source>
         <translation>IPCトレース</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="4949"/>
+        <location filename="Forms/OptionsWindow.ui" line="4965"/>
         <source>These commands are run UNBOXED after all processes in the sandbox have finished.</source>
         <translation>これらのコマンドは、サンドボックス内のすべてのプロセスが終了した後に、サンドボックス外で実行されます。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5618"/>
+        <location filename="Forms/OptionsWindow.ui" line="5634"/>
         <source>Debug</source>
         <translation>デバッグ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5667"/>
+        <location filename="Forms/OptionsWindow.ui" line="5683"/>
         <source>WARNING, these options can disable core security guarantees and break sandbox security!!!</source>
         <translation>警告: これらのオプションは、中核となるセキュリティ保証を無効にし、サンドボックスのセキュリティを破壊する可能性があります!!!</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5677"/>
+        <location filename="Forms/OptionsWindow.ui" line="5693"/>
         <source>These options are intended for debugging compatibility issues, please do not use them in production use. </source>
         <translation>これらのオプションは互換性の問題をデバッグするためのものです。本番環境では使用しないでください。 </translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5815"/>
+        <location filename="Forms/OptionsWindow.ui" line="5831"/>
         <source>App Templates</source>
         <translation>アプリテンプレート</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5825"/>
+        <location filename="Forms/OptionsWindow.ui" line="5841"/>
         <source>Templates</source>
         <translation>テンプレート</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5925"/>
+        <location filename="Forms/OptionsWindow.ui" line="5941"/>
         <source>This list contains a large amount of sandbox compatibility enhancing templates</source>
         <translation>このリストには、サンドボックスの互換性を向上させるテンプレートが多数含まれています</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5883"/>
+        <location filename="Forms/OptionsWindow.ui" line="5899"/>
         <source>Text Filter</source>
         <translation>テキストフィルター</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5876"/>
+        <location filename="Forms/OptionsWindow.ui" line="5892"/>
         <source>Add Template</source>
         <translation>テンプレートを追加</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5893"/>
+        <location filename="Forms/OptionsWindow.ui" line="5909"/>
         <source>Filter Categories</source>
         <translation>カテゴリをフィルター</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5237"/>
+        <location filename="Forms/OptionsWindow.ui" line="5253"/>
         <source>Hide Disk Serial Number</source>
         <translation>ディスクのシリアル番号を隠す</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5244"/>
+        <location filename="Forms/OptionsWindow.ui" line="5260"/>
         <source>Obfuscate known unique identifiers in the registry</source>
         <translation>レジストリ内の既知のユニークな識別子を難読化する</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5140"/>
+        <location filename="Forms/OptionsWindow.ui" line="5156"/>
         <source>Don&apos;t allow sandboxed processes to see processes running outside any boxes</source>
         <translation>サンドボックス化されたプロセスが、ボックス外で実行中のプロセスを参照することを許可しない</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5094"/>
+        <location filename="Forms/OptionsWindow.ui" line="5110"/>
         <source>Processes</source>
         <translation>プロセス</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5204"/>
+        <location filename="Forms/OptionsWindow.ui" line="5220"/>
         <source>This option hides the registry path *\Software*\Microsoft\Windows\CurrentVersion\Uninstall\*, allowing software installed on the host to be reinstalled in the sandbox. However, it does not hide software-specific files and folders. If the installer still encounters issues, you will need to define custom WriteFilePath entries to hide the relevant files on disk.</source>
         <translation>このオプションはレジストリパス「\Software\Microsoft\Windows\CurrentVersion\Uninstall*」を隠し、ホストにインストールされたソフトウェアをサンドボックス内に再インストールできるようにします。ただし、ソフトウェア固有のファイルやフォルダーは隠しません。インストーラーが依然として問題に遭遇する場合は、ディスク上の関連ファイルを隠すためにカスタムのWriteFilePathエントリを定義する必要があります。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5207"/>
+        <location filename="Forms/OptionsWindow.ui" line="5223"/>
         <source>Hide the host software&apos;s uninstall key (see tooltip)</source>
         <translation>ホストソフトウェアのアンインストールキーを隠す (ツールチップ参照)</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5277"/>
+        <location filename="Forms/OptionsWindow.ui" line="5293"/>
         <source>Hide Network Adapter MAC Address</source>
         <translation>ネットワークアダプターのMACアドレスを隠す</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5447"/>
+        <location filename="Forms/OptionsWindow.ui" line="5463"/>
         <source>Trace function hooking by SbieDll</source>
         <translation>SbieDllによる関数フックをトレースする</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5643"/>
+        <location filename="Forms/OptionsWindow.ui" line="5659"/>
         <source>Debug Options</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5719"/>
+        <location filename="Forms/OptionsWindow.ui" line="5735"/>
         <source>Config Dump</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5750"/>
+        <location filename="Forms/OptionsWindow.ui" line="5766"/>
         <source>No Templates</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5760"/>
+        <location filename="Forms/OptionsWindow.ui" line="5776"/>
         <source>No Global</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5770"/>
+        <location filename="Forms/OptionsWindow.ui" line="5786"/>
         <source>No Expand</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5780"/>
+        <location filename="Forms/OptionsWindow.ui" line="5796"/>
         <source>Refresh</source>
         <translation type="unfinished">更新</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5942"/>
+        <location filename="Forms/OptionsWindow.ui" line="5958"/>
         <source>Category</source>
         <translation>カテゴリ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5961"/>
+        <location filename="Forms/OptionsWindow.ui" line="5977"/>
         <source>Open Template</source>
         <translation>テンプレートを開く</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="5987"/>
+        <location filename="Forms/OptionsWindow.ui" line="6003"/>
         <source>Template Folders</source>
         <translation>テンプレートフォルダー</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6007"/>
+        <location filename="Forms/OptionsWindow.ui" line="6023"/>
         <source>Configure the folder locations used by your other applications.
 
 Please note that this values are currently user specific and saved globally for all boxes.</source>
@@ -10311,42 +11216,42 @@ Please note that this values are currently user specific and saved globally for 
 これらの値は現在ユーザー固有のものであり、すべてのボックスに対してグローバルに保存されることに注意してください。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6049"/>
+        <location filename="Forms/OptionsWindow.ui" line="6065"/>
         <source>Accessibility</source>
         <translation>アクセシビリティ</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6069"/>
+        <location filename="Forms/OptionsWindow.ui" line="6085"/>
         <source>Screen Readers: JAWS, NVDA, Window-Eyes, System Access</source>
         <translation>スクリーンリーダー: JAWS, NVDA, Window-Eyes, System Access</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6109"/>
+        <location filename="Forms/OptionsWindow.ui" line="6125"/>
         <source>The following settings enable the use of Sandboxie in combination with accessibility software.  Please note that some measure of Sandboxie protection is necessarily lost when these settings are in effect.</source>
         <translation>以下の設定は、Sandboxieをアクセシビリティソフトウェアと組み合わせて使用することを可能にします。これらの設定が有効な場合、Sandboxieの保護機能が必然的にある程度失われることに注意してください。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6145"/>
+        <location filename="Forms/OptionsWindow.ui" line="6161"/>
         <source>To compensate for the lost protection, please consult the Drop Rights settings page in the Restrictions settings group.</source>
         <translation>失われた保護を補うために、「制限」設定グループ内の「権限の削除」設定ページを参照してください。</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6162"/>
+        <location filename="Forms/OptionsWindow.ui" line="6178"/>
         <source>Edit ini Section</source>
         <translation>iniセクションを編集</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6196"/>
+        <location filename="Forms/OptionsWindow.ui" line="6212"/>
         <source>Edit ini</source>
         <translation>iniを編集</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6222"/>
+        <location filename="Forms/OptionsWindow.ui" line="6238"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location filename="Forms/OptionsWindow.ui" line="6299"/>
+        <location filename="Forms/OptionsWindow.ui" line="6315"/>
         <source>Save</source>
         <translation>保存</translation>
     </message>
@@ -10370,7 +11275,7 @@ Please note that this values are currently user specific and saved globally for 
 <context>
     <name>QObject</name>
     <message>
-        <location filename="Views/SbieView.cpp" line="1950"/>
+        <location filename="Views/SbieView.cpp" line="1988"/>
         <source>Drive %1</source>
         <translation>ドライブ %1</translation>
     </message>
@@ -10399,27 +11304,27 @@ Please note that this values are currently user specific and saved globally for 
 <context>
     <name>QPlatformTheme</name>
     <message>
-        <location filename="SandMan.cpp" line="5056"/>
+        <location filename="SandMan.cpp" line="5112"/>
         <source>OK</source>
         <translation>OK</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5057"/>
+        <location filename="SandMan.cpp" line="5113"/>
         <source>Apply</source>
         <translation>適用</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5058"/>
+        <location filename="SandMan.cpp" line="5114"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5059"/>
+        <location filename="SandMan.cpp" line="5115"/>
         <source>&amp;Yes</source>
         <translation>はい(&amp;Y)</translation>
     </message>
     <message>
-        <location filename="SandMan.cpp" line="5060"/>
+        <location filename="SandMan.cpp" line="5116"/>
         <source>&amp;No</source>
         <translation>いいえ(&amp;N)</translation>
     </message>
