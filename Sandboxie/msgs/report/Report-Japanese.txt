@@ -6,6 +6,14 @@
 SBIE2189 %2 is likely a Chromium-based application, but the image type is not Chrome; it will likely fail.
 .
 
+2228;pop;wrn;01
+SBIE2228 File history warning:  %2
+.
+
+2229;pop;wrn;01
+SBIE2229 File history limit reached:  %2
+.
+
 3115;txt;01
 Yes
 .

@@ -2,5 +2,11 @@
 * Missing Messages in Text-Turkish-1055.txt
 *==========
 
-There are no missing messages.
+2228;pop;wrn;01
+SBIE2228 File history warning:  %2
+.
+
+2229;pop;wrn;01
+SBIE2229 File history limit reached:  %2
+.
 

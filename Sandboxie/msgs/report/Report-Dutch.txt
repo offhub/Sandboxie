@@ -98,6 +98,14 @@ SBIE2226 Process failed to start due to missing elevation, to resolve add "Apply
 SBIE2227 '%2' is located on a volume which does not support 8.3 naming. This can cause issues with older applications and installers.
 .
 
+2228;pop;wrn;01
+SBIE2228 File history warning:  %2
+.
+
+2229;pop;wrn;01
+SBIE2229 File history limit reached:  %2
+.
+
 2230;pop;wrn;01
 SBIE2230 Failed to mount root for %2
 .

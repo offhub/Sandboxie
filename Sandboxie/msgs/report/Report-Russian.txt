@@ -38,6 +38,14 @@ SBIE1416 Portable box name is already in use by another box, include %3
 SBIE2189 %2 is likely a Chromium-based application, but the image type is not Chrome; it will likely fail.
 .
 
+2228;pop;wrn;01
+SBIE2228 File history warning:  %2
+.
+
+2229;pop;wrn;01
+SBIE2229 File history limit reached:  %2
+.
+
 2328;pop;err;01
 SBIE2328 Failed to resolve chrome sandbox hook %2
 .
