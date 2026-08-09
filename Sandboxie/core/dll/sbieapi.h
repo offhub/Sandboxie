@@ -42,6 +42,8 @@ extern "C" {
 
 #include "core/drv/api_flags.h"
 
+struct _API_TRACE_BATCH_RECORD;
+
 
 //---------------------------------------------------------------------------
 // Sandboxie API Calls
@@ -230,6 +232,18 @@ LONG SbieApi_MonitorPut2Ex(
     const WCHAR *Name,
     BOOLEAN bCheckObjectExists,
     BOOLEAN bIsMessage);
+
+LONG SbieApi_MonitorPut2ExSource(
+    ULONG Type,
+    ULONG NameLen,
+    const WCHAR *Name,
+    BOOLEAN bCheckObjectExists,
+    BOOLEAN bIsMessage,
+    ULONG SourceTid);
+
+LONG SbieApi_MonitorPutBatch(
+    const struct _API_TRACE_BATCH_RECORD *Records,
+    ULONG RecordCount);
 
 SBIEAPI_EXPORT
 LONG SbieApi_MonitorPutEx(

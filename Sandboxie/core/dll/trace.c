@@ -21,7 +21,9 @@
 
 #include "dll.h"
 #include "trace.h"
+#include "core/drv/api_defs.h"
 #include "core/low/lowdata.h"
+#include "../../common/my_xeb.h"
 
 #include <dbghelp.h>
 
@@ -34,6 +36,17 @@ void* Hook_GetFFSTarget(void* ptr);
 //---------------------------------------------------------------------------
 
 
+#define API_TRACE_QUEUE_CAPACITY 4096
+#define API_TRACE_QUEUE_MASK     (API_TRACE_QUEUE_CAPACITY - 1)
+#define API_TRACE_WORKER_DELAY_MS 10
+
+
+typedef struct _API_TRACE_EVENT {
+    volatile ULONG64 Sequence;
+    ULONG ThreadId;
+    USHORT NameLength;
+    CHAR Name[API_TRACE_NAME_MAX];
+} API_TRACE_EVENT;
 
 
 //---------------------------------------------------------------------------
@@ -48,6 +61,17 @@ static void Trace_OutputDebugStringW(const WCHAR *str);
 static void Trace_OutputDebugStringA(const UCHAR *str);
 
 static NTSTATUS InstallInstrumentationCallback();
+
+static BOOLEAN Trace_ApiQueueInit(void);
+
+static BOOLEAN Trace_ApiEnqueue(
+    const volatile CHAR *name, ULONG thread_id);
+
+static BOOLEAN Trace_ApiDequeue(API_TRACE_BATCH_RECORD *record);
+
+static DWORD WINAPI Trace_ApiWorker(void *arg);
+
+static void Trace_ApiSyncFallback(const CHAR *name);
 
 
 //---------------------------------------------------------------------------
@@ -68,6 +92,12 @@ BOOLEAN Dll_SbieTrace = FALSE;
 BOOLEAN Dll_ApiTrace = FALSE;
 BOOLEAN Dll_FileTrace = FALSE;
 
+static API_TRACE_EVENT *Trace_ApiQueue = NULL;
+__declspec(align(64)) static volatile LONG64 Trace_ApiEnqueuePos = 0;
+__declspec(align(64)) static volatile LONG64 Trace_ApiDequeuePos = 0;
+__declspec(align(64)) static volatile LONG64 Trace_ApiDropped = 0;
+static volatile LONG Trace_ApiQueueReady = FALSE;
+
 
 //---------------------------------------------------------------------------
 // Trace_Init
@@ -76,11 +106,19 @@ BOOLEAN Dll_FileTrace = FALSE;
 
 _FX int Trace_Init(void)
 {
+    BOOLEAN api_trace;
+
     Dll_HookTrace = SbieApi_QueryConfBool(NULL, L"HookTrace", FALSE);
 
     Dll_SbieTrace = SbieApi_QueryConfBool(NULL, L"SbieTrace", FALSE);
 
-    Dll_ApiTrace = Config_GetSettingsForImageName_bool(L"ApiTrace", FALSE);
+    api_trace = Config_GetSettingsForImageName_bool(L"ApiTrace", FALSE);
+    Dll_ApiTrace = FALSE;
+
+    if (api_trace) {
+        Trace_ApiQueueInit();
+        Dll_ApiTrace = TRUE;
+    }
 
     Dll_FileTrace = Config_GetSettingsForImageName_bool(L"FileTrace", FALSE);
 
@@ -135,9 +173,244 @@ _FX int Trace_Init(void)
 
 _FX void Trace_Entry(void)
 {
+    HANDLE thread;
+
 #ifdef WITH_DEBUG
     DbgTrace("Dll_InitExeEntry completed");
 #endif
+
+    if (! Dll_ApiTrace ||
+            ! InterlockedCompareExchange(&Trace_ApiQueueReady, FALSE, FALSE))
+        return;
+
+    thread = CreateThread(NULL, 0, Trace_ApiWorker, NULL, 0, NULL);
+    if (thread)
+        CloseHandle(thread);
+    else
+        InterlockedExchange(&Trace_ApiQueueReady, FALSE);
+}
+
+
+//---------------------------------------------------------------------------
+// Trace_ApiQueueInit
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN Trace_ApiQueueInit(void)
+{
+    ULONG i;
+
+    Trace_ApiQueue = Dll_Alloc(
+        API_TRACE_QUEUE_CAPACITY * sizeof(API_TRACE_EVENT));
+    if (! Trace_ApiQueue)
+        return FALSE;
+
+    for (i = 0; i < API_TRACE_QUEUE_CAPACITY; ++i)
+        Trace_ApiQueue[i].Sequence = i;
+
+    InterlockedExchange64(&Trace_ApiEnqueuePos, 0);
+    InterlockedExchange64(&Trace_ApiDequeuePos, 0);
+    InterlockedExchange64(&Trace_ApiDropped, 0);
+    InterlockedExchange(&Trace_ApiQueueReady, TRUE);
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Trace_ApiEnqueue
+//---------------------------------------------------------------------------
+
+
+__declspec(noinline) static BOOLEAN Trace_ApiEnqueue(
+    const volatile CHAR *name, ULONG thread_id)
+{
+    API_TRACE_EVENT *event;
+    ULONG64 position;
+    ULONG64 sequence;
+    LONGLONG difference;
+    USHORT length;
+
+    position = (ULONG64)InterlockedCompareExchange64(
+        &Trace_ApiEnqueuePos, 0, 0);
+
+    for (;;) {
+
+        event = &Trace_ApiQueue[position & API_TRACE_QUEUE_MASK];
+        sequence = (ULONG64)InterlockedCompareExchange64(
+            (volatile LONG64 *)&event->Sequence, 0, 0);
+        difference = (LONGLONG)sequence - (LONGLONG)position;
+
+        if (difference == 0) {
+
+            if ((ULONG64)InterlockedCompareExchange64(
+                    &Trace_ApiEnqueuePos, position + 1, position) == position)
+                break;
+
+            position = (ULONG64)InterlockedCompareExchange64(
+                &Trace_ApiEnqueuePos, 0, 0);
+
+        } else if (difference < 0) {
+
+            InterlockedIncrement64(&Trace_ApiDropped);
+            return FALSE;
+
+        } else {
+
+            position = (ULONG64)InterlockedCompareExchange64(
+                &Trace_ApiEnqueuePos, 0, 0);
+        }
+    }
+
+    event->ThreadId = thread_id;
+
+    for (length = 0; length < API_TRACE_NAME_MAX - 1; ++length) {
+        CHAR ch = name[length];
+
+        if (! ch)
+            break;
+
+        event->Name[length] = ch;
+    }
+
+    event->Name[length] = '\0';
+    event->NameLength = length;
+
+    InterlockedExchange64(
+        (volatile LONG64 *)&event->Sequence, position + 1);
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Trace_ApiDequeue
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN Trace_ApiDequeue(API_TRACE_BATCH_RECORD *record)
+{
+    API_TRACE_EVENT *event;
+    ULONG64 position;
+    ULONG64 sequence;
+    LONGLONG difference;
+    USHORT i;
+
+    position = (ULONG64)Trace_ApiDequeuePos;
+    event = &Trace_ApiQueue[position & API_TRACE_QUEUE_MASK];
+    sequence = (ULONG64)InterlockedCompareExchange64(
+        (volatile LONG64 *)&event->Sequence, 0, 0);
+    difference = (LONGLONG)sequence - (LONGLONG)(position + 1);
+
+    if (difference != 0)
+        return FALSE;
+
+    record->ThreadId = event->ThreadId;
+    record->Type = MONITOR_APICALL | MONITOR_TRACE;
+    record->NameLength = event->NameLength;
+
+    for (i = 0; i < event->NameLength; ++i)
+        record->Name[i] = (WCHAR)(UCHAR)event->Name[i];
+
+    record->Name[event->NameLength] = L'\0';
+
+    InterlockedExchange64((volatile LONG64 *)&event->Sequence,
+        position + API_TRACE_QUEUE_CAPACITY);
+    Trace_ApiDequeuePos = position + 1;
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Trace_ApiWorker
+//---------------------------------------------------------------------------
+
+
+static DWORD WINAPI Trace_ApiWorker(void *arg)
+{
+    API_TRACE_BATCH_RECORD *records;
+    TEB *teb;
+    ULONG_PTR *sbie_depth;
+    BOOLEAN batch_supported;
+
+    (void)arg;
+
+    teb = NtCurrentTeb();
+    sbie_depth = (ULONG_PTR *)&teb->ReservedForDebuggerInstrumentation[15];
+    *sbie_depth = 1;
+
+    records = Dll_Alloc(
+        API_TRACE_BATCH_MAX_RECORDS * sizeof(API_TRACE_BATCH_RECORD));
+    if (! records) {
+        InterlockedExchange(&Trace_ApiQueueReady, FALSE);
+        return 0;
+    }
+
+    batch_supported = TRUE;
+
+    for (;;) {
+        ULONG record_count = 0;
+        LONG status = STATUS_SUCCESS;
+        ULONG i;
+        ULONG64 dropped;
+
+        while (record_count < API_TRACE_BATCH_MAX_RECORDS &&
+                Trace_ApiDequeue(&records[record_count]))
+            ++record_count;
+
+        if (record_count && batch_supported) {
+            status = SbieApi_MonitorPutBatch(records, record_count);
+
+            if (status == STATUS_INVALID_DEVICE_REQUEST ||
+                    status == STATUS_NOT_IMPLEMENTED)
+                batch_supported = FALSE;
+        }
+
+        if (record_count && (! batch_supported || ! NT_SUCCESS(status))) {
+
+            for (i = 0; i < record_count; ++i) {
+                SbieApi_MonitorPut2ExSource(records[i].Type,
+                    records[i].NameLength, records[i].Name, FALSE, FALSE,
+                    records[i].ThreadId);
+            }
+        }
+
+        dropped = 0;
+        if (record_count < API_TRACE_BATCH_MAX_RECORDS)
+            dropped = (ULONG64)InterlockedExchange64(
+                &Trace_ApiDropped, 0);
+
+        if (dropped) {
+            WCHAR message[128];
+            ULONG length = Sbie_snwprintf(message, ARRAYSIZE(message),
+                L"ApiTrace: %I64u events dropped because the trace queue was full",
+                dropped);
+
+            SbieApi_MonitorPut2Ex(MONITOR_APICALL | MONITOR_TRACE,
+                length, message, FALSE, TRUE);
+        }
+
+        if (! record_count)
+            Sleep(API_TRACE_WORKER_DELAY_MS);
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// Trace_ApiSyncFallback
+//---------------------------------------------------------------------------
+
+
+__declspec(noinline) static void Trace_ApiSyncFallback(
+    const CHAR *name)
+{
+    WCHAR trace_str[API_TRACE_NAME_MAX];
+    ULONG len = Sbie_snwprintf(trace_str, ARRAYSIZE(trace_str),
+        L"%S", name);
+
+    SbieApi_MonitorPut2Ex(MONITOR_APICALL | MONITOR_TRACE,
+        len, trace_str, FALSE, FALSE);
 }
 
 
@@ -188,8 +461,6 @@ ALIGNED void Trace_OutputDebugStringA(const UCHAR *strA)
 //---------------------------------------------------------------------------
 // Trace_FindModuleByAddress
 //---------------------------------------------------------------------------
-
-#include "../../common/my_xeb.h"
 
 WCHAR* Trace_FindModuleByAddress(void* address)
 {
@@ -510,18 +781,23 @@ void ApiInstrumentation(const char* pName, void** pStack)
 void __fastcall ApiInstrumentation(const char* pName, void** pStack)
 #endif
 {
-    void* ReturnAddress = *(pStack - 1);
-
     TEB* pTEB = NtCurrentTeb();
     ULONG_PTR* sbie_deph = (ULONG_PTR*)&pTEB->ReservedForDebuggerInstrumentation[15];
     if (*sbie_deph)
         return;
     *sbie_deph += 1;
 
-    WCHAR trace_str[256];
-    //ULONG len = Sbie_snwprintf(trace_str, 128, L"%S <-- %s%S", pName, CallingModule, pCaller ? pCaller : "");
-    ULONG len = Sbie_snwprintf(trace_str, 128, L"%S", pName);
-    SbieApi_MonitorPut2Ex(MONITOR_APICALL | MONITOR_TRACE, len, trace_str, FALSE, FALSE);
+    if (InterlockedCompareExchange(&Trace_ApiQueueReady, FALSE, FALSE)) {
+        Trace_ApiEnqueue(pName,
+            (ULONG)(ULONG_PTR)pTEB->ClientId.UniqueThread);
+
+    } else {
+        ULONG_PTR stack = (ULONG_PTR)pStack;
+
+        if (stack >= (ULONG_PTR)pTEB->NtTib.StackLimit &&
+                stack < (ULONG_PTR)pTEB->NtTib.StackBase)
+            Trace_ApiSyncFallback(pName);
+    }
 
     *sbie_deph -= 1;
 }
@@ -551,8 +827,6 @@ void BufferToHexW(const void* lpBuffer, size_t nSize, wchar_t* outBuf, size_t ou
 //---------------------------------------------------------------------------
 // Trace_SbieDrvFunc2Str
 //---------------------------------------------------------------------------
-
-#include "core/drv/api_defs.h"
 
 const wchar_t* Trace_SbieDrvFunc2Str(ULONG func)
 {
@@ -600,6 +874,7 @@ const wchar_t* Trace_SbieDrvFunc2Str(ULONG func)
         case API_GUI_CLIPBOARD:                 return L"API_GUI_CLIPBOARD";
         case API_RELOAD_CONF2:                  return L"API_RELOAD_CONF2";
         case API_MONITOR_PUT2:                  return L"API_MONITOR_PUT2";
+        case API_MONITOR_PUT_BATCH:             return L"API_MONITOR_PUT_BATCH";
         case API_MONITOR_GET_EX:                return L"API_MONITOR_GET_EX";
         case API_GET_MESSAGE:                   return L"API_GET_MESSAGE";
         case API_PROCESS_EXEMPTION_CONTROL:     return L"API_PROCESS_EXEMPTION_CONTROL";

@@ -108,7 +108,8 @@ _FX NTSTATUS SbieApi_Ioctl(ULONG64 *parms)
         SbieApi_DeviceHandle = INVALID_HANDLE_VALUE;
     }
 
-    if (Dll_SbieTrace && parms[0] != API_MONITOR_PUT2) {
+    if (Dll_SbieTrace && parms[0] != API_MONITOR_PUT2 &&
+            parms[0] != API_MONITOR_PUT_BATCH) {
         WCHAR dbg[1024];
         extern const wchar_t* Trace_SbieDrvFunc2Str(ULONG func);
         Sbie_snwprintf(dbg, 1024, L"SbieApi_Ioctl: %s %s", Dll_ImageName, Trace_SbieDrvFunc2Str((ULONG)parms[0]));
@@ -1742,6 +1743,24 @@ _FX LONG SbieApi_MonitorPut2Ex(
     BOOLEAN bCheckObjectExists,
     BOOLEAN bIsMessage)
 {
+    return SbieApi_MonitorPut2ExSource(Type, NameLen, Name,
+        bCheckObjectExists, bIsMessage, 0);
+}
+
+
+//---------------------------------------------------------------------------
+// SbieApi_MonitorPut2ExSource
+//---------------------------------------------------------------------------
+
+
+_FX LONG SbieApi_MonitorPut2ExSource(
+    ULONG Type,
+    ULONG NameLen,
+    const WCHAR *Name,
+    BOOLEAN bCheckObjectExists,
+    BOOLEAN bIsMessage,
+    ULONG SourceTid)
+{
     NTSTATUS status;
     __declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
     API_MONITOR_PUT2_ARGS *args = (API_MONITOR_PUT2_ARGS *)parms;
@@ -1753,6 +1772,35 @@ _FX LONG SbieApi_MonitorPut2Ex(
     args->log_ptr.val64             = (ULONG64)(ULONG_PTR)Name;
     args->check_object_exists.val64 = bCheckObjectExists;
     args->is_message.val64          = bIsMessage;
+    args->source_tid.val             = SourceTid;
+    status = SbieApi_Ioctl(parms);
+
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// SbieApi_MonitorPutBatch
+//---------------------------------------------------------------------------
+
+
+_FX LONG SbieApi_MonitorPutBatch(
+    const API_TRACE_BATCH_RECORD *Records,
+    ULONG RecordCount)
+{
+    NTSTATUS status;
+    __declspec(align(8)) ULONG64 parms[API_NUM_ARGS];
+    API_MONITOR_PUT_BATCH_ARGS *args = (API_MONITOR_PUT_BATCH_ARGS *)parms;
+
+    if (! Records || ! RecordCount ||
+            RecordCount > API_TRACE_BATCH_MAX_RECORDS)
+        return STATUS_INVALID_PARAMETER;
+
+    memset(parms, 0, sizeof(parms));
+    args->func_code        = API_MONITOR_PUT_BATCH;
+    args->record_count.val = RecordCount;
+    args->records.val      = (API_TRACE_BATCH_RECORD *)Records;
+    args->buffer_len.val   = RecordCount * sizeof(API_TRACE_BATCH_RECORD);
     status = SbieApi_Ioctl(parms);
 
     return status;

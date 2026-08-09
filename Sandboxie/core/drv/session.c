@@ -112,6 +112,8 @@ static NTSTATUS Session_Api_MonitorControl(PROCESS *proc, ULONG64 *parms);
 
 static NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms);
 
+static NTSTATUS Session_Api_MonitorPutBatch(PROCESS *proc, ULONG64 *parms);
+
 static NTSTATUS Session_Api_MonitorPutEx(PROCESS *proc, ULONG64 *parms);
 
 //static NTSTATUS Session_Api_MonitorGet(PROCESS *proc, ULONG64 *parms);
@@ -149,6 +151,7 @@ _FX BOOLEAN Session_Init(void)
     Api_SetFunction(API_MONITOR_CONTROL,        Session_Api_MonitorControl);
     //Api_SetFunction(API_MONITOR_PUT,            Session_Api_MonitorPut);
     Api_SetFunction(API_MONITOR_PUT2,           Session_Api_MonitorPut2);
+    Api_SetFunction(API_MONITOR_PUT_BATCH,       Session_Api_MonitorPutBatch);
     Api_SetFunction(API_MONITOR_PUT_EX,         Session_Api_MonitorPutEx);
     //Api_SetFunction(API_MONITOR_GET,            Session_Api_MonitorGet);
 	Api_SetFunction(API_MONITOR_GET_EX,			Session_Api_MonitorGetEx);
@@ -775,6 +778,27 @@ _FX NTSTATUS Session_Api_MonitorControl(PROCESS *proc, ULONG64 *parms)
 //---------------------------------------------------------------------------
 
 
+static HANDLE Session_GetMonitorSourceTid(PROCESS *proc, ULONG source_tid)
+{
+    HANDLE tid = PsGetCurrentThreadId();
+    PETHREAD thread;
+
+    if (! source_tid)
+        return tid;
+
+    if (NT_SUCCESS(PsLookupThreadByThreadId(
+            (HANDLE)(ULONG_PTR)source_tid, &thread))) {
+
+        if (PsGetThreadProcessId(thread) == proc->pid)
+            tid = (HANDLE)(ULONG_PTR)source_tid;
+
+        ObDereferenceObject(thread);
+    }
+
+    return tid;
+}
+
+
 _FX NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms)
 {
     API_MONITOR_PUT2_ARGS *args = (API_MONITOR_PUT2_ARGS *)parms;
@@ -786,6 +810,7 @@ _FX NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms)
     const WCHAR *type_name = NULL;
     NTSTATUS status;
     ULONG log_len;
+    HANDLE source_tid;
 
     if (! proc)
         return STATUS_NOT_IMPLEMENTED;
@@ -796,6 +821,8 @@ _FX NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms)
     log_type = args->log_type.val;
     if (!log_type)
         return STATUS_INVALID_PARAMETER;
+
+    source_tid = Session_GetMonitorSourceTid(proc, args->source_tid.val);
 
 	log_len = args->log_len.val / sizeof(WCHAR);
     if (!log_len)
@@ -811,7 +838,7 @@ _FX NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms)
     if (!args->check_object_exists.val64){ 
         const WCHAR* strings[3] = { args->is_message.val64 ? Driver_Empty : log_data, args->is_message.val64 ? log_data : NULL, NULL };
         ULONG lengths[3] = { args->is_message.val64 ? 0 : log_len, args->is_message.val64 ? log_len : 0, 0 };
-        Session_MonitorPutEx(log_type | MONITOR_USER, strings, lengths, proc->pid, PsGetCurrentThreadId());
+        Session_MonitorPutEx(log_type | MONITOR_USER, strings, lengths, proc->pid, source_tid);
         return STATUS_SUCCESS;
     }
 
@@ -968,12 +995,87 @@ _FX NTSTATUS Session_Api_MonitorPut2(PROCESS *proc, ULONG64 *parms)
         }*/
 
         const WCHAR* strings[4] = { name, L"", type_name, NULL };
-        Session_MonitorPutEx(log_type | MONITOR_USER, strings, NULL, proc->pid, PsGetCurrentThreadId());
+        Session_MonitorPutEx(log_type | MONITOR_USER, strings, NULL, proc->pid, source_tid);
     }
 
     Mem_Free(name, (max_buff + 4) * sizeof(WCHAR));
 
     return STATUS_SUCCESS;
+}
+
+
+//---------------------------------------------------------------------------
+// Session_Api_MonitorPutBatch
+//---------------------------------------------------------------------------
+
+
+_FX NTSTATUS Session_Api_MonitorPutBatch(PROCESS *proc, ULONG64 *parms)
+{
+    API_MONITOR_PUT_BATCH_ARGS *args = (API_MONITOR_PUT_BATCH_ARGS *)parms;
+    API_TRACE_BATCH_RECORD *records;
+    ULONG record_count;
+    ULONG buffer_len;
+    ULONG i;
+    NTSTATUS status;
+
+    if (! proc)
+        return STATUS_NOT_IMPLEMENTED;
+
+    if (! Session_MonitorCount || proc->disable_monitor)
+        return STATUS_SUCCESS;
+
+    record_count = args->record_count.val;
+    buffer_len = args->buffer_len.val;
+
+    if (! args->records.val || ! record_count ||
+            record_count > API_TRACE_BATCH_MAX_RECORDS)
+        return STATUS_INVALID_PARAMETER;
+
+    if (record_count > MAXULONG / sizeof(API_TRACE_BATCH_RECORD) ||
+            buffer_len != record_count * sizeof(API_TRACE_BATCH_RECORD))
+        return STATUS_INFO_LENGTH_MISMATCH;
+
+    records = Mem_Alloc(proc->pool, buffer_len);
+    if (! records)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    status = STATUS_SUCCESS;
+
+    __try {
+        ProbeForRead(args->records.val, buffer_len, sizeof(ULONG));
+        memcpy(records, args->records.val, buffer_len);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    if (NT_SUCCESS(status)) {
+
+        for (i = 0; i < record_count; ++i) {
+
+            if (! records[i].Type || ! records[i].NameLength ||
+                    records[i].NameLength >= API_TRACE_NAME_MAX) {
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+        }
+    }
+
+    if (NT_SUCCESS(status)) {
+
+        for (i = 0; i < record_count; ++i) {
+            const WCHAR *strings[3] = { records[i].Name, NULL, NULL };
+            ULONG lengths[3] = { records[i].NameLength, 0, 0 };
+            HANDLE source_tid = Session_GetMonitorSourceTid(
+                proc, records[i].ThreadId);
+
+            Session_MonitorPutEx(records[i].Type | MONITOR_USER,
+                strings, lengths, proc->pid, source_tid);
+        }
+    }
+
+    Mem_Free(records, buffer_len);
+
+    return status;
 }
 
 
