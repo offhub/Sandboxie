@@ -54,6 +54,7 @@
 #define FILE_HISTORY_BLOB_MISSING    1
 #define FILE_HISTORY_BLOB_MATCH      2
 #define FILE_HISTORY_BLOB_EXISTING   3
+#define FILE_HISTORY_BOX_ROOT        L"%BoxRoot%"
 
 
 //---------------------------------------------------------------------------
@@ -136,6 +137,8 @@ static _FX BOOLEAN File_HistoryQueryProcessCreationTime(
     HANDLE Process, ULONGLONG *CreationTime);
 static _FX WCHAR *File_HistoryGetMetadataField(
     const WCHAR *Text, const WCHAR *Name, BOOLEAN Unescape);
+static _FX WCHAR *File_HistoryGetCopyPathField(
+    const WCHAR *Text, const WCHAR *Name);
 static _FX WCHAR *File_HistorySetMetadataField(
     const WCHAR *Text, const WCHAR *Name, const WCHAR *Value);
 static _FX VOID File_HistoryUpdatePendingPaths(
@@ -390,6 +393,66 @@ static _FX WCHAR *File_HistoryEscapeDosPath(const WCHAR *NtPath)
 
     escaped = File_JournalEscapeField_internal(dos_path);
     Dll_Free(dos_path);
+    return escaped;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryEscapeCopyPath
+//---------------------------------------------------------------------------
+
+
+static _FX WCHAR *File_HistoryEscapeCopyPath(
+    const WCHAR *NtPath, BOOLEAN DosPath)
+{
+    WCHAR *path;
+    WCHAR *root;
+    WCHAR *portable = NULL;
+    WCHAR *escaped;
+    ULONG path_length = (ULONG)wcslen(NtPath);
+    ULONG root_length = (ULONG)wcslen(Dll_BoxFilePath);
+    ULONG placeholder_length = RTL_NUMBER_OF(FILE_HISTORY_BOX_ROOT) - 1;
+    ULONG length;
+
+    path = Dll_AllocTemp((path_length + 64) * sizeof(WCHAR));
+    root = Dll_AllocTemp((root_length + 64) * sizeof(WCHAR));
+    if (!path || !root) {
+        if (root)
+            Dll_Free(root);
+        if (path)
+            Dll_Free(path);
+        return NULL;
+    }
+
+    wcscpy(path, NtPath);
+    wcscpy(root, Dll_BoxFilePath);
+    if (DosPath &&
+            (!SbieDll_TranslateNtToDosPath(path) ||
+             !SbieDll_TranslateNtToDosPath(root))) {
+        path[0] = L'\0';
+    }
+
+    root_length = (ULONG)wcslen(root);
+    while (root_length && root[root_length - 1] == L'\\')
+        --root_length;
+
+    if (root_length &&
+            _wcsnicmp(path, root, root_length) == 0 &&
+            (path[root_length] == L'\0' || path[root_length] == L'\\')) {
+        length = placeholder_length +
+                 (ULONG)wcslen(path + root_length) + 1;
+        portable = Dll_AllocTemp(length * sizeof(WCHAR));
+        if (portable) {
+            Sbie_snwprintf(portable, length, L"%s%s",
+                FILE_HISTORY_BOX_ROOT, path + root_length);
+        }
+    }
+
+    escaped = File_JournalEscapeField_internal(portable ? portable : path);
+    if (portable)
+        Dll_Free(portable);
+    Dll_Free(root);
+    Dll_Free(path);
     return escaped;
 }
 
@@ -1577,8 +1640,8 @@ static _FX VOID File_HistoryTrackCreated(
     if (NT_SUCCESS(status)) {
         escaped_true = File_JournalEscapeField_internal(TruePath);
         escaped_dos = File_HistoryEscapeDosPath(TruePath);
-        escaped_copy = File_JournalEscapeField_internal(CopyPath);
-        escaped_copy_dos = File_HistoryEscapeDosPath(CopyPath);
+        escaped_copy = File_HistoryEscapeCopyPath(CopyPath, FALSE);
+        escaped_copy_dos = File_HistoryEscapeCopyPath(CopyPath, TRUE);
         escaped_image = File_JournalEscapeField_internal(Dll_ImageName);
         if (escaped_true && escaped_dos && escaped_copy &&
                 escaped_copy_dos && escaped_image) {
@@ -2529,8 +2592,8 @@ retry_capture:
 
         escaped_true = File_JournalEscapeField_internal(TruePath);
         escaped_dos = File_HistoryEscapeDosPath(TruePath);
-        escaped_copy = File_JournalEscapeField_internal(CopyPath);
-        escaped_copy_dos = File_HistoryEscapeDosPath(CopyPath);
+        escaped_copy = File_HistoryEscapeCopyPath(CopyPath, FALSE);
+        escaped_copy_dos = File_HistoryEscapeCopyPath(CopyPath, TRUE);
         escaped_image = File_JournalEscapeField_internal(Dll_ImageName);
         if (hash_valid)
             File_HistoryFormatHash(hash, hash_text);
@@ -2750,8 +2813,8 @@ static _FX BOOLEAN File_HistoryArmDelete(
             GetCurrentProcess(), &process_start);
         escaped_true = File_JournalEscapeField_internal(TruePath);
         escaped_dos = File_HistoryEscapeDosPath(TruePath);
-        escaped_copy = File_JournalEscapeField_internal(CopyPath);
-        escaped_copy_dos = File_HistoryEscapeDosPath(CopyPath);
+        escaped_copy = File_HistoryEscapeCopyPath(CopyPath, FALSE);
+        escaped_copy_dos = File_HistoryEscapeCopyPath(CopyPath, TRUE);
         escaped_image = File_JournalEscapeField_internal(Dll_ImageName);
         if (escaped_true && escaped_dos && escaped_copy &&
                 escaped_copy_dos && escaped_image) {
@@ -2972,8 +3035,8 @@ static _FX VOID File_HistoryRenameFile(
 
     escaped_new = File_JournalEscapeField_internal(NewTruePath);
     escaped_new_dos = File_HistoryEscapeDosPath(NewTruePath);
-    escaped_copy = File_JournalEscapeField_internal(NewCopyPath);
-    escaped_copy_dos = File_HistoryEscapeDosPath(NewCopyPath);
+    escaped_copy = File_HistoryEscapeCopyPath(NewCopyPath, FALSE);
+    escaped_copy_dos = File_HistoryEscapeCopyPath(NewCopyPath, TRUE);
     if (escaped_new && escaped_new_dos &&
             escaped_copy && escaped_copy_dos) {
         length = wcslen(artifact) + wcslen(escaped_new) +
@@ -3063,6 +3126,46 @@ static _FX WCHAR *File_HistoryGetMetadataField(
     }
 
     return NULL;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryGetCopyPathField
+//---------------------------------------------------------------------------
+
+
+static _FX WCHAR *File_HistoryGetCopyPathField(
+    const WCHAR *Text, const WCHAR *Name)
+{
+    WCHAR *value = File_HistoryGetMetadataField(Text, Name, TRUE);
+    ULONG placeholder_length = RTL_NUMBER_OF(FILE_HISTORY_BOX_ROOT) - 1;
+    ULONG root_length;
+    ULONG length;
+    WCHAR *expanded;
+
+    if (!value ||
+            _wcsnicmp(value, FILE_HISTORY_BOX_ROOT,
+                placeholder_length) != 0 ||
+            (value[placeholder_length] != L'\0' &&
+             value[placeholder_length] != L'\\')) {
+        return value;
+    }
+
+    root_length = (ULONG)wcslen(Dll_BoxFilePath);
+    while (root_length && Dll_BoxFilePath[root_length - 1] == L'\\')
+        --root_length;
+
+    length = root_length +
+             (ULONG)wcslen(value + placeholder_length) + 1;
+    expanded = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (expanded) {
+        Sbie_snwprintf(expanded, length, L"%.*s%s",
+            root_length, Dll_BoxFilePath,
+            value + placeholder_length);
+    }
+
+    Dll_Free(value);
+    return expanded;
 }
 
 
@@ -3235,8 +3338,8 @@ static _FX VOID File_HistoryUpdatePendingPaths(
 
     escaped_true = File_JournalEscapeField_internal(TruePath);
     escaped_dos = File_HistoryEscapeDosPath(TruePath);
-    escaped_copy = File_JournalEscapeField_internal(CopyPath);
-    escaped_copy_dos = File_HistoryEscapeDosPath(CopyPath);
+    escaped_copy = File_HistoryEscapeCopyPath(CopyPath, FALSE);
+    escaped_copy_dos = File_HistoryEscapeCopyPath(CopyPath, TRUE);
     if (!escaped_true || !escaped_dos ||
             !escaped_copy || !escaped_copy_dos)
         goto finish;
@@ -3413,7 +3516,7 @@ static _FX VOID File_HistoryRenameDirectory(
         old_true =
             File_HistoryGetMetadataField(text, L"path", TRUE);
         old_copy =
-            File_HistoryGetMetadataField(text, L"copy_path", TRUE);
+            File_HistoryGetCopyPathField(text, L"copy_path");
         if (!artifact || !File_HistoryValidArtifact(artifact) ||
                 !old_true ||
                 !File_HistoryIsDescendant(
@@ -3779,7 +3882,7 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
         goto finish;
 
     copy_path =
-        File_HistoryGetMetadataField(pending_text, L"copy_path", TRUE);
+        File_HistoryGetCopyPathField(pending_text, L"copy_path");
     pid_text =
         File_HistoryGetMetadataField(pending_text, L"pid", FALSE);
     if (!copy_path || !pid_text)
