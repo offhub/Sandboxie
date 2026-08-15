@@ -141,8 +141,25 @@ jobs:
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      - name: Cache Jom zip
-        uses: actions/cache@v6.1.0
+      - name: Restore jom cache
+        id: cache-jom
+        uses: actions/cache/restore@v6
+        with:
+          path: .jom_1_1_4.zip
+          key: jom-1.1.4-${{ runner.os }}
+          restore-keys: |
+            jom-1.1.4-
+            jom-
+      
+      - name: Download jom when cache miss
+        if: steps.cache-jom.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # download/create .jom_1_1_4.zip here
+      
+      - name: Save jom cache
+        if: steps.cache-jom.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
         with:
           path: .jom_1_1_4.zip
           key: jom-1.1.4-${{ runner.os }}
