@@ -294,6 +294,19 @@ namespace
                 FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
     }
 
+    bool AutoDeleteRemovesRegistryHistory(const WCHAR* boxName)
+    {
+        if (!SbieApi_QueryConfBool(boxName, L"AutoDelete", FALSE))
+            return false;
+
+        WCHAR mode[32] = {};
+        if (!NT_SUCCESS(SbieApi_QueryConf(boxName,
+                L"AutoDeleteHistoryMode", 0, mode, sizeof(mode))))
+            return false;
+        return _wcsicmp(mode, L"Both") == 0 ||
+            _wcsicmp(mode, L"Registry") == 0;
+    }
+
     void EnforceGenerationLimit(const WCHAR* boxName,
         const std::wstring& historyRoot)
     {
@@ -414,6 +427,8 @@ bool RegistryHistory_Prepare(const WCHAR* boxName, const WCHAR* rootPath,
 {
     capture = REGISTRY_HISTORY_CAPTURE();
     if (!SbieApi_QueryConfBool(boxName, L"RegistryHistory", FALSE))
+        return false;
+    if (AutoDeleteRemovesRegistryHistory(boxName))
         return false;
 
     std::wstring fileRoot;
