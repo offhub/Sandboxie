@@ -141,28 +141,35 @@ jobs:
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      - name: Restore jom cache
+      # 1) Restore cache
+      - name: Cache jom
         id: cache-jom
-        uses: actions/cache/restore@v6
+        uses: actions/cache@v6.1.0
         with:
           path: .jom_1_1_4.zip
           key: jom-1.1.4-${{ runner.os }}
           restore-keys: |
             jom-1.1.4-
             jom-
+          fail-on-cache-miss: false
       
-      - name: Download jom when cache miss
+      # 2) If cache miss, run existing install-jom cmd flow (must create .jom_1_1_4.zip)
+      - name: Install jom (existing script)
         if: steps.cache-jom.outputs.cache-hit != 'true'
-        shell: pwsh
+        shell: cmd
         run: |
-          # download/create .jom_1_1_4.zip here
+          call Installer\buildVariables.cmd
+          call Installer\install_jom.cmd
       
-      - name: Save jom cache
+      # 2b) Safety check so cache can be saved
+      - name: Verify jom archive
         if: steps.cache-jom.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .jom_1_1_4.zip
-          key: jom-1.1.4-${{ runner.os }}
+        shell: cmd
+        run: |
+          if not exist .jom_1_1_4.zip (
+            echo ERROR: .jom_1_1_4.zip not found after install_jom.cmd
+            exit /b 1
+          )
 
       - name: Installing Jom
       #  if: steps.cache-qt.outputs.cache-hit != 'true'
