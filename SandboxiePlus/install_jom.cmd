@@ -2,10 +2,13 @@
 setlocal
 
 rem Repository root
-for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+for %%I in ("%~dp0..") do set "REPO_ROOT=%%~fI"
 
-set "ZIP=%ROOT%\jom_1_1_4.zip"
-set "JOM_DIR=%ROOT%\Qt\Tools\QtCreator\bin"
+rem Qt is installed next to the repository
+for %%I in ("%~dp0..\..") do set "QT_ROOT=%%~fI"
+
+set "ZIP=%REPO_ROOT%\jom_1_1_4.zip"
+set "JOM_DIR=%QT_ROOT%\Qt\Tools\QtCreator\bin"
 set "JOM_EXE=%JOM_DIR%\jom.exe"
 
 if exist "%JOM_EXE%" goto done
