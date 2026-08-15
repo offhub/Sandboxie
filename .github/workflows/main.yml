@@ -141,35 +141,20 @@ jobs:
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      # 1) Restore cache
-      - name: Cache jom
+      # Jom cache restore (and post-job save on miss) - v6.1.0 as requested
+      - name: Cache jom archive
         id: cache-jom
         uses: actions/cache@v6.1.0
         with:
-          path: .jom_1_1_4.zip
+          path: jom_1_1_4.zip
           key: jom-1.1.4-${{ runner.os }}
           restore-keys: |
             jom-1.1.4-
             jom-
           fail-on-cache-miss: false
-      
-      # 2) If cache miss, run existing install-jom cmd flow (must create .jom_1_1_4.zip)
-      - name: Install jom (existing script)
-        if: steps.cache-jom.outputs.cache-hit != 'true'
+
+      - name: Installing Jom
         shell: cmd
-        run: |
-          call Installer\buildVariables.cmd
-          call Installer\install_jom.cmd
-      
-      # 2b) Safety check so cache can be saved
-      - name: Verify jom archive
-        if: steps.cache-jom.outputs.cache-hit != 'true'
-        shell: cmd
-        run: |
-          if not exist .jom_1_1_4.zip (
-            echo ERROR: .jom_1_1_4.zip not found after install_jom.cmd
-            exit /b 1
-          )
 
       - name: Installing Jom
       #  if: steps.cache-qt.outputs.cache-hit != 'true'
@@ -299,8 +284,20 @@ jobs:
           tools: 'tools_opensslv3_x64'
           cache: true
 
+      # Jom cache restore (and post-job save on miss) - v6.1.0 as requested
+      - name: Cache jom archive
+        id: cache-jom
+        uses: actions/cache@v6.1.0
+        with:
+          path: jom_1_1_4.zip
+          key: jom-1.1.4-${{ runner.os }}
+          restore-keys: |
+            jom-1.1.4-
+            jom-
+          fail-on-cache-miss: false
+
       - name: Installing Jom
-      #  if: steps.cache-qt.outputs.cache-hit != 'true'
+        shell: cmd
         run: SandboxiePlus\install_jom.cmd
 
     #
