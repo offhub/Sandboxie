@@ -31,6 +31,7 @@ HEADERS += ./stdafx.h \
     ./Helpers/MiniDumpFilter.h \
     ./Windows/RecoveryWindow.h \
     ./Windows/FileHistoryWindow.h \
+    ./Windows/HistoryWindowUtils.h \
     ./Windows/RegistryHistoryWindow.h \
     ./Windows/PopUpWindow.h \
     ./Windows/SnapshotsWindow.h \
