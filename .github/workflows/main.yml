@@ -142,7 +142,7 @@ jobs:
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      # Jom cache restore (and post-job save on miss) - v6.1.0 as requested
+      # Jom cache restore (and post-job save on miss)
       - name: Cache jom archive
         id: cache-jom
         uses: actions/cache@v6.1.0
@@ -280,7 +280,7 @@ jobs:
           tools: 'tools_opensslv3_x64'
           cache: true
 
-      # Jom cache restore (and post-job save on miss) - v6.1.0 as requested
+      # Jom cache restore (and post-job save on miss)
       - name: Cache jom archive
         id: cache-jom
         uses: actions/cache@v6.1.0
