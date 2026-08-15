@@ -37,6 +37,7 @@ on:
       - '**/INSTALL*'
       - '**/AUTHORS'
       - '**/COPYING'
+
   pull_request:
     branches: [master, experimental]
     paths-ignore:
@@ -84,7 +85,7 @@ env:
   #ghQtBuilds_user: xanasoft
   #ghQtBuilds_repo: qt-builds
   #ghQtBuilds_hash_x86: 502e9a36a52918af4e116cd74c16c6c260d029087aaeee3775ab0e5d3f6a2705
-  #ghQtBuilds_hash_x64: 673c288feeabd11ec66f9f454d49cde3945cbd3e3f71283b7a6c4df0893b19f2
+  #ghQtBuilds_hash_x64: 673c288feeabd11ec66f9f454b49cde3945cbd3e3f71283b7a6c4df0893b19f2
 
 jobs:
 
@@ -141,12 +142,6 @@ jobs:
       - name: Install Qt6 x64
         run: SandboxiePlus\install_qt.cmd x64
 
-      - name: Debug jom zip path
-        shell: cmd
-        run: |
-          dir "${{ github.workspace }}"
-          if exist "${{ github.workspace }}\jom_1_1_4.zip" (echo ZIP_FOUND) else (echo ZIP_MISSING & exit /b 1)
-
       # Jom cache restore (and post-job save on miss) - v6.1.0 as requested
       - name: Cache jom archive
         id: cache-jom
@@ -162,13 +157,6 @@ jobs:
       - name: Installing Jom
         shell: cmd
         run: SandboxiePlus\install_jom.cmd
-
-
-      - name: Debug jom zip path
-        shell: cmd
-        run: |
-          dir "${{ github.workspace }}"
-          if exist "${{ github.workspace }}\jom_1_1_4.zip" (echo ZIP_FOUND) else (echo ZIP_MISSING & exit /b 1)
 
     #
     # Compile Sandboxie Plus
@@ -228,8 +216,6 @@ jobs:
           retention-days: 60
 
 
-
-
   Build_ARM64_Qt6:
     runs-on: windows-2022
     timeout-minutes: 45
@@ -277,7 +263,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2022_64'
+          arch: 'win64_msvc2022_64'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           tools: 'tools_opensslv3_x64'
           cache: true
@@ -289,7 +275,7 @@ jobs:
           version: '${{ env.qt6_version }}'
       #    dir: ..
       #    arch:  ${{ matrix.qt-target }}
-          arch:  'win64_msvc2022_arm64_cross_compiled'
+          arch: 'win64_msvc2022_arm64_cross_compiled'
       #    tools: 'tools_qtcreator,4.14.0-0-202012170949,qt.tools.qtcreator'
           tools: 'tools_opensslv3_x64'
           cache: true
