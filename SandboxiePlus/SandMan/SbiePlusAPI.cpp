@@ -201,7 +201,10 @@ SB_PROGRESS CSandBoxPlus::CopyBoxEx(const QString& DestDir, bool IncludeFileHist
 	if (CSandBoxPlus_PathsOverlap(GetFileRoot(), DestDir))
 		return SB_ERR((ESbieMsgCodes)SBX_FailedCopyDir, QVariantList() << GetFileRoot() << DestDir);
 
-	if (!IsInitialized())
+	const bool HasSelectedHistory =
+		(IncludeFileHistory && HasFileHistory()) ||
+		(IncludeRegistryHistory && HasRegistryHistory());
+	if (!IsInitialized() && !HasSelectedHistory)
 		return SB_OK; // nothing to do
 
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
