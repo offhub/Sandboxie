@@ -142,7 +142,7 @@ jobs:
         run: SandboxiePlus\install_qt.cmd x64
 
       - name: Cache Jom zip
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: .jom_1_1_4.zip
           key: jom-1.1.4-${{ runner.os }}
