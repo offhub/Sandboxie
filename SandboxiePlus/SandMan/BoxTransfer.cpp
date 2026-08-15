@@ -700,17 +700,56 @@ static QString ExtractIniSection(const QString& iniContent, const QString& secti
 	return sectionContent;
 }
 
+static QString PrepareLegacyExtraction(QString fileName, const QString& path)
+{
+	fileName.replace("\\", "/");
+	fileName.remove(QRegularExpression("[:*?<>|\"]"));
+	if (fileName.left(1) == "/")
+		fileName.remove(0, 1);
+
+	QString subPath = path;
+	int pos = fileName.lastIndexOf("/");
+	if (pos != -1)
+		subPath += fileName.left(pos);
+	if (!QDir().exists(subPath))
+		QDir().mkpath(subPath);
+
+	return path + fileName;
+}
+
+static QString PrepareBoxExtraction(QString fileName, const QString& path, bool validatePath)
+{
+	return validatePath ? CArchive::PrepareExtraction(fileName, path) : PrepareLegacyExtraction(fileName, path);
+}
+
 static void ImportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QString& importPath, const QString& password,
 	const QMap<QString, QString>& boxNameMapping, const QMap<QString, QString>& boxRoots,
 	bool importGlobalConfig, const QStringList& boxesToUnmount)
 {
+	auto FinishImport = [pProgress, boxesToUnmount](const SB_STATUS& Status) {
+		if (!boxesToUnmount.isEmpty()) {
+			QMetaObject::invokeMethod(theGUI, [boxesToUnmount]() {
+				for (const QString& boxName : boxesToUnmount) {
+					CSandBoxPtr pBox = theAPI->GetBoxByName(boxName);
+					if (pBox) {
+						auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
+						if (pBoxEx)
+							pBoxEx->ImBoxUnmount();
+					}
+				}
+			}, Qt::QueuedConnection);
+		}
+		pProgress->Finish(Status);
+	};
+
 	CArchive Archive(importPath);
+	const bool validateArchivePaths = theConf->GetBool("Options/ValidateArchivePaths", true);
 
 	if (!password.isEmpty())
 		Archive.SetPassword(password);
 
 	if (Archive.Open() != ERR_7Z_OK) {
-		pProgress->Finish(SB_ERR((ESbieMsgCodes)SBX_7zOpenFailed));
+		FinishImport(SB_ERR((ESbieMsgCodes)SBX_7zOpenFailed));
 		return;
 	}
 
@@ -749,6 +788,58 @@ static void ImportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 		singleBoxRoot = boxRoots.value(singleBoxTargetName);
 	}
 
+	if (validateArchivePaths) {
+		QString unsafeArchivePath;
+		for (int i = 0; i < Archive.FileCount(); i++) {
+			int ArcIndex = Archive.FindByIndex(i);
+			if (Archive.FileProperty(ArcIndex, "IsDir").toBool())
+				continue;
+
+			QString FilePath = Archive.FileProperty(ArcIndex, "Path").toString();
+			FilePath.replace("\\", "/");
+			QString relativePath;
+			QString targetRoot;
+
+			if (FilePath == "GlobalConfig.ini" && importGlobalConfig)
+				continue;
+
+			if (isSingleBoxArchive && !singleBoxRoot.isEmpty()) {
+				if (FilePath == "BoxConfig.ini")
+					continue;
+				relativePath = FilePath;
+				targetRoot = singleBoxRoot;
+			} else {
+				int sep = FilePath.indexOf('/');
+				if (sep <= 0 && FilePath.endsWith(".ini", Qt::CaseInsensitive))
+					continue;
+				if (sep <= 0)
+					continue;
+
+				QString archiveBoxName = FilePath.left(sep);
+				if (!boxNameMapping.contains(archiveBoxName))
+					continue;
+
+				relativePath = FilePath.mid(sep + 1);
+				if (relativePath == "BoxConfig.ini")
+					continue;
+				targetRoot = boxRoots.value(boxNameMapping.value(archiveBoxName));
+				if (targetRoot.isEmpty())
+					continue;
+			}
+
+			if (CArchive::ResolveExtractionPath(relativePath, targetRoot + "\\").isEmpty()) {
+				unsafeArchivePath = FilePath;
+				break;
+			}
+		}
+
+		if (!unsafeArchivePath.isEmpty()) {
+			Archive.Close();
+			FinishImport(SB_ERR((ESbieMsgCodes)SBX_7zUnsafePath, QVariantList() << unsafeArchivePath));
+			return;
+		}
+	}
+
 	for (int i = 0; i < Archive.FileCount(); i++) {
 		int ArcIndex = Archive.FindByIndex(i);
 		if (Archive.FileProperty(ArcIndex, "IsDir").toBool())
@@ -780,7 +871,8 @@ static void ImportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 				Files.insert(ArcIndex, new QFileXProgress(TempPath, pProgress, &Archive));
 			} else {
 				// Regular file - extract to box root
-				Files.insert(ArcIndex, new QFileXProgress(CArchive::PrepareExtraction(FilePath, singleBoxRoot + "\\"), pProgress, &Archive));
+				Files.insert(ArcIndex, new QFileXProgress(PrepareBoxExtraction(FilePath,
+					singleBoxRoot + "\\", validateArchivePaths), pProgress, &Archive));
 			}
 		} else {
 			// Multi-box archive: check for new format (BoxName.ini) or old format (BoxName/...)
@@ -828,7 +920,8 @@ static void ImportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 				Files.insert(ArcIndex, new QFileXProgress(TempPath, pProgress, &Archive));
 			} else {
 				// Regular file - extract to box root
-				Files.insert(ArcIndex, new QFileXProgress(CArchive::PrepareExtraction(relPath, boxRoot + "\\"), pProgress, &Archive));
+				Files.insert(ArcIndex, new QFileXProgress(PrepareBoxExtraction(relPath,
+					boxRoot + "\\", validateArchivePaths), pProgress, &Archive));
 			}
 		}
 	}
@@ -896,21 +989,7 @@ static void ImportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 			QFile::remove(entry.TempPath);
 	}
 
-	// Unmount boxes that we mounted for this import
-	if (!boxesToUnmount.isEmpty()) {
-		QMetaObject::invokeMethod(theGUI, [boxesToUnmount]() {
-			for (const QString& boxName : boxesToUnmount) {
-				CSandBoxPtr pBox = theAPI->GetBoxByName(boxName);
-				if (pBox) {
-					auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
-					if (pBoxEx)
-						pBoxEx->ImBoxUnmount();
-				}
-			}
-		}, Qt::QueuedConnection);
-	}
-
-	pProgress->Finish(Status);
+	FinishImport(Status);
 }
 
 // Helper structure for scanning archive contents

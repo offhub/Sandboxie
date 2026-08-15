@@ -12,7 +12,9 @@ enum ESbieExMsgCodes
 	SBX_7zOpenFailed,
 	SBX_7zExtractFailed,
 	SBX_FailedCopyDir,
-	SBX_NotBoxArchive
+	SBX_NotBoxArchive,
+	SBX_7zUnsafePath,
+	SBX_7zUnsafeExportPath
 };
 
 class CSbiePlusAPI : public CSbieAPI

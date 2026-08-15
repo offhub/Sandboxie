@@ -161,13 +161,27 @@ bool CArchive::Extract(QString Path)
 	else if(Path.right(1) != "/")
 		Path.append("/");
 
-	QMap<int, QIODevice*> Files;
+	QMap<int, QString> ExtractionPaths;
 	foreach(const SFile& File, m_Files)
 	{
 		if(File.Properties["IsDir"].toBool())
 			continue;
 
-		Files.insert(File.ArcIndex, new QFile(PrepareExtraction(File.Properties["Path"].toString(), Path)));
+		QString FileName = File.Properties["Path"].toString();
+		QString ExtractionPath = ResolveExtractionPath(FileName, Path);
+		if(ExtractionPath.isEmpty())
+		{
+			LogError(QString("Unsafe archive path: %1").arg(FileName));
+			return false;
+		}
+		ExtractionPaths.insert(File.ArcIndex, ExtractionPath);
+	}
+
+	QMap<int, QIODevice*> Files;
+	for(auto I = ExtractionPaths.constBegin(); I != ExtractionPaths.constEnd(); ++I)
+	{
+		QDir().mkpath(QFileInfo(I.value()).path());
+		Files.insert(I.key(), new QFile(I.value()));
 	}
 
 	return Extract(&Files);
@@ -384,23 +398,55 @@ void CArchive::RemoveFile(int ArcIndex)
 		m_Files.remove(Index);
 }
 
+QString CArchive::ResolveExtractionPath(QString FileName, QString Path)
+{
+	if(FileName.contains(QChar('\0')))
+		return QString();
+
+	FileName = QDir::fromNativeSeparators(FileName);
+	if(QDir::isAbsolutePath(FileName) || FileName.startsWith("/") ||
+		QRegularExpression("^[A-Za-z]:").match(FileName).hasMatch())
+		return QString();
+
+	FileName.remove(QRegularExpression("[:*?<>|\"]"));
+	foreach(const QString& Part, FileName.split('/'))
+	{
+		QString Win32Part = Part;
+		while(!Win32Part.isEmpty() && (Win32Part.endsWith('.') || Win32Part.endsWith(' ')))
+			Win32Part.chop(1);
+		if(!Part.isEmpty() && Win32Part.isEmpty())
+			return QString();
+	}
+	FileName = QDir::cleanPath(FileName);
+	if(FileName.isEmpty() || FileName == "." || FileName == ".." || FileName.startsWith("../"))
+		return QString();
+
+	QString RootPath = QDir::cleanPath(QDir::fromNativeSeparators(Path));
+	if(RootPath.isEmpty())
+		return QString();
+
+	QString ExtractionPath = QDir::cleanPath(RootPath + "/" + FileName);
+	QString AbsoluteRoot = QDir::cleanPath(QDir(RootPath).absolutePath());
+	QString AbsoluteExtractionPath = QDir::cleanPath(QFileInfo(ExtractionPath).absoluteFilePath());
+	QString RootPrefix = AbsoluteRoot.endsWith("/") ? AbsoluteRoot : AbsoluteRoot + "/";
+	if(!AbsoluteExtractionPath.startsWith(RootPrefix, Qt::CaseInsensitive))
+		return QString();
+
+	return QDir::toNativeSeparators(ExtractionPath);
+}
+
 QString CArchive::PrepareExtraction(QString FileName, QString Path)
 {
-	// Cleanup
-	FileName.replace("\\","/");
-	FileName.remove(QRegularExpression("[:*?<>|\"]"));
-	if(FileName.left(1) == "/")
-		FileName.remove(0,1);
+	QString ExtractionPath = ResolveExtractionPath(FileName, Path);
+	if(ExtractionPath.isEmpty())
+		return QString();
 
 	// Create Sub Paths if needed
-	QString SubPath = Path;
-	int Pos = FileName.lastIndexOf("/");
-	if(Pos != -1)
-		SubPath += FileName.left(Pos);
+	QString SubPath = QFileInfo(ExtractionPath).path();
 	if(!QDir().exists(SubPath))
 		QDir().mkpath(SubPath);
 
-	return Path + FileName;
+	return ExtractionPath;
 }
 
 QString CArchive::GetNextPart(QString FileName)

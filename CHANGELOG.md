@@ -4,6 +4,13 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.19.0 / 5.74.0] - 2026-08-??
+
+### Fixed
+- hardened SandMan box archive import against path traversal and export against filesystem links escaping the sandbox root; `Options/ValidateArchivePaths=false` disables these checks
+
+
+
 ## [1.18.2 / 5.73.2] - 2026-08-??
 
 ### Added

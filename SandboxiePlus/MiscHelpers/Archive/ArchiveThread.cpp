@@ -188,14 +188,26 @@ void C7zWorker::OnExtractFiles(QStringList FileList)
 	if(!QDir().exists(m_WorkingPath))
 		QDir().mkpath(m_WorkingPath);
 
-	QMap<int, QIODevice*> Files;
+	QMap<int, QString> ExtractionPaths;
 	foreach(const QString& Name, FileList)
 	{
 		int ArcIndex = FindByPath(Name);
-		if(ArcIndex != -1)
-			Files.insert(ArcIndex, new QFile(PrepareExtraction(Name, m_WorkingPath)));
+		if(ArcIndex != -1) {
+			QString ExtractionPath = ResolveExtractionPath(Name, m_WorkingPath);
+			if(ExtractionPath.isEmpty()) {
+				m_Errors.append(QString("Unsafe archive path: %1").arg(Name));
+				return;
+			}
+			ExtractionPaths.insert(ArcIndex, ExtractionPath);
+		}
 		//else
 			//LogLine(LOG_DEBUG, tr("file %1 couldn't be find in archive %2").arg(Name, m_ArchivePath)); // should not happen
+	}
+
+	QMap<int, QIODevice*> Files;
+	for(auto I = ExtractionPaths.constBegin(); I != ExtractionPaths.constEnd(); ++I) {
+		QDir().mkpath(QFileInfo(I.value()).path());
+		Files.insert(I.key(), new QFile(I.value()));
 	}
 
 	if(!Extract(&Files))

@@ -4642,6 +4642,8 @@ QString CSandMan::FormatError(const SB_STATUS& Error)
 	case SBX_7zExtractFailed: Message = tr("Failed to unpack the box archive"); break;
 	case SBX_NotBoxArchive:	Message = tr("The selected 7z file is NOT a box archive"); break;
 	case SBX_FailedCopyDir: Message = tr("Failed to copy directory '%1' to '%2'"); break;
+	case SBX_7zUnsafePath: Message = tr("The archive contains an unsafe path: %1"); break;
+	case SBX_7zUnsafeExportPath: Message = tr("The sandbox contains an unsafe filesystem link or path: %1"); break;
 
 	default:				return tr("Unknown Error Status: 0x%1").arg((quint32)Error.GetStatus(), 8, 16, QChar('0'));
 	}

@@ -58,6 +58,7 @@ public:
 
 	void						SetPartList(const QStringList& Parts)	{m_AuxParts = Parts;}
 
+	static QString				ResolveExtractionPath(QString FileName, QString Path);
 	static QString				PrepareExtraction(QString FileName, QString Path);
 
 protected:
