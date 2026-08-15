@@ -1,31 +1,24 @@
 @echo off
 setlocal
 
-set "ROOT=%~dp0..\.."
-set "JOM_BIN=%ROOT%\Qt\Tools\QtCreator\bin\jom.exe"
-set "JOM_ZIP=%ROOT%\.jom_1_1_4.zip"
-set "JOM_URL=https://download.qt.io/official_releases/jom/jom_1_1_4.zip"
+set "ROOT=%~dp0..\..\"
+set "ZIP=%ROOT%jom_1_1_4.zip"
+set "JOM_EXE=%ROOT%Qt\Tools\QtCreator\bin\jom.exe"
 
-if exist "%JOM_BIN%" goto done
+if exist "%JOM_EXE%" goto done
 
-if not exist "%JOM_ZIP%" (
-    curl -LsS --fail -o "%JOM_ZIP%" "%JOM_URL%"
-    if ERRORLEVEL 1 goto failed
+if not exist "%ZIP%" (
+  curl -fL -o "%ZIP%" "https://download.qt.io/official_releases/jom/jom_1_1_4.zip" || exit /b 1
 )
 
-"C:\Program Files\7-Zip\7z.exe" x -aoa -o"%ROOT%\Qt\Tools\QtCreator\bin\" "%JOM_ZIP%"
-if ERRORLEVEL 1 goto failed
+if not exist "%ROOT%Qt\Tools\QtCreator\bin\" mkdir "%ROOT%Qt\Tools\QtCreator\bin" || exit /b 1
+"C:\Program Files\7-Zip\7z.exe" x -aoa -o"%ROOT%Qt\Tools\QtCreator\bin\" "%ZIP%" || exit /b 1
 
-if not exist "%JOM_BIN%" goto failed
+if not exist "%JOM_EXE%" (
+  echo ERROR: jom.exe missing after extraction
+  exit /b 1
+)
 
 :done
-
-REM dir %~dp0..\..\
-REM dir %~dp0..\..\Qt
-REM dir %~dp0..\..\Qt\Tools
-
-goto :eof
-
-:failed
-echo Failed to install jom.exe
-exit /b 1
+endlocal
+exit /b 0
