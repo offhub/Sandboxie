@@ -15,6 +15,8 @@ public:
 	QString GetFormat();
 	int GetLevel();
 	bool MakeSolid();
+	bool IncludeFileHistory() const;
+	bool IncludeRegistryHistory() const;
 
 	void SetMustEncrypt();
 	bool UseEncryption();

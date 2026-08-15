@@ -66,8 +66,11 @@ public:
 	virtual bool					IsEmpty() const;
 	virtual bool					IsInitialized() const;
 	virtual bool					HasSnapshots() const;
+	bool						HasFileHistory() const;
+	bool						HasRegistryHistory() const;
 	virtual SB_PROGRESS				CleanBox();
 	SB_PROGRESS						CleanFileHistory();
+	SB_PROGRESS						CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory);
 	virtual SB_STATUS				RenameBox(const QString& NewName);
 	virtual SB_STATUS				RemoveBox();
 
@@ -79,6 +82,7 @@ public:
 	virtual SB_PROGRESS				TakeSnapshot(const QString& Name);
 	virtual SB_PROGRESS				RemoveSnapshot(const QString& ID);
 	virtual SB_PROGRESS				SelectSnapshot(const QString& ID);
+	SB_PROGRESS						SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory);
 	virtual SB_STATUS				SetSnapshotInfo(const QString& ID, const QString& Name, const QString& Description = QString());
 
 	// Mount Manager
@@ -103,7 +107,9 @@ protected:
 	friend class CSbieAPI;
 
 	SB_PROGRESS						CleanBoxFolders(const QStringList& BoxFolders);
+	SB_PROGRESS						CleanBoxFoldersEx(const QStringList& BoxFolders, const QString& RemoveRoot);
 	static void						CleanBoxAsync(const CSbieProgressPtr& pProgress, const QStringList& BoxFolders);
+	static void						CleanBoxAsyncEx(const CSbieProgressPtr& pProgress, const QStringList& BoxFolders, const QString& RemoveRoot);
 
 	static void						DeleteSnapshotAsync(const CSbieProgressPtr& pProgress, const QString& BoxPath, const QString& ID);
 	static void						MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QString& BoxPath, const QString& TargetID, const QString& SourceID, const QPair<const QString, class CSbieAPI*>& params);

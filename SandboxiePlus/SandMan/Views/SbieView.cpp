@@ -9,6 +9,7 @@
 #include "../Windows/OptionsWindow.h"
 #include "../Windows/SnapshotsWindow.h"
 #include "../Windows/FileHistoryWindow.h"
+#include "../Windows/RegistryHistoryWindow.h"
 #include "../../MiscHelpers/Common/CheckableMessageBox.h"
 #include "../Windows/RecoveryWindow.h"
 #include "../Views/FileView.h"
@@ -23,9 +24,94 @@
 #include "../Windows/RenameSandboxDialog.h"
 #include "../BoxTransfer.h"
 
+#include <QTextDocument>
+
 #include "qt_windows.h"
 #include "qwindowdefs_win.h"
 #include <shellapi.h>
+
+static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
+	bool HasSnapshots, bool HasFileHistory, bool HasRegistryHistory,
+	SDeleteContentOptions& Options)
+{
+	QDialog Dialog(Parent);
+	Dialog.setWindowTitle("Sandboxie-Plus");
+	QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
+	QLabel* Label = new QLabel(Message, &Dialog);
+	Label->setTextFormat(Qt::RichText);
+	Label->setWordWrap(true);
+	Layout->addWidget(Label);
+
+	QCheckBox* DeleteSnapshots = new QCheckBox(CSbieView::tr("Delete all snapshots"), &Dialog);
+	DeleteSnapshots->setChecked(Options.DeleteSnapshots && HasSnapshots);
+	DeleteSnapshots->setVisible(HasSnapshots);
+	Layout->addWidget(DeleteSnapshots);
+	QCheckBox* DeleteFileHistory = new QCheckBox(CSbieView::tr("Delete retained file versions"), &Dialog);
+	DeleteFileHistory->setChecked(Options.DeleteFileHistory() && HasFileHistory);
+	DeleteFileHistory->setVisible(HasFileHistory);
+	Layout->addWidget(DeleteFileHistory);
+	QCheckBox* DeleteRegistryHistory = new QCheckBox(CSbieView::tr("Delete registry history"), &Dialog);
+	DeleteRegistryHistory->setChecked(Options.DeleteRegistryHistory() && HasRegistryHistory);
+	DeleteRegistryHistory->setVisible(HasRegistryHistory);
+	Layout->addWidget(DeleteRegistryHistory);
+
+	QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Yes | QDialogButtonBox::No, &Dialog);
+	QObject::connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
+	QObject::connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
+	Buttons->button(QDialogButtonBox::Yes)->setDefault(true);
+	Layout->addWidget(Buttons);
+
+	QTextDocument Document;
+	Document.setDefaultFont(Label->font());
+	Document.setHtml(Message);
+	const int MaximumMessageWidth = qRound(600 * Dialog.logicalDpiX() / 96.0);
+	Label->setMinimumWidth(qMin(MaximumMessageWidth, int(Document.idealWidth() + 0.5)));
+	Label->setMaximumWidth(MaximumMessageWidth);
+	Dialog.adjustSize();
+
+	if (theGUI->SafeExec(&Dialog) != QDialog::Accepted)
+		return false;
+
+	EDeleteHistoryMode HistoryMode = eDeleteHistoryNone;
+	if (DeleteFileHistory->isChecked() && DeleteRegistryHistory->isChecked())
+		HistoryMode = eDeleteHistoryBoth;
+	else if (DeleteFileHistory->isChecked())
+		HistoryMode = eDeleteHistoryFile;
+	else if (DeleteRegistryHistory->isChecked())
+		HistoryMode = eDeleteHistoryRegistry;
+	Options = SDeleteContentOptions(DeleteSnapshots->isChecked(), HistoryMode);
+	return true;
+}
+
+static bool SelectHistoryTransferOptions(QWidget* Parent, const QString& Title,
+	bool& IncludeFileHistory, bool& IncludeRegistryHistory)
+{
+	QDialog Dialog(Parent);
+	Dialog.setWindowTitle(Title);
+	QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
+	QCheckBox* FileHistory = new QCheckBox(CSbieView::tr("Include retained file versions"), &Dialog);
+	QCheckBox* RegistryHistory = new QCheckBox(CSbieView::tr("Include registry history"), &Dialog);
+	Layout->addWidget(FileHistory);
+	Layout->addWidget(RegistryHistory);
+	QLabel* Warning = new QLabel(CSbieView::tr(
+		"File History may use hard links to share data in the source sandbox. "
+		"Duplication copies each history path as an individual file, so the destination may require substantially more storage."), &Dialog);
+	Warning->setWordWrap(true);
+	Warning->setVisible(false);
+	Warning->setStyleSheet("QLabel { color: #c06000; }");
+	Layout->addWidget(Warning);
+	QObject::connect(FileHistory, &QCheckBox::toggled, Warning, &QWidget::setVisible);
+
+	QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &Dialog);
+	QObject::connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
+	QObject::connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
+	Layout->addWidget(Buttons);
+	if (theGUI->SafeExec(&Dialog) != QDialog::Accepted)
+		return false;
+	IncludeFileHistory = FileHistory->isChecked();
+	IncludeRegistryHistory = RegistryHistory->isChecked();
+	return true;
+}
 
 CSbieView::CSbieView(QWidget* parent) : CPanelView(parent)
 {
@@ -264,6 +350,7 @@ void CSbieView::CreateMenu()
 	
 	m_pMenuTools = m_pMenuBox->addMenu(CSandMan::GetIcon("Maintenance"), tr("Sandbox Tools"));
 		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
+		m_pMenuRegistryHistory = m_pMenuTools->addAction(CSandMan::GetIcon("RegEdit"), tr("Registry History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
@@ -403,6 +490,7 @@ void CSbieView::CreateOldMenu()
 		m_pMenuSnapshots = m_pMenuTools->addAction(CSandMan::GetIcon("Snapshots"), tr("Snapshots Manager"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
 		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
+		m_pMenuRegistryHistory = m_pMenuTools->addAction(CSandMan::GetIcon("RegEdit"), tr("Registry History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
@@ -732,6 +820,7 @@ bool CSbieView::UpdateMenu(bool bAdvanced, const CSandBoxPtr &pBox, int iSandBox
 	//m_pMenuTools->setEnabled(iSandBoxeCount == 1)
 	m_pMenuBrowseNT->setEnabled(iSandBoxeCount == 1);
 	m_pMenuHistory->setEnabled(iSandBoxeCount == 1);
+	m_pMenuRegistryHistory->setEnabled(iSandBoxeCount == 1);
 	m_pMenuCompactDeleteV3->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicate->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicateEx->setEnabled(iSandBoxeCount == 1);
@@ -1574,6 +1663,27 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			SetForegroundWindow((HWND)pHistoryWindow->winId());
 		}
 	}
+	else if (Action == m_pMenuRegistryHistory)
+	{
+		CSandBoxPtr pBox = SandBoxes.first();
+
+		static QMap<void*, CRegistryHistoryWindow*> HistoryWindows;
+		CRegistryHistoryWindow* pHistoryWindow = HistoryWindows.value(pBox.data());
+		if (pHistoryWindow == NULL) {
+			pHistoryWindow = new CRegistryHistoryWindow(pBox);
+			connect(theGUI, SIGNAL(Closed()), pHistoryWindow, SLOT(close()));
+			HistoryWindows.insert(pBox.data(), pHistoryWindow);
+			connect(pHistoryWindow, &CRegistryHistoryWindow::Closed, [pBox]() {
+				HistoryWindows.remove(pBox.data());
+			});
+			CSandMan::SafeShow(pHistoryWindow);
+		}
+		else {
+			pHistoryWindow->setWindowState(
+				(pHistoryWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+			SetForegroundWindow((HWND)pHistoryWindow->winId());
+		}
+	}
 	else if (Action == m_pMenuCompactDeleteV3)
 		Results.append(theGUI->RunStart(SandBoxes.first()->GetName(), "compact_delete_v3"));
 	else if (Action == m_pMenuRefresh)
@@ -1651,23 +1761,7 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 	}
 	else if (Action == m_pMenuSnapshots)
 	{
-		CSandBoxPtr pBox = SandBoxes.first();
-
-		static QMap<void*, CSnapshotsWindow*> SnapshotWindows;
-		CSnapshotsWindow* pSnapshotsWindow = SnapshotWindows.value(pBox.data());
-		if (pSnapshotsWindow == NULL) {
-			pSnapshotsWindow = new CSnapshotsWindow(SandBoxes.first(), this);
-			connect(theGUI, SIGNAL(Closed()), pSnapshotsWindow, SLOT(close()));
-			SnapshotWindows.insert(pBox.data(), pSnapshotsWindow);
-			connect(pSnapshotsWindow, &CSnapshotsWindow::Closed, [this, pBox]() {
-				SnapshotWindows.remove(pBox.data());
-			});
-			CSandMan::SafeShow(pSnapshotsWindow);
-		}
-		else {
-			pSnapshotsWindow->setWindowState((pSnapshotsWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
-			SetForegroundWindow((HWND)pSnapshotsWindow->winId());
-		}
+		ShowSnapshots(SandBoxes.first());
 	}
 	else if (Action == m_pMenuDuplicate || Action == m_pMenuDuplicateEx)
 	{
@@ -1683,6 +1777,11 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			return;
 		
 		QString Name = Value.replace(" ", "_");
+		bool IncludeFileHistory = false;
+		bool IncludeRegistryHistory = false;
+		if (Action == m_pMenuDuplicateEx && !SelectHistoryTransferOptions(this,
+			tr("Duplicate Sandbox with Content"), IncludeFileHistory, IncludeRegistryHistory))
+			return;
 		SB_STATUS Status = theAPI->CreateBox(Name, false);
 		
 		if (!Status.IsError())
@@ -1715,7 +1814,8 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			auto pSrcBoxEx = pSrcBox.objectCast<CSandBoxPlus>();
 			if (!pSrcBoxEx)
 				Status = SB_ERR(SB_FailedCopyConf, QVariantList() << SandBoxes.first()->GetName() << tr("Not Created"));
-			SB_PROGRESS Progress = pSrcBoxEx ? pSrcBoxEx->CopyBox(pDestBox->GetFileRoot()) : SB_PROGRESS(Status);
+			SB_PROGRESS Progress = pSrcBoxEx ? pSrcBoxEx->CopyBoxEx(pDestBox->GetFileRoot(),
+				IncludeFileHistory, IncludeRegistryHistory) : SB_PROGRESS(Status);
 
 			if (Progress.GetStatus() == OP_ASYNC)
 				Status = theGUI->AddAsyncOp(Progress.GetValue(), false, tr("Copying: %1").arg(Value));
@@ -1866,7 +1966,7 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 	}
 	else if (Action == m_pMenuCleanUp)
 	{
-		bool DeleteSnapshots = false;
+		SDeleteContentOptions Options(false, eDeleteHistoryNone);
 
 		if (SandBoxes.count() == 1)
 		{
@@ -1878,7 +1978,7 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			if (theConf->GetBool("Options/ShowRecovery", false))
 			{
 				// Use recovery dialog in place of the confirmation messagebox for box clean up
-				if(!theGUI->OpenRecovery(SandBoxes.first(), DeleteSnapshots))
+				if(!theGUI->OpenRecovery(SandBoxes.first(), Options))
 					return;
 			}
 			else
@@ -1886,14 +1986,10 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 				QString message = tr("Do you want to delete the content of the following sandbox?<br /><br />%1")
 					.arg(RenderSandboxNameList_(SandBoxes));
 				
-				if (SandBoxes.first()->HasSnapshots()) {
-					if (CCheckableMessageBox::question(this, "Sandboxie-Plus", message
-						, tr("Also delete all Snapshots"), &DeleteSnapshots, QDialogButtonBox::Yes | QDialogButtonBox::No, QDialogButtonBox::Yes) != QDialogButtonBox::Yes)
-						return;
-				} else {
-					if (QMessageBox::question(this, "Sandboxie-Plus", message , QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
-						return;
-				}
+				if (!ConfirmDeleteContent(this, message,
+					SandBoxes.first()->HasSnapshots(), SandBoxes.first()->HasFileHistory(),
+					SandBoxes.first()->HasRegistryHistory(), Options))
+					return;
 			}
 		}
 		else
@@ -1901,27 +1997,23 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			QString message = tr("Do you really want to delete the content of the following sandboxes?<br /><br />%1")
 					.arg(RenderSandboxNameList_(SandBoxes));
 
-			bool HashSnapshots = false;
+			bool HasSnapshots = false;
+			bool HasFileHistory = false;
+			bool HasRegistryHistory = false;
 			foreach(const CSandBoxPtr& pBox, SandBoxes) {
-				if (pBox->HasSnapshots()) {
-					HashSnapshots = true;
-					break;
-				}
+				HasSnapshots |= pBox->HasSnapshots();
+				HasFileHistory |= pBox->HasFileHistory();
+				HasRegistryHistory |= pBox->HasRegistryHistory();
 			}
 
-			if (HashSnapshots) {
-				if (CCheckableMessageBox::question(this, "Sandboxie-Plus", message
-					, tr("Also delete all Snapshots"), &DeleteSnapshots, QDialogButtonBox::Yes | QDialogButtonBox::No, QDialogButtonBox::Yes) != QDialogButtonBox::Yes)
-					return;
-			} else {
-				if (QMessageBox::question(this, "Sandboxie-Plus", message , QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
-					return;
-			}
+			if (!ConfirmDeleteContent(this, message, HasSnapshots,
+				HasFileHistory, HasRegistryHistory, Options))
+				return;
 		}
 
 		foreach(const CSandBoxPtr& pBox, SandBoxes)
 		{
-			SB_STATUS Status = theGUI->DeleteBoxContent(pBox, CSandMan::eCleanUp, DeleteSnapshots);
+			SB_STATUS Status = theGUI->DeleteBoxContent(pBox, CSandMan::eCleanUp, Options);
 			if (Status.GetMsgCode() == SB_Canceled)
 				break;
 			Results.append(Status);
@@ -2772,6 +2864,29 @@ void CSbieView::ChangeExpand(const QModelIndex& index, bool bExpand)
 
 	QString Collapsed = SetToList(m_Collapsed).join(",");
 	theConf->SetValue("UIConfig/BoxCollapsedView", Collapsed);
+}
+
+void CSbieView::ShowSnapshots(const CSandBoxPtr& pBox)
+{
+	if (pBox.isNull())
+		return;
+
+	static QMap<void*, CSnapshotsWindow*> SnapshotWindows;
+	CSnapshotsWindow* pSnapshotsWindow = SnapshotWindows.value(pBox.data());
+	if (pSnapshotsWindow == NULL) {
+		pSnapshotsWindow = new CSnapshotsWindow(pBox, this);
+		connect(theGUI, SIGNAL(Closed()), pSnapshotsWindow, SLOT(close()));
+		SnapshotWindows.insert(pBox.data(), pSnapshotsWindow);
+		connect(pSnapshotsWindow, &CSnapshotsWindow::Closed, [pBox]() {
+			SnapshotWindows.remove(pBox.data());
+		});
+		CSandMan::SafeShow(pSnapshotsWindow);
+	}
+	else {
+		pSnapshotsWindow->Refresh();
+		pSnapshotsWindow->setWindowState((pSnapshotsWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+		SetForegroundWindow((HWND)pSnapshotsWindow->winId());
+	}
 }
 
 void CSbieView::UpdateColapsed()

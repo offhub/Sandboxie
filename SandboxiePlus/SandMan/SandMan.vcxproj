@@ -504,6 +504,7 @@
     <ClCompile Include="Windows\PopUpWindow.cpp" />
     <ClCompile Include="Windows\RecoveryWindow.cpp" />
     <ClCompile Include="Windows\FileHistoryWindow.cpp" />
+    <ClCompile Include="Windows\RegistryHistoryWindow.cpp" />
     <ClCompile Include="Windows\SelectBoxWindow.cpp" />
     <ClCompile Include="Windows\SettingsWindow.cpp" />
     <ClCompile Include="Windows\SnapshotsWindow.cpp" />
@@ -534,6 +535,7 @@
 
     <QtMoc Include="Windows\RecoveryWindow.h" />
     <QtMoc Include="Windows\FileHistoryWindow.h" />
+    <QtMoc Include="Windows\RegistryHistoryWindow.h" />
     <QtMoc Include="Windows\PopUpWindow.h" />
     <QtMoc Include="Windows\SnapshotsWindow.h" />
     <QtMoc Include="Windows\SettingsWindow.h" />
@@ -544,6 +546,7 @@
     <QtMoc Include="Models\SbieModel.h" />
     <QtMoc Include="Models\TraceModel.h" />
     <QtMoc Include="BoxJob.h" />
+    <ClInclude Include="DeleteContentOptions.h" />
     <ClInclude Include="..\version.h" />
     <QtMoc Include="BoxMonitor.h" />
     <QtMoc Include="Engine\BoxEngine.h" />

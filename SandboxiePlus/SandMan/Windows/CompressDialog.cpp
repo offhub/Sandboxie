@@ -34,6 +34,8 @@ CCompressDialog::CCompressDialog(QWidget *parent)
 	ui.cmbCompression->addItem(tr("Maximum"), 7);
 	ui.cmbCompression->addItem(tr("Ultra"), 9);
 	ui.cmbCompression->setCurrentIndex(ui.cmbCompression->findData(theConf->GetInt("Options/ExportCompression", 3)));
+	connect(ui.chkFileHistory, &QCheckBox::toggled, ui.lblHistoryWarning, &QWidget::setVisible);
+	ui.lblHistoryWarning->setStyleSheet("QLabel { color: #c06000; }");
 
 	connect(ui.buttonBox, SIGNAL(accepted()), SLOT(accept()));
 	connect(ui.buttonBox, SIGNAL(rejected()), SLOT(reject()));
@@ -65,6 +67,16 @@ int CCompressDialog::GetLevel()
 bool CCompressDialog::MakeSolid()
 {
 	return ui.chkSolid->isChecked();
+}
+
+bool CCompressDialog::IncludeFileHistory() const
+{
+	return ui.chkFileHistory->isChecked();
+}
+
+bool CCompressDialog::IncludeRegistryHistory() const
+{
+	return ui.chkRegistryHistory->isChecked();
 }
 
 void CCompressDialog::SetMustEncrypt()

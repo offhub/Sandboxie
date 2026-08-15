@@ -90,6 +90,9 @@
     <ClCompile Include="Windows\FileHistoryWindow.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\RegistryHistoryWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Helpers\FindTool.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -350,6 +353,9 @@
     <QtMoc Include="Windows\FileHistoryWindow.h">
       <Filter>Windows</Filter>
     </QtMoc>
+    <QtMoc Include="Windows\RegistryHistoryWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
     <QtMoc Include="Models\TraceModel.h">
       <Filter>Models</Filter>
     </QtMoc>
@@ -363,6 +369,9 @@
     <QtMoc Include="BoxJob.h">
       <Filter>SandMan</Filter>
     </QtMoc>
+    <ClInclude Include="DeleteContentOptions.h">
+      <Filter>SandMan</Filter>
+    </ClInclude>
     <QtMoc Include="SbieProcess.h">
       <Filter>SandMan</Filter>
     </QtMoc>

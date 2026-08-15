@@ -130,41 +130,83 @@ CSandBoxPlus::~CSandBoxPlus()
 {
 }
 
-SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QString& SourcePath, const QString& DestinationPath)
+struct SCopyHistoryOptions
 {
-	SNtObject src_dir(L"\\??\\" + SourcePath.toStdWString());
-	SNtObject dest_dir(L"\\??\\" + DestinationPath.toStdWString());
+	bool IncludeFileHistory;
+	bool IncludeRegistryHistory;
+};
+
+SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QString& SourcePath, const QString& DestinationPath,
+	bool IncludeFileHistory, bool IncludeRegistryHistory)
+{
+	SCopyHistoryOptions Options = { IncludeFileHistory, IncludeRegistryHistory };
+	const QString NativeSourcePath = QDir::toNativeSeparators(SourcePath);
+	const QString NativeDestinationPath = QDir::toNativeSeparators(DestinationPath);
+	SNtObject src_dir(L"\\??\\" + NativeSourcePath.toStdWString());
+	SNtObject dest_dir(L"\\??\\" + NativeDestinationPath.toStdWString());
 	NTSTATUS status = NtIo_CopyFolderEx(&src_dir.attr, &dest_dir.attr, [](const WCHAR* info, void* param) {
 		CSbieProgress* pProgress = (CSbieProgress*)param;
 		pProgress->ShowMessage(CSandBox::tr("Copying folder: %1").arg(QString::fromWCharArray(info)));
 		return !pProgress->IsCanceled();
 	}, pProgress.data(), [](const WCHAR* name, ULONG attributes, ULONG depth, void* param) {
 		Q_UNUSED(attributes);
-		Q_UNUSED(param);
-		return depth != 0 || _wcsicmp(name, L"FileHistory") != 0;
-	}, NULL);
+		SCopyHistoryOptions* Options = (SCopyHistoryOptions*)param;
+		return depth != 0 ||
+			((Options->IncludeFileHistory || _wcsicmp(name, L"FileHistory") != 0) &&
+			(Options->IncludeRegistryHistory || _wcsicmp(name, L"RegistryHistory") != 0));
+	}, &Options);
 	if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_NOT_FOUND && status != STATUS_OBJECT_PATH_NOT_FOUND)
 		return SB_ERR((ESbieMsgCodes)SBX_FailedCopyDir, QVariantList() << SourcePath << DestinationPath, status);
 	return SB_OK;
 }
 
-void CSandBoxPlus::CopyBoxAsync(const CSbieProgressPtr& pProgress, const QString& SrcDir, const QString& DestDir)
+void CSandBoxPlus::CopyBoxAsync(const CSbieProgressPtr& pProgress, const QString& SrcDir, const QString& DestDir,
+	bool IncludeFileHistory, bool IncludeRegistryHistory)
 {
-	SB_STATUS Status = CSandBoxPlus_CopyFolder(pProgress, SrcDir, DestDir);
+	SB_STATUS Status = CSandBoxPlus_CopyFolder(pProgress, SrcDir, DestDir, IncludeFileHistory, IncludeRegistryHistory);
 
 	pProgress->Finish(Status);
 }
 
 SB_PROGRESS CSandBoxPlus::CopyBox(const QString& DestDir)
 {
+	return CopyBoxEx(DestDir, false, false);
+}
+
+static bool CSandBoxPlus_PathsOverlap(const QString& FirstPath, const QString& SecondPath)
+{
+	auto NormalizePath = [](const QString& Path) {
+		QString Normalized = QDir::cleanPath(QDir::fromNativeSeparators(Path));
+		QString Canonical = QFileInfo(Normalized).canonicalFilePath();
+		if (!Canonical.isEmpty())
+			Normalized = QDir::cleanPath(QDir::fromNativeSeparators(Canonical));
+		return Normalized.toCaseFolded();
+	};
+	QString First = NormalizePath(FirstPath);
+	QString Second = NormalizePath(SecondPath);
+	auto IsSameOrChild = [](const QString& Path, const QString& Parent) {
+		if (Path == Parent)
+			return true;
+		return Path.startsWith(Parent.endsWith('/') ? Parent : Parent + '/');
+	};
+	return IsSameOrChild(First, Second) || IsSameOrChild(Second, First);
+}
+
+SB_PROGRESS CSandBoxPlus::CopyBoxEx(const QString& DestDir, bool IncludeFileHistory, bool IncludeRegistryHistory)
+{
 	if (theAPI->HasProcesses(m_Name))
 		return SB_ERR(SB_SnapIsRunning); // todo
+	if (GetFileRoot().isEmpty() || DestDir.isEmpty())
+		return SB_ERR(SB_PathFail);
+	if (CSandBoxPlus_PathsOverlap(GetFileRoot(), DestDir))
+		return SB_ERR((ESbieMsgCodes)SBX_FailedCopyDir, QVariantList() << GetFileRoot() << DestDir);
 
 	if (!IsInitialized())
 		return SB_OK; // nothing to do
 
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
-	QtConcurrent::run(CSandBoxPlus::CopyBoxAsync, pProgress, GetFileRoot(), DestDir);
+	QtConcurrent::run(CSandBoxPlus::CopyBoxAsync, pProgress, GetFileRoot(), DestDir,
+		IncludeFileHistory, IncludeRegistryHistory);
 	return SB_PROGRESS(OP_ASYNC, pProgress);
 }
 
@@ -915,7 +957,7 @@ int	CSandBoxPlus::IsLeaderProgram(const QString& ProgName)
 	return FindInStrList(Programs, ProgName) != Programs.end() ? 1 : 0; 
 }
 
-SB_STATUS CSandBoxPlus::DeleteContentAsync(bool DeleteSnapshots, bool bOnAutoDelete)
+SB_STATUS CSandBoxPlus::DeleteContentAsync(const SDeleteContentOptions& Options, bool UseCurrentSnapshot)
 {
 	if (GetBool("NeverDelete", false))
 		return SB_ERR(SB_DeleteProtect);
@@ -930,7 +972,7 @@ SB_STATUS CSandBoxPlus::DeleteContentAsync(bool DeleteSnapshots, bool bOnAutoDel
 		AddJobToQueue(pJob);
 	}
 
-	CBoxJob* pJob = new CCleanUpJob(this, DeleteSnapshots, bOnAutoDelete);
+	CBoxJob* pJob = new CCleanUpJob(this, Options, UseCurrentSnapshot);
 	AddJobToQueue(pJob);
 
 	return SB_OK;

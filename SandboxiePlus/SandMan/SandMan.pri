@@ -8,6 +8,7 @@ HEADERS += ./stdafx.h \
     ./SbiePlusAPI.h \
     ./SbieProcess.h \
     ./BoxJob.h \
+    ./DeleteContentOptions.h \
     ./BoxMonitor.h \
     ./Models/SbieModel.h \
     ./Models/TraceModel.h \
@@ -30,6 +31,7 @@ HEADERS += ./stdafx.h \
     ./Helpers/MiniDumpFilter.h \
     ./Windows/RecoveryWindow.h \
     ./Windows/FileHistoryWindow.h \
+    ./Windows/RegistryHistoryWindow.h \
     ./Windows/PopUpWindow.h \
     ./Windows/SnapshotsWindow.h \
     ./Windows/SettingsWindow.h \
@@ -94,6 +96,7 @@ SOURCES += ./main.cpp \
     ./Windows/PopUpWindow.cpp \
     ./Windows/RecoveryWindow.cpp \
     ./Windows/FileHistoryWindow.cpp \
+    ./Windows/RegistryHistoryWindow.cpp \
     ./Windows/SettingsWindow.cpp \
     ./Windows/SnapshotsWindow.cpp \
     ./Windows/SelectBoxWindow.cpp \

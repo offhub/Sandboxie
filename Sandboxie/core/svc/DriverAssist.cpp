@@ -36,6 +36,7 @@
 #include "core/drv/api_defs.h"
 #include "sbieiniserver.h"
 #include "MountManager.h"
+#include "RegistryHistory.h"
 #include "GuiWire.h"
 #include "GuiServer.h"
 
@@ -70,10 +71,12 @@ DriverAssist::DriverAssist()
 
     InitializeCriticalSection(&m_LogMessage_CritSec);
     InitializeCriticalSection(&m_critSecHostInjectedSvcs);
+    RegistryHistory_Initialize();
 }
 
 DriverAssist::~DriverAssist()
 {
+	RegistryHistory_Shutdown();
 	DeleteCriticalSection(&m_LogMessage_CritSec);
 	DeleteCriticalSection(&m_critSecHostInjectedSvcs);
 }
@@ -692,6 +695,8 @@ void DriverAssist::HiveMounted(void *_msg)
         goto finish;
     }
 
+    RegistryHistory_RememberPath(file_root_path, reg_root_path);
+
     //
     // lock box root if present
     //
@@ -807,10 +812,13 @@ void DriverAssist::UnmountHive(void *_msg)
         UNICODE_STRING root_uni;
         OBJECT_ATTRIBUTES root_objattrs;
         HANDLE root_key;
+        REGISTRY_HISTORY_CAPTURE historyCapture;
 
         SbieApi_GetUnmountHive(root_path);
         if (! root_path[0])
             break;
+
+        RegistryHistory_Prepare(msg->boxname, root_path, historyCapture);
 
         RtlInitUnicodeString(&root_uni, root_path);
         InitializeObjectAttributes(&root_objattrs,
@@ -834,11 +842,17 @@ void DriverAssist::UnmountHive(void *_msg)
 
         if (rc == 0) {
 
+            RegistryHistory_Commit(msg->boxname, historyCapture);
+
             //
             // unmount box container if present
             //
 
             MountManager::GetInstance()->ReleaseBoxRoot(root_path, false, msg->session_id);
+            RegistryHistory_ForgetPath(root_path);
+        }
+        else {
+            RegistryHistory_Discard(historyCapture);
         }
 
         if (rc != 0)

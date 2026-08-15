@@ -2480,11 +2480,45 @@ void CSandMan::OnBoxSelected()
 	}
 }
 
-SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, bool DeleteSnapshots)
+static EDeleteHistoryMode ParseDeleteHistoryMode(const QString& Value)
+{
+	if (Value.compare("None", Qt::CaseInsensitive) == 0)
+		return eDeleteHistoryNone;
+	if (Value.compare("Both", Qt::CaseInsensitive) == 0)
+		return eDeleteHistoryBoth;
+	if (Value.compare("File", Qt::CaseInsensitive) == 0)
+		return eDeleteHistoryFile;
+	if (Value.compare("Registry", Qt::CaseInsensitive) == 0)
+		return eDeleteHistoryRegistry;
+	return eDeleteHistoryLegacy;
+}
+
+SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, const SDeleteContentOptions& Options)
 {
 	SB_STATUS Ret = SB_OK;
 	auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
+	SDeleteContentOptions EffectiveOptions = Options;
+	if (Mode == eForDelete) {
+		EffectiveOptions.DeleteSnapshots = true;
+		EffectiveOptions.HistoryMode = eDeleteHistoryBoth;
+	}
+	else if (EffectiveOptions.HistoryMode == eDeleteHistoryLegacy) {
+		EffectiveOptions.HistoryMode = !EffectiveOptions.DeleteSnapshots && pBox->HasSnapshots()
+			? eDeleteHistoryNone : eDeleteHistoryBoth;
+	}
+	const bool DeleteFileHistory = EffectiveOptions.DeleteFileHistory() || !pBox->HasFileHistory();
+	const bool DeleteRegistryHistory = EffectiveOptions.DeleteRegistryHistory() || !pBox->HasRegistryHistory();
+	EffectiveOptions.HistoryMode = DeleteFileHistory
+		? (DeleteRegistryHistory ? eDeleteHistoryBoth : eDeleteHistoryFile)
+		: (DeleteRegistryHistory ? eDeleteHistoryRegistry : eDeleteHistoryNone);
 	m_DeletingBoxes.insert(pBox->GetName());
+	const bool UseAsyncDelete = theConf->GetBool("Options/UseAsyncBoxOps", false) || theGUI->IsSilentMode();
+	QString AutoDeleteSnapshotTarget = pBox->GetText("AutoDeleteSnapshotTarget", QString(), true, true, true);
+	if (AutoDeleteSnapshotTarget.compare("Current", Qt::CaseInsensitive) != 0
+	 && AutoDeleteSnapshotTarget.compare("Default", Qt::CaseInsensitive) != 0)
+		AutoDeleteSnapshotTarget = UseAsyncDelete ? "Default" : "Current";
+	const bool UseCurrentSnapshot = Mode == eAuto
+		&& AutoDeleteSnapshotTarget.compare("Current", Qt::CaseInsensitive) == 0;
 
 	if (Mode != eAuto) {
 		Ret = pBox->TerminateAll();
@@ -2523,8 +2557,8 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, boo
 		// schedule async OnBoxDelete triggers and clean up
 		//
 
-		if (theConf->GetBool("Options/UseAsyncBoxOps", false) || theGUI->IsSilentMode()) {
-			Ret = pBoxEx->DeleteContentAsync(DeleteSnapshots);
+		if (UseAsyncDelete) {
+			Ret = pBoxEx->DeleteContentAsync(EffectiveOptions, UseCurrentSnapshot);
 			if (Ret.IsError())
 				m_DeletingBoxes.remove(pBox->GetName());
 			return Ret;
@@ -2563,17 +2597,20 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, boo
 		//
 
 		SB_PROGRESS Status;
-		if (Mode != eForDelete && !DeleteSnapshots && pBox->HasSnapshots()) { // in auto delete mode always return to last snapshot
+		if (Mode != eForDelete && !EffectiveOptions.DeleteSnapshots && pBox->HasSnapshots()) {
 			QString Current;
 			QString Default = pBox->GetDefaultSnapshot(&Current);
-			Status = pBox->SelectSnapshot(Mode == eAuto ? Current : Default);
+			Status = pBoxEx->SelectSnapshotEx(UseCurrentSnapshot ? Current : Default,
+				EffectiveOptions.DeleteFileHistory(), EffectiveOptions.DeleteRegistryHistory());
 		}
-		else // if there are no snapshots just use the normal cleaning procedure
+		else if (!EffectiveOptions.DeleteFileHistory() || !EffectiveOptions.DeleteRegistryHistory())
+			Status = pBoxEx->CleanBoxExceptHistory(!EffectiveOptions.DeleteFileHistory(), !EffectiveOptions.DeleteRegistryHistory());
+		else // if everything is selected, use the normal cleaning procedure
 			Status = pBox->CleanBox();
 
 		Ret = Status;
 		if (Status.GetStatus() == OP_ASYNC) {
-			Ret = AddAsyncOp(Status.GetValue(), true, tr("Auto Deleting %1 Content").arg(pBox->GetName()));
+			Ret = AddAsyncOp(Status.GetValue(), true, tr("Auto Deleting %1 Content").arg(GetBoxDisplayName(pBox)));
 			OnBoxCleaned(qobject_cast<CSandBoxPlus*>(pBox.data()));
 		}
 	}
@@ -2808,15 +2845,18 @@ void CSandMan::OnBoxClosed(const CSandBoxPtr& pBox)
 	{
 		if (pBox->GetBool("AutoDelete", false))
 		{
-			bool DeleteSnapshots = false;
+			SDeleteContentOptions Options(false,
+				ParseDeleteHistoryMode(pBox->GetText("AutoDeleteHistoryMode", QString(), true, true, true)));
+			if (Options.HistoryMode == eDeleteHistoryLegacy)
+				Options.HistoryMode = pBox->HasSnapshots() ? eDeleteHistoryNone : eDeleteHistoryBoth;
 			// if this box auto deletes first show the recovry dialog with the option to abort deletion
-			if (!theGUI->OpenRecovery(pBox, DeleteSnapshots, true)) // unless no files are found than continue silently
+			if (!theGUI->OpenRecovery(pBox, Options, true)) // unless no files are found than continue silently
 				return;
 
 			if (theConf->GetBool("Options/AutoBoxOpsNotify", false))
 				OnLogMessage(tr("Auto deleting content of %1").arg(pBox->GetName()), true);
 
-			DeleteBoxContent(pBox, eAuto, DeleteSnapshots);
+			DeleteBoxContent(pBox, eAuto, Options);
 		}
 	}
 
@@ -2956,7 +2996,7 @@ void CSandMan::OnStatusChanged()
 
 			auto AllBoxes = theAPI->GetAllBoxes();
 
-			m_pBoxView->ClearUserUIConfig(AllBoxes);
+			m_pBoxView->ClearUserUIConfig(AllBoxes, true);
 
 			foreach(const QString & Key, theConf->ListKeys("SizeCache")) {
 				if (!AllBoxes.contains(Key.toLower()) || !theConf->GetBool("Options/WatchBoxSize", false))
@@ -4400,6 +4440,8 @@ void CSandMan::OnResetGUI()
 	theConf->DelValue("FileBrowserWindow/Window_Geometry");
 	foreach(const QString& Option, theConf->ListKeys("FileHistoryWindow"))
 		theConf->DelValue("FileHistoryWindow/" + Option);
+	foreach(const QString& Option, theConf->ListKeys("RegistryHistoryWindow"))
+		theConf->DelValue("RegistryHistoryWindow/" + Option);
 	theConf->DelValue("RecoveryLogWindow/Window_Geometry");
 	theConf->DelValue("NtObjectBrowserWindow/Window_Geometry");
 
