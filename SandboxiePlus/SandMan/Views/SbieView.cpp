@@ -3064,29 +3064,6 @@ void CSbieView::CleanupProcessExpandState()
 		SaveProcessExpandState();
 }
 
-void CSbieView::ShowSnapshots(const CSandBoxPtr& pBox)
-{
-	if (pBox.isNull())
-		return;
-
-	static QMap<void*, CSnapshotsWindow*> SnapshotWindows;
-	CSnapshotsWindow* pSnapshotsWindow = SnapshotWindows.value(pBox.data());
-	if (pSnapshotsWindow == NULL) {
-		pSnapshotsWindow = new CSnapshotsWindow(pBox, this);
-		connect(theGUI, SIGNAL(Closed()), pSnapshotsWindow, SLOT(close()));
-		SnapshotWindows.insert(pBox.data(), pSnapshotsWindow);
-		connect(pSnapshotsWindow, &CSnapshotsWindow::Closed, [pBox]() {
-			SnapshotWindows.remove(pBox.data());
-		});
-		CSandMan::SafeShow(pSnapshotsWindow);
-	}
-	else {
-		pSnapshotsWindow->Refresh();
-		pSnapshotsWindow->setWindowState((pSnapshotsWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
-		SetForegroundWindow((HWND)pSnapshotsWindow->winId());
-	}
-}
-
 void CSbieView::UpdateColapsed()
 {
 	if (!theConf->GetBool("Options/LegacyAutoExpandTree", false)) {
