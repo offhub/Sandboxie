@@ -13,12 +13,15 @@ SB_PROGRESS CCleanUpJob::Start()
 	CSandBoxPlus* pBox = GetBox();
 
 	SB_PROGRESS Status;
-	if (!m_DeleteSnapshots && pBox->HasSnapshots()) {
+	if (!m_Options.DeleteSnapshots && pBox->HasSnapshots()) {
 		QString Current;
 		QString Default = pBox->GetDefaultSnapshot(&Current);
-		Status = pBox->SelectSnapshot(m_UseCurrentSnapshot ? Current : Default);
+		Status = pBox->SelectSnapshotEx(m_UseCurrentSnapshot ? Current : Default,
+			m_Options.DeleteFileHistory(), m_Options.DeleteRegistryHistory());
 	}
-	else // if there are no snapshots jut use the normal cleaning procedure
+	else if (!m_Options.DeleteFileHistory() || !m_Options.DeleteRegistryHistory())
+		Status = pBox->CleanBoxExceptHistory(!m_Options.DeleteFileHistory(), !m_Options.DeleteRegistryHistory());
+	else // if everything is selected, use the normal cleaning procedure
 		Status = pBox->CleanBox();
 
 	if (Status.GetStatus() == OP_ASYNC)

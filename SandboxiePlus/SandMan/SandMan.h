@@ -13,6 +13,7 @@
 
 //#include "../QSbieAPI/SbieAPI.h"
 #include "SbiePlusAPI.h"
+#include "DeleteContentOptions.h"
 
 class CPopUpWindow;
 class CSbieView;
@@ -65,7 +66,7 @@ public:
 		eForDelete
 	};
 
-	SB_STATUS			DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, bool DeleteSnapshots = true);
+	SB_STATUS			DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, const SDeleteContentOptions& Options = SDeleteContentOptions());
 
 	void				UpdateProcesses();
 
@@ -212,7 +213,7 @@ public slots:
 	void				OnFileToRecover(const QString& BoxName, const QString& FilePath, const QString& BoxPath, quint32 ProcessId);
 	void				OnFileRecovered(const QString& BoxName, const QString& FilePath, const QString& BoxPath);
 
-	bool				OpenRecovery(const CSandBoxPtr& pBox, bool& DeleteSnapshots, bool bCloseEmpty = false);
+	bool				OpenRecovery(const CSandBoxPtr& pBox, SDeleteContentOptions& Options, bool bCloseEmpty = false);
 	class CRecoveryWindow* ShowRecovery(const CSandBoxPtr& pBox);
 
 	void				TryFix(quint32 MsgCode, const QStringList& MsgData, const QString& ProcessName, const QString& BoxName);

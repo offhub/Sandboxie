@@ -72,6 +72,12 @@ void COptionsWindow::CreateGeneral()
 	ui.cmbAutoDeleteSnapshot->addItem(tr("Active snapshot"), "Current");
 	ui.cmbAutoDeleteSnapshot->addItem(tr("Default snapshot"), "Default");
 	ui.cmbAutoDeleteSnapshot->setToolTip(tr("Selects the snapshot restored by SandMan after automatic deletion. The active state may be the empty sandbox rather than a saved snapshot."));
+	ui.cmbAutoDeleteHistory->addItem(tr("Inherited or legacy behavior"), QString());
+	ui.cmbAutoDeleteHistory->addItem(tr("Preserve file and registry history"), "None");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete file and registry history"), "Both");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete retained file versions only"), "File");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete registry history only"), "Registry");
+	ui.cmbAutoDeleteHistory->setToolTip(tr("Selects which retained histories SandMan deletes during automatic deletion. Legacy behavior preserves histories when snapshots are retained and deletes them otherwise."));
 	ui.btnAutoDeleteSnapshots->setIcon(CSandMan::GetIcon("Snapshots"));
 	connect(ui.btnAutoDeleteSnapshots, &QToolButton::clicked, this, [this]() {
 		auto pBox = m_pBox.objectCast<CSandBox>();
@@ -274,6 +280,7 @@ void COptionsWindow::CreateGeneral()
 	connect(ui.chkProtectBox, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
 	connect(ui.chkAutoEmpty, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
 	connect(ui.cmbAutoDeleteSnapshot, SIGNAL(currentIndexChanged(int)), this, SLOT(OnGeneralChanged()));
+	connect(ui.cmbAutoDeleteHistory, SIGNAL(currentIndexChanged(int)), this, SLOT(OnGeneralChanged()));
 
 	connect(ui.chkRawDiskRead, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
 	connect(ui.chkRawDiskNotify, SIGNAL(clicked(bool)), this, SLOT(OnGeneralChanged()));
@@ -481,6 +488,18 @@ void COptionsWindow::LoadGeneral()
 	else
 		AutoDeleteSnapshotTarget = theConf->GetBool("Options/UseAsyncBoxOps", false) ? "Default" : "Current";
 	ui.cmbAutoDeleteSnapshot->setCurrentIndex(ui.cmbAutoDeleteSnapshot->findData(AutoDeleteSnapshotTarget));
+	QString AutoDeleteHistoryMode = m_pBox->GetText("AutoDeleteHistoryMode", QString(), true, true, true);
+	if (AutoDeleteHistoryMode.compare("None", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "None";
+	else if (AutoDeleteHistoryMode.compare("Both", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "Both";
+	else if (AutoDeleteHistoryMode.compare("File", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "File";
+	else if (AutoDeleteHistoryMode.compare("Registry", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "Registry";
+	else
+		AutoDeleteHistoryMode.clear();
+	ui.cmbAutoDeleteHistory->setCurrentIndex(ui.cmbAutoDeleteHistory->findData(AutoDeleteHistoryMode));
 
 	ui.chkRawDiskRead->setChecked(m_pBox->GetBool("AllowRawDiskRead", false));
 	ui.chkRawDiskNotify->setChecked(m_pBox->GetBool("NotifyDirectDiskAccess", false));
@@ -653,6 +672,11 @@ void COptionsWindow::SaveGeneral()
 	}
 	WriteAdvancedCheck(ui.chkAutoEmpty, "AutoDelete", "y", "");
 	WriteText("AutoDeleteSnapshotTarget", ui.cmbAutoDeleteSnapshot->currentData().toString());
+	QString AutoDeleteHistoryMode = ui.cmbAutoDeleteHistory->currentData().toString();
+	if (AutoDeleteHistoryMode.isEmpty())
+		m_pBox->DelValue("AutoDeleteHistoryMode");
+	else
+		WriteText("AutoDeleteHistoryMode", AutoDeleteHistoryMode);
 
 	WriteAdvancedCheck(ui.chkRawDiskRead, "AllowRawDiskRead", "y", "");
 	WriteAdvancedCheck(ui.chkRawDiskNotify, "NotifyDirectDiskAccess", "y", "");
@@ -1026,6 +1050,8 @@ void COptionsWindow::OnGeneralChanged()
 	ui.lblAutoDeleteSnapshot->setEnabled(ui.chkAutoEmpty->isEnabled() && ui.chkAutoEmpty->isChecked());
 	ui.cmbAutoDeleteSnapshot->setEnabled(ui.chkAutoEmpty->isEnabled() && ui.chkAutoEmpty->isChecked());
 	ui.btnAutoDeleteSnapshots->setEnabled(ui.cmbAutoDeleteSnapshot->isEnabled() && !m_pBox.objectCast<CSandBox>().isNull());
+	ui.lblAutoDeleteHistory->setEnabled(ui.chkAutoEmpty->isEnabled() && ui.chkAutoEmpty->isChecked());
+	ui.cmbAutoDeleteHistory->setEnabled(ui.chkAutoEmpty->isEnabled() && ui.chkAutoEmpty->isChecked());
 
 	ui.chkOpenSpooler->setEnabled(!ui.chkBlockSpooler->isChecked() && !ui.chkNoSecurityIsolation->isChecked());
 	ui.chkPrintToFile->setEnabled(!ui.chkBlockSpooler->isChecked() && !ui.chkNoSecurityFiltering->isChecked());

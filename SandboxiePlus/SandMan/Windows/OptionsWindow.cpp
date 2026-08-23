@@ -1308,6 +1308,36 @@ void COptionsWindow::SaveConfig()
 		TriggerPathReload();
 }
 
+static QString NormalizeFileRootPath(QString Value)
+{
+	Value = Value.trimmed();
+	Value.replace('/', '\\');
+	return Value.toCaseFolded();
+}
+
+static bool ConfirmFileRootPathChanges(QWidget* Parent, const QSharedPointer<CSbieIni>& pBox,
+	bool Template, QStringList NewFileRootPaths)
+{
+	for (QString& Value : NewFileRootPaths)
+		Value = NormalizeFileRootPath(Value);
+	QStringList OldFileRootPaths = pBox->GetTextList("FileRootPath", Template);
+	for (QString& Value : OldFileRootPaths)
+		Value = NormalizeFileRootPath(Value);
+	return NewFileRootPaths == OldFileRootPaths ||
+		CSettingsWindow::ConfirmFileRootPathChange(Parent, Template);
+}
+
+static QStringList GetFileRootPathsFromIniSection(const QString& Section)
+{
+	QStringList FileRootPaths;
+	foreach(const QString& Line, SplitStr(Section, "\n")) {
+		const int Separator = Line.indexOf('=');
+		if (Separator > 0 && Line.left(Separator).trimmed().compare("FileRootPath", Qt::CaseInsensitive) == 0)
+			FileRootPaths.append(Line.mid(Separator + 1));
+	}
+	return FileRootPaths;
+}
+
 bool COptionsWindow::apply()
 {
 	if (m_pBox->GetText("Enabled").isEmpty() && !(m_Template && m_pBox->GetName().mid(9, 6).compare("Local_", Qt::CaseInsensitive) == 0)) {
@@ -1321,9 +1351,21 @@ bool COptionsWindow::apply()
 	CloseOptionEdit();
 	CloseCopyEdit();
     CloseNetProxyEdit();
+	if (ui.btnEditIni->isEnabled() && m_AdvancedChanged) {
+		QStringList NewFileRootPaths;
+		for (int i = 0; i < ui.treeOptions->topLevelItemCount(); ++i) {
+			QTreeWidgetItem* Item = ui.treeOptions->topLevelItem(i);
+			if (Item->data(0, Qt::UserRole).toString() == "FileRootPath")
+				NewFileRootPaths.append(Item->data(2, Qt::UserRole).toString());
+		}
+		if (!ConfirmFileRootPathChanges(this, m_pBox, m_Template, NewFileRootPaths))
+			return false;
+	}
 
-	if (!ui.btnEditIni->isEnabled())
-		SaveIniSection();
+	if (!ui.btnEditIni->isEnabled()) {
+		if (!SaveIniSection())
+			return false;
+	}
 	else
 	{
 		if (m_GeneralChanged) {
@@ -1745,7 +1787,8 @@ void COptionsWindow::OnEditorSettings()
 
 void COptionsWindow::OnSaveIni()
 {
-	SaveIniSection();
+	if (!SaveIniSection())
+		return;
 	SetIniEdit(false);
 }
 
@@ -1785,8 +1828,13 @@ void COptionsWindow::LoadIniSection()
 	m_HoldChange = false;
 }
 
-void COptionsWindow::SaveIniSection()
+bool COptionsWindow::SaveIniSection()
 {
+	const QString Section = m_pCodeEdit->GetCode();
+	if (!ConfirmFileRootPathChanges(this, m_pBox, m_Template,
+		GetFileRootPathsFromIniSection(Section)))
+		return false;
+
 	m_ConfigDirty = true;
 
 	/*m_pBox->SetRefreshOnChange(false);
@@ -1823,9 +1871,10 @@ void COptionsWindow::SaveIniSection()
 	m_pBox->CommitIniChanges();*/
 
 	//m_pBox->GetAPI()->SbieIniSet(m_pBox->GetName(), "", ui.txtIniSection->toPlainText());
-	m_pBox->SbieIniSet(m_pBox->GetName(), "", m_pCodeEdit->GetCode());
+	m_pBox->SbieIniSet(m_pBox->GetName(), "", Section);
 
 	//LoadIniSection();
+	return true;
 }
 
 #include "OptionsAccess.cpp"

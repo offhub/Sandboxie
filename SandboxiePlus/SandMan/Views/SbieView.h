@@ -216,6 +216,7 @@ private:
 	QAction*				m_pMenuExplore;
 	QAction*				m_pMenuBrowseNT;
 	QAction*				m_pMenuHistory;
+	QAction*				m_pMenuRegistryHistory;
 	QAction*				m_pMenuCompactDeleteV3;
 	QAction*				m_pMenuBrowse;
 	QAction*				m_pMenuRefresh;

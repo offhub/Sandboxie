@@ -49,41 +49,51 @@ void CSandMan::OnFileToRecover(const QString& BoxName, const QString& FilePath, 
 		m_pPopUpWindow->AddFileToRecover(EffectiveFilePath, BoxPath, pBox, ProcessId);
 }
 
-bool CSandMan::OpenRecovery(const CSandBoxPtr& pBox, bool& DeleteSnapshots, bool bCloseEmpty)
+bool CSandMan::OpenRecovery(const CSandBoxPtr& pBox, SDeleteContentOptions& Options, bool bCloseEmpty)
 {
 	auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
 	if (!pBoxEx) return false;
+	auto DeleteRecoveryWindow = [pBoxEx](CRecoveryWindow* pRecoveryWnd) {
+		if (pBoxEx->m_pRecoveryWnd == pRecoveryWnd)
+			pBoxEx->m_pRecoveryWnd = NULL;
+		delete pRecoveryWnd;
+	};
 	if (pBoxEx->m_pRecoveryWnd != NULL) {
 		if (pBoxEx->m_pRecoveryWnd->IsDeleteDialog())
 			return false;
 		if (bCloseEmpty) {
 			CRecoveryWindow* pRecoveryWnd = pBoxEx->m_pRecoveryWnd;
+			pRecoveryWnd->SetDeleteOptions(Options);
 			pRecoveryWnd->FindFiles();
-			if (SafeExec(pRecoveryWnd) != 1)
-				return false;
-			DeleteSnapshots = pRecoveryWnd->IsDeleteSnapshots();
-			return true;
+			const bool DeleteContent = SafeExec(pRecoveryWnd) == 1;
+			if (DeleteContent)
+				Options = pRecoveryWnd->GetDeleteOptions();
+			DeleteRecoveryWindow(pRecoveryWnd);
+			return DeleteContent;
 		}
-		pBoxEx->m_pRecoveryWnd->close();
+		CRecoveryWindow* pRecoveryWnd = pBoxEx->m_pRecoveryWnd;
+		pRecoveryWnd->close();
+		DeleteRecoveryWindow(pRecoveryWnd);
 	}
 
 	CRecoveryWindow* pRecoveryWnd = pBoxEx->m_pRecoveryWnd = new CRecoveryWindow(pBox, false, this);
+	pRecoveryWnd->SetDeleteOptions(Options);
 	connect(this, SIGNAL(Closed()), pBoxEx->m_pRecoveryWnd, SLOT(close()));
 	const int visibleFileCount = pBoxEx->m_pRecoveryWnd->FindFiles();
 	if (visibleFileCount == 0 && bCloseEmpty) {
-		delete pBoxEx->m_pRecoveryWnd;
-		pBoxEx->m_pRecoveryWnd = NULL;
+		DeleteRecoveryWindow(pBoxEx->m_pRecoveryWnd);
 		return true;
 	}
 	else {
 		connect(pBoxEx->m_pRecoveryWnd, &CRecoveryWindow::Closed, [pBoxEx]() {
 			pBoxEx->m_pRecoveryWnd = NULL;
 		});
-		if (SafeExec(pBoxEx->m_pRecoveryWnd) != 1)
-			return false;
+		const bool DeleteContent = SafeExec(pRecoveryWnd) == 1;
+		if (DeleteContent)
+			Options = pRecoveryWnd->GetDeleteOptions();
+		DeleteRecoveryWindow(pRecoveryWnd);
+		return DeleteContent;
 	}
-	DeleteSnapshots = pRecoveryWnd->IsDeleteSnapshots();
-	return true;
 }
 
 CRecoveryWindow* CSandMan::ShowRecovery(const CSandBoxPtr& pBox)

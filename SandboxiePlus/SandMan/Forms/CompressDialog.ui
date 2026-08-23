@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>424</width>
-    <height>207</height>
+    <height>330</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -79,8 +79,44 @@
        </property>
       </widget>
      </item>
+   </layout>
+  </item>
+  <item>
+   <widget class="QGroupBox" name="grpHistory">
+    <property name="title">
+     <string>Retained Histories</string>
+    </property>
+    <layout class="QVBoxLayout" name="verticalLayoutHistory">
+     <item>
+      <widget class="QCheckBox" name="chkFileHistory">
+       <property name="text">
+        <string>Include retained file versions</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="chkRegistryHistory">
+       <property name="text">
+        <string>Include registry history</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="lblHistoryWarning">
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>File History may use hard links to share data in the source sandbox. Export stores each history path as an individual file. The archive or its extracted contents may therefore require substantially more storage.</string>
+       </property>
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
     </layout>
-   </item>
+   </widget>
+  </item>
    <item>
     <widget class="QDialogButtonBox" name="buttonBox">
      <property name="standardButtons">
@@ -95,6 +131,8 @@
   <tabstop>cmbCompression</tabstop>
   <tabstop>chkSolid</tabstop>
   <tabstop>chkEncrypt</tabstop>
+  <tabstop>chkFileHistory</tabstop>
+  <tabstop>chkRegistryHistory</tabstop>
  </tabstops>
  <resources/>
  <connections/>

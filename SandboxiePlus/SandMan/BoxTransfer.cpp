@@ -395,7 +395,7 @@ void CBoxTransferDialog::SetFilter(const QRegularExpression& Exp, int iOptions, 
 // Export
 //
 
-static QStringList ListBoxContent(const QString& rootPath)
+static QStringList ListBoxContent(const QString& rootPath, bool includeFileHistory, bool includeRegistryHistory)
 {
 	QStringList fileList;
 	QDir root(rootPath);
@@ -409,7 +409,8 @@ static QStringList ListBoxContent(const QString& rootPath)
 
 	foreach(const QString& dirName,
 			root.entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)) {
-		if (dirName.compare("FileHistory", Qt::CaseInsensitive) == 0)
+		if ((!includeFileHistory && dirName.compare("FileHistory", Qt::CaseInsensitive) == 0) ||
+			(!includeRegistryHistory && dirName.compare("RegistryHistory", Qt::CaseInsensitive) == 0))
 			continue;
 
 		foreach(const QString& fileName,
@@ -466,7 +467,8 @@ static void ExportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 			delete pConfigFile;
 
 		// Add all box files
-		QStringList FileList = ListBoxContent(rootPath);
+		QStringList FileList = ListBoxContent(rootPath,
+			params["includeFileHistory"].toBool(), params["includeRegistryHistory"].toBool());
 		for (const QString& File : FileList) {
 			if (pProgress->IsCanceled()) break;
 
@@ -677,6 +679,8 @@ void ExportMultiBoxes(QWidget* parent, const QList<CSandBoxPtr>& SandBoxes)
 		vParams["password"] = Password;
 	vParams["level"] = compDlg.GetLevel();
 	vParams["solid"] = compDlg.MakeSolid();
+	vParams["includeFileHistory"] = compDlg.IncludeFileHistory();
+	vParams["includeRegistryHistory"] = compDlg.IncludeRegistryHistory();
 
 	if (exportSeparateFiles) {
 		// Folder picker for separate files export

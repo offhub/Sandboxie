@@ -2,6 +2,7 @@
 
 #include "../QSbieAPI/SbieStatus.h"
 #include "../QSbieAPI/SbieAPI.h"
+#include "DeleteContentOptions.h"
 
 class CSandBoxPlus;
 
@@ -32,9 +33,9 @@ class CCleanUpJob : public CBoxJob
 {
 protected:
 	friend CSandBoxPlus;
-	CCleanUpJob(CSandBoxPlus* pBox, bool DeleteSnapshots = true, bool UseCurrentSnapshot = false) : CBoxJob((QObject*)pBox) {
+	CCleanUpJob(CSandBoxPlus* pBox, const SDeleteContentOptions& Options, bool UseCurrentSnapshot = false) : CBoxJob((QObject*)pBox) {
 		m_Description = tr("Deleting Content");
-		m_DeleteSnapshots = DeleteSnapshots; 
+		m_Options = Options;
 		m_UseCurrentSnapshot = UseCurrentSnapshot;
 	}
 
@@ -42,7 +43,7 @@ protected:
 	virtual void		Finished();
 
 protected:
-	bool m_DeleteSnapshots;
+	SDeleteContentOptions m_Options;
 	bool m_UseCurrentSnapshot;
 };
 

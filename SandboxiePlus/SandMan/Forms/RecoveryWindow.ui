@@ -182,11 +182,41 @@
          </property>
         </widget>
        </item>
-      </layout>
-     </item>
-    </layout>
-   </item>
-  </layout>
+       <item row="7" column="0" colspan="2">
+        <widget class="QCheckBox" name="chkDeleteSnapshots">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Delete all snapshots</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="2" colspan="2">
+        <widget class="QCheckBox" name="chkDeleteFileHistory">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Delete retained file versions</string>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="4" colspan="2">
+        <widget class="QCheckBox" name="chkDeleteRegistryHistory">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Delete registry history</string>
+         </property>
+        </widget>
+       </item>
+       </layout>
+      </item>
+     </layout>
+    </item>
+   </layout>
  </widget>
  <tabstops>
   <tabstop>treeFiles</tabstop>
@@ -197,6 +227,9 @@
   <tabstop>btnAddFolder</tabstop>
   <tabstop>chkShowAll</tabstop>
   <tabstop>chkShowIgnored</tabstop>
+  <tabstop>chkDeleteSnapshots</tabstop>
+  <tabstop>chkDeleteFileHistory</tabstop>
+  <tabstop>chkDeleteRegistryHistory</tabstop>
   <tabstop>btnDeleteAll</tabstop>
   <tabstop>btnClose</tabstop>
  </tabstops>

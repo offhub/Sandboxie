@@ -23,6 +23,9 @@
     <ClCompile Include="DriverAssistStart.cpp">
       <Filter>DriverAssist</Filter>
     </ClCompile>
+    <ClCompile Include="RegistryHistory.cpp">
+      <Filter>DriverAssist</Filter>
+    </ClCompile>
     <ClCompile Include="pipeserver.cpp" />
     <ClCompile Include="proxyhandle.cpp" />
     <ClCompile Include="GuiServer.cpp">
@@ -101,6 +104,9 @@
     <ClInclude Include="misc.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="DriverAssist.h">
+      <Filter>DriverAssist</Filter>
+    </ClInclude>
+    <ClInclude Include="RegistryHistory.h">
       <Filter>DriverAssist</Filter>
     </ClInclude>
     <ClInclude Include="proxyhandle.h" />

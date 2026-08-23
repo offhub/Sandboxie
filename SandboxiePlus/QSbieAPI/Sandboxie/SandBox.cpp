@@ -232,32 +232,69 @@ SB_PROGRESS CSandBox::CleanFileHistory()
 	return CleanBoxFolders(QStringList(m_FilePath + "\\FileHistory"));
 }
 
+SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory)
+{
+	if (m_FilePath.isEmpty())
+		return SB_ERR(SB_PathFail);
+
+	if (GetBool("NeverDelete", false))
+		return SB_ERR(SB_DeleteProtect);
+
+	if (GetActiveProcessCount() > 0)
+		return SB_ERR(SB_DeleteNotEmpty);
+
+	QStringList BoxFolders;
+	bool KeepRoot = false;
+	QDir Root(m_FilePath);
+	foreach(const QFileInfo& Entry, Root.entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
+		const QString Name = Entry.fileName();
+		if (PreserveFileHistory && Entry.isDir() && Name.compare("FileHistory", Qt::CaseInsensitive) == 0) {
+			KeepRoot = true;
+			continue;
+		}
+		if (PreserveRegistryHistory && Entry.isDir() && Name.compare("RegistryHistory", Qt::CaseInsensitive) == 0) {
+			KeepRoot = true;
+			continue;
+		}
+		BoxFolders.append(Entry.absoluteFilePath());
+	}
+	return CleanBoxFoldersEx(BoxFolders, KeepRoot ? QString() : m_FilePath);
+}
+
 SB_PROGRESS CSandBox::CleanBoxFolders(const QStringList& BoxFolders)
 {
+	return CleanBoxFoldersEx(BoxFolders, QString());
+}
+
+SB_PROGRESS CSandBox::CleanBoxFoldersEx(const QStringList& BoxFolders, const QString& RemoveRoot)
+{
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
-	QtConcurrent::run(CSandBox::CleanBoxAsync, pProgress, BoxFolders);
+	QtConcurrent::run(CSandBox::CleanBoxAsyncEx, pProgress, BoxFolders, RemoveRoot);
 	return SB_PROGRESS(OP_ASYNC, pProgress);
 }
 
 SB_STATUS CSandBox__DeleteFolder(const CSbieProgressPtr& pProgress, const QString& Folder)
 {
-	if (!QDir().exists(Folder))
+	const QString NativeFolder = QDir::toNativeSeparators(Folder);
+	QFileInfo FileInfo(NativeFolder);
+	if (!FileInfo.exists() && !FileInfo.isSymLink())
 		return SB_OK;
 
-	pProgress->ShowMessage(CSandBox::tr("Waiting for folder: %1").arg(Folder));
+	SNtObject ntObject(L"\\??\\" + NativeFolder.toStdWString());
 
-	SNtObject ntObject(L"\\??\\" + Folder.toStdWString());
-
-	NtIo_WaitForFolder(&ntObject.attr, 10, [](const WCHAR* info, void* param) {
-		return !((CSbieProgress*)param)->IsCanceled(); 
-	}, pProgress.data());
+	if (FileInfo.isDir() && !FileInfo.isSymLink()) {
+		pProgress->ShowMessage(CSandBox::tr("Waiting for folder: %1").arg(Folder));
+		NtIo_WaitForFolder(&ntObject.attr, 10, [](const WCHAR* info, void* param) {
+			return !((CSbieProgress*)param)->IsCanceled();
+		}, pProgress.data());
+	}
 
 	if (pProgress->IsCanceled())
 		return SB_ERR(SB_DeleteError, QVariantList() << Folder, STATUS_CANCELLED);
 
-	pProgress->ShowMessage(CSandBox::tr("Deleting folder: %1").arg(Folder));
+	pProgress->ShowMessage(CSandBox::tr("Deleting: %1").arg(Folder));
 
-	NTSTATUS status = NtIo_DeleteFolderRecursively(&ntObject.attr, [](const WCHAR* info, void* param) {
+	NTSTATUS status = NtIo_DeleteFile(ntObject, [](const WCHAR* info, void* param) {
 		CSbieProgress* pProgress = (CSbieProgress*)param;
 		pProgress->ShowMessage(CSandBox::tr("Deleting folder: %1").arg(QString::fromWCharArray(info)));
 		return !pProgress->IsCanceled(); 
@@ -270,7 +307,12 @@ SB_STATUS CSandBox__DeleteFolder(const CSbieProgressPtr& pProgress, const QStrin
 
 void CSandBox::CleanBoxAsync(const CSbieProgressPtr& pProgress, const QStringList& BoxFolders)
 {
-	SB_STATUS Status;
+	CleanBoxAsyncEx(pProgress, BoxFolders, QString());
+}
+
+void CSandBox::CleanBoxAsyncEx(const CSbieProgressPtr& pProgress, const QStringList& BoxFolders, const QString& RemoveRoot)
+{
+	SB_STATUS Status = SB_OK;
 
 	foreach(const QString& Folder, BoxFolders)
 	{
@@ -285,6 +327,9 @@ void CSandBox::CleanBoxAsync(const CSbieProgressPtr& pProgress, const QStringLis
 		if (Status.IsError())
 			break;
 	}
+	if (!Status.IsError() && !RemoveRoot.isEmpty() &&
+		!QDir().rmdir(RemoveRoot) && QFileInfo(RemoveRoot).exists())
+		Status = SB_ERR(SB_DeleteError, QVariantList() << RemoveRoot, STATUS_UNSUCCESSFUL);
 
 	pProgress->Finish(Status);
 }
@@ -452,7 +497,17 @@ bool CSandBox::IsInitialized() const
 
 bool CSandBox::HasSnapshots() const
 {
-	return QFile::exists(m_FilePath + "\\Snapshots.ini");
+	return !m_FilePath.isEmpty() && QFileInfo(QDir(m_FilePath).filePath("Snapshots.ini")).isFile();
+}
+
+bool CSandBox::HasFileHistory() const
+{
+	return !m_FilePath.isEmpty() && QFileInfo(QDir(m_FilePath).filePath("FileHistory")).isDir();
+}
+
+bool CSandBox::HasRegistryHistory() const
+{
+	return !m_FilePath.isEmpty() && QFileInfo(QDir(m_FilePath).filePath("RegistryHistory")).isDir();
 }
 
 SB_STATUS CSandBox__MoveFolder(const QString& SourcePath, const QString& ParentFolder, const QString& TargetName)
@@ -1165,6 +1220,14 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 
 SB_PROGRESS CSandBox::SelectSnapshot(const QString& ID)
 {
+	return SelectSnapshotEx(ID, false, false);
+}
+
+SB_PROGRESS CSandBox::SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory)
+{
+	if (m_FilePath.isEmpty())
+		return SB_ERR(SB_PathFail);
+
 	QSettings ini(m_FilePath + "\\Snapshots.ini", QSettings::IniFormat);
 
 	if (!ID.isEmpty() && !ini.childGroups().contains("Snapshot_" + ID))
@@ -1195,6 +1258,10 @@ SB_PROGRESS CSandBox::SelectSnapshot(const QString& ID)
 	QStringList BoxFolders;
 	foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders)
 		BoxFolders.append(m_FilePath + "\\" + BoxSubFolder);
+	if (DeleteFileHistory)
+		BoxFolders.append(m_FilePath + "\\FileHistory");
+	if (DeleteRegistryHistory)
+		BoxFolders.append(m_FilePath + "\\RegistryHistory");
 	return CleanBoxFolders(BoxFolders);
 }
 

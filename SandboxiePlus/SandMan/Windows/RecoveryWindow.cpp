@@ -451,7 +451,6 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	m_LastTargetIndex = 0;
 	m_bTargetsChanged = false;
 	m_bReloadPending = false;
-	m_DeleteSnapshots = false;
 	m_UnfilteredFileCount = 0;
 	m_IgnoredFileCount = 0;
 
@@ -512,11 +511,6 @@ CRecoveryWindow::CRecoveryWindow(const CSandBoxPtr& pBox, bool bImmediate, QWidg
 	m_pRemember->setCheckable(true);
 	ui.btnRecover->setPopupMode(QToolButton::MenuButtonPopup);
 	ui.btnRecover->setMenu(pRecMenu);
-
-	QMenu* pDelMenu = new QMenu(ui.btnDeleteAll);
-	pDelMenu->addAction(tr("Delete everything, including all snapshots"), this, SLOT(OnDeleteEverything()));
-	ui.btnDeleteAll->setPopupMode(QToolButton::MenuButtonPopup);
-	ui.btnDeleteAll->setMenu(pDelMenu);
 
 	restoreGeometry(theConf->GetBlob("RecoveryWindow/Window_Geometry"));
 
@@ -579,6 +573,31 @@ int	CRecoveryWindow::exec()
 	ui.btnDeleteAll->setVisible(true);
 	CSandMan::SafeShow(this);
 	return QDialog::exec();
+}
+
+SDeleteContentOptions CRecoveryWindow::GetDeleteOptions() const
+{
+	EDeleteHistoryMode HistoryMode = eDeleteHistoryNone;
+	if (ui.chkDeleteFileHistory->isChecked() && ui.chkDeleteRegistryHistory->isChecked())
+		HistoryMode = eDeleteHistoryBoth;
+	else if (ui.chkDeleteFileHistory->isChecked())
+		HistoryMode = eDeleteHistoryFile;
+	else if (ui.chkDeleteRegistryHistory->isChecked())
+		HistoryMode = eDeleteHistoryRegistry;
+	return SDeleteContentOptions(ui.chkDeleteSnapshots->isChecked(), HistoryMode);
+}
+
+void CRecoveryWindow::SetDeleteOptions(const SDeleteContentOptions& Options)
+{
+	const bool HasSnapshots = m_pBox->HasSnapshots();
+	const bool HasFileHistory = m_pBox->HasFileHistory();
+	const bool HasRegistryHistory = m_pBox->HasRegistryHistory();
+	ui.chkDeleteSnapshots->setChecked(Options.DeleteSnapshots && HasSnapshots);
+	ui.chkDeleteSnapshots->setVisible(HasSnapshots);
+	ui.chkDeleteFileHistory->setChecked(Options.DeleteFileHistory() && HasFileHistory);
+	ui.chkDeleteFileHistory->setVisible(HasFileHistory);
+	ui.chkDeleteRegistryHistory->setChecked(Options.DeleteRegistryHistory() && HasRegistryHistory);
+	ui.chkDeleteRegistryHistory->setVisible(HasRegistryHistory);
 }
 
 bool CRecoveryWindow::IsDeleteDialog() const
@@ -678,12 +697,6 @@ void CRecoveryWindow::OnDeleteAll()
 {
 	this->setResult(1);
 	this->close();
-}
-
-void CRecoveryWindow::OnDeleteEverything()
-{
-	m_DeleteSnapshots = true;
-	OnDeleteAll();
 }
 
 void CRecoveryWindow::OnShowAllChanged(int state)
@@ -1314,12 +1327,12 @@ void CRecoveryCounter::run()
 	QStringList Folders;
 	Folders.append(m_BoxPath);
 	do {
-		if (!m_run) break;
+		if (!m_run.load()) break;
 
 		QDir Dir(Folders.takeFirst());
 		foreach(const QFileInfo & Info, Dir.entryInfoList(QDir::AllEntries))
 		{
-			if (!m_run) break;
+			if (!m_run.load()) break;
 
 			QString Name = Info.fileName();
 			if (Name == "." || Name == "..")

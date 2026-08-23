@@ -61,6 +61,7 @@ public:
 	static QString GetCertType();
 	static QColor GetCertColor();
 	static QString GetCertLevel();
+	static bool ConfirmFileRootPathChange(QWidget* Parent, bool MultipleBoxes);
 
 	static void StartEval(QWidget* parent, QObject* receiver, const char* member);
 
@@ -75,7 +76,7 @@ signals:
 
 public slots:
 	void ok();
-	void apply();
+	bool apply();
 
 	void showTab(const QString& Name, bool bExclusive = false, bool bExec = false);
 
@@ -218,6 +219,7 @@ protected:
 	bool	m_FeaturesChanged;
 	bool	m_CertChanged;
 	QVariantMap m_UpdateData;
+	QString m_OriginalFileRootPath;
 
 private:
 

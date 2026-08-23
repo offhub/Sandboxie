@@ -1586,7 +1586,8 @@ void CSettingsWindow::LoadSettings()
 		QString KeyRootPath_Default  = "\\REGISTRY\\USER\\Sandbox_%USER%_%SANDBOX%";
 		QString IpcRootPath_Default  = "\\Sandbox\\%USER%\\%SANDBOX%\\Session_%SESSION%";
 
-		ui.fileRoot->setCurrentText(theAPI->GetGlobalSettings()->GetText("FileRootPath", FileRootPath_Default));
+		m_OriginalFileRootPath = theAPI->GetGlobalSettings()->GetText("FileRootPath", FileRootPath_Default);
+		ui.fileRoot->setCurrentText(m_OriginalFileRootPath);
 		ui.chkLockBox->setChecked(theAPI->GetGlobalSettings()->GetBool("LockBoxToUser", false)); 
 		//ui.chkSeparateUserFolders->setChecked(theAPI->GetGlobalSettings()->GetBool("SeparateUserFolders", true));
 		ui.regRoot->setCurrentText(theAPI->GetGlobalSettings()->GetText("KeyRootPath", KeyRootPath_Default));
@@ -2397,20 +2398,45 @@ void CSettingsWindow::SaveSettings()
 }
 
 
-void CSettingsWindow::apply()
+bool CSettingsWindow::ConfirmFileRootPathChange(QWidget* Parent, bool MultipleBoxes)
 {
+	QString Scope = MultipleBoxes
+		? tr("This change may affect multiple existing sandboxes.")
+		: tr("This change affects an existing sandbox.");
+	QString Message = Scope + "\n\n" + tr(
+		"Changing FileRootPath changes where Sandboxie looks for sandbox data. It does not move existing content automatically.\n\n"
+		"Move the complete sandbox directory before applying this change. Moving it as one directory on the same NTFS volume preserves File History hard links. Copying it or moving it to another volume may turn hard-linked retained versions into separate files and substantially increase storage requirements.\n\n"
+		"Continue changing FileRootPath?");
+	return QMessageBox::warning(Parent, "Sandboxie-Plus", Message,
+		QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
+}
+
+static QString NormalizeFileRootSetting(QString Value)
+{
+	Value = Value.trimmed();
+	Value.replace('/', '\\');
+	return Value.toCaseFolded();
+}
+
+bool CSettingsWindow::apply()
+{
+	if (m_GeneralChanged &&
+		NormalizeFileRootSetting(ui.fileRoot->currentText()) != NormalizeFileRootSetting(m_OriginalFileRootPath) &&
+		!ConfirmFileRootPathChange(this, true))
+		return false;
+
 	if (!ui.btnEditIni->isEnabled())
 		SaveIniSection();
 	else
 		SaveSettings();
 	LoadSettings();
+	return true;
 }
 
 void CSettingsWindow::ok()
 {
-	apply();
-
-	this->close();
+	if (apply())
+		this->close();
 }
 
 void CSettingsWindow::reject()

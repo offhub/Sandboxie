@@ -79,6 +79,7 @@ public:
 	virtual QString			GetBoxToolTip() const;
 
 	SB_PROGRESS				CopyBox(const QString& DestDir);
+	SB_PROGRESS				CopyBoxEx(const QString& DestDir, bool IncludeFileHistory, bool IncludeRegistryHistory);
 
 	virtual void			UpdateDetails();
 
@@ -95,6 +96,8 @@ public:
 	virtual SB_PROGRESS		TakeSnapshot(const QString& Name)	{ BeginModifyingBox(); SB_PROGRESS Status = CSandBox::TakeSnapshot(Name); ConnectEndSlot(Status); return Status; }
 	virtual SB_PROGRESS		RemoveSnapshot(const QString& ID)	{ BeginModifyingBox(); SB_PROGRESS Status = CSandBox::RemoveSnapshot(ID); ConnectEndSlot(Status); return Status; }
 	virtual SB_PROGRESS		SelectSnapshot(const QString& ID)	{ BeginModifyingBox(); SB_PROGRESS Status = CSandBox::SelectSnapshot(ID); ConnectEndSlot(Status); return Status; }
+	SB_PROGRESS				SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory) { BeginModifyingBox(); SB_PROGRESS Status = CSandBox::SelectSnapshotEx(ID, DeleteFileHistory, DeleteRegistryHistory); ConnectEndSlot(Status); return Status; }
+	SB_PROGRESS				CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory) { BeginModifyingBox(); SB_PROGRESS Status = CSandBox::CleanBoxExceptHistory(PreserveFileHistory, PreserveRegistryHistory); ConnectEndSlot(Status); return Status; }
 
 	virtual SB_STATUS		ImBoxMount(const QString& Password = QString(), int iProtect = 0, bool bAutoUnmount = false) { BeginModifyingBox(); SB_STATUS Status = CSandBox::ImBoxMount(Password, iProtect, bAutoUnmount); ConnectEndSlot(Status); return Status; }
 	virtual SB_STATUS		ImBoxUnmount()						{ BeginModifyingBox(); SB_STATUS Status = CSandBox::ImBoxUnmount(); if(!Status.IsError()) m_Mount.clear(); ConnectEndSlot(Status); return Status; }
@@ -174,7 +177,7 @@ public:
 	class CRecoveryWindow*	m_pRecoveryWnd;
 
 	bool					IsBoxBusy() const { return IsSizePending() || !m_JobQueue.isEmpty(); }
-	SB_STATUS				DeleteContentAsync(bool DeleteSnapshots = true, bool UseCurrentSnapshot = false);
+	SB_STATUS				DeleteContentAsync(const SDeleteContentOptions& Options, bool UseCurrentSnapshot = false);
 
 	struct SLink {
 		SLink() :Url(false), IconIndex(0) {}
@@ -225,7 +228,8 @@ protected:
 	void					AddJobToQueue(CBoxJob* pJob);
 	void					StartNextJob();
 
-	static void				CopyBoxAsync(const CSbieProgressPtr& pProgress, const QString& SrcDir, const QString& DestDir);
+	static void				CopyBoxAsync(const CSbieProgressPtr& pProgress, const QString& SrcDir, const QString& DestDir,
+		bool IncludeFileHistory, bool IncludeRegistryHistory);
 
 	bool					IsFileDeleted(const QString& RealPath, const QString& Snapshot, const QStringList& SnapshotList, const QMap<QString, QList<QString>>& DeletedPaths);
 

@@ -2,8 +2,10 @@
 
 #include <QtWidgets/QMainWindow>
 #include <QFileIconProvider>
+#include <atomic>
 #include "ui_RecoveryWindow.h"
 #include "SbiePlusAPI.h"
+#include "../DeleteContentOptions.h"
 class CSimpleTreeModel;
 
 class CRecoveryCounter : public QThread
@@ -12,13 +14,15 @@ class CRecoveryCounter : public QThread
 public:
 	CRecoveryCounter(const QString& BoxPath, QWidget* parent = Q_NULLPTR) : QThread(parent) {
 		m_BoxPath = BoxPath;
-		m_run = true;
+		m_run.store(true);
 		start(QThread::LowPriority);
 	}
 	~CRecoveryCounter() {
-		m_run = false;
-		wait(2000);
-		terminate();
+		m_run.store(false);
+		if (!wait(2000)) {
+			terminate();
+			wait();
+		}
 	}
 
 signals:
@@ -28,7 +32,7 @@ protected:
 	void		run();
 
 	QString		m_BoxPath;
-	bool		m_run;
+	std::atomic_bool m_run;
 };
 
 class CRecoveryWindow : public QDialog
@@ -40,7 +44,8 @@ public:
 	~CRecoveryWindow();
 
 	bool		IsDeleteDialog() const;
-	bool		IsDeleteSnapshots() { return m_DeleteSnapshots; }
+	SDeleteContentOptions GetDeleteOptions() const;
+	void		SetDeleteOptions(const SDeleteContentOptions& Options);
 	int			GetUnfilteredFileCount() const { return m_UnfilteredFileCount; }
 
 	static bool	IsFileIgnored(const CSandBoxPtr& pBox, const QString& diskPath, const QString& boxedPath);
@@ -65,7 +70,6 @@ private slots:
 	void		OnDelete();
 	void		OnTargetChanged();
 	void		OnDeleteAll();
-	void		OnDeleteEverything();
 	void		OnCloseUntil();
 	void		OnAutoDisable();
 	void		OnCount(quint32 fileCount, quint32 folderCount, quint64 totalSize);
@@ -105,7 +109,6 @@ protected:
 	int m_LastTargetIndex;
 	bool m_bTargetsChanged;
 	bool m_bReloadPending;
-	bool m_DeleteSnapshots;
 	bool m_bImmediate;
 	int m_UnfilteredFileCount;
 	int m_IgnoredFileCount;
