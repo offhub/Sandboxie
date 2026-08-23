@@ -4,6 +4,24 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
+## [1.19.0 / 5.74.0] - 2026-08-??
+
+### Added
+- added Delete V3 file and registry tracking with the `_v3.dat` plus journal format, full escaping, and SandMan version selector support for empty boxes
+  - added Delete V3 journal, refresh, and compaction tuning settings for file and registry metadata
+- added `KeepFileVersions` process/path rules with `KeepFileVersionsExclude` support for retaining matching sandbox-created file generations
+- added a `FileHistory=y|n` master toggle, migrated-file baseline capture, file-history limits, multi-selection filters, and batch exclusion actions
+- added a Retained File Versions browser with hashes, usage and limit configuration, editor access, and prompted batch evidence removal
+- added opt-in File State History generations with bounded physical maps, optional hashing, exclusions, comparison, filtering, and cleanup controls
+- added opt-in Registry History generations with native hive capture, Delete V2/V3 metadata retention, filtered comparison, cleanup, and configurable limits
+- added optional live-host Registry History comparison without storing a host registry copy
+- added independent retained file, file-state, and registry history choices to SandMan cleanup, snapshot selection, duplicate sandbox, and archive export
+
+### Fixed
+- skipped redundant Registry History generation capture when `AutoDeleteHistoryMode` deletes Registry History
+- fixed Registry History generation cleanup when Windows creates `RegHive.hiv.LOG1` or `RegHive.hiv.LOG2` while reading a saved hive
+
+
 ## [1.18.2 / 5.73.2] - 2026-08-16
 
 ### Added
