@@ -215,6 +215,7 @@ private:
 	QMenu*					m_pMenuContent;
 	QAction*				m_pMenuExplore;
 	QAction*				m_pMenuBrowseNT;
+	QAction*				m_pMenuCompactDeleteV3;
 	QAction*				m_pMenuBrowse;
 	QAction*				m_pMenuRefresh;
 	QAction*				m_pMenuRegEdit;

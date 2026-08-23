@@ -521,6 +521,22 @@
                <item row="1" column="3">
                 <widget class="QComboBox" name="cmbVersion"/>
                </item>
+               <item row="1" column="4">
+                <widget class="QPushButton" name="btnDeleteV3Options">
+                 <property name="maximumSize">
+                  <size>
+                   <width>32</width>
+                   <height>32</height>
+                  </size>
+                 </property>
+                 <property name="toolTip">
+                  <string>Delete V3 advanced settings</string>
+                 </property>
+                 <property name="text">
+                  <string>⚙</string>
+                 </property>
+                </widget>
+               </item>
                <item row="7" column="2" colspan="4">
                 <widget class="QLabel" name="lblImDisk">
                  <property name="text">

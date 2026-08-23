@@ -61,6 +61,8 @@ SbieApi_SetUserName=_SbieApi_SetUserName@8
 
 SbieDll_CallServer=_SbieDll_CallServer@4
 
+SbieDll_CompactDeleteV3=_SbieDll_CompactDeleteV3@0
+
 SbieDll_ComCreateProxy=_SbieDll_ComCreateProxy@16
 SbieDll_ComCreateStub=_SbieDll_ComCreateStub@16
 

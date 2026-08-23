@@ -436,6 +436,7 @@ BOOL Parse_Command_Line(void)
     static const WCHAR *mount_hive        = L"mount_hive";
     static const WCHAR *delete_sandbox    = L"delete_sandbox";
     static const WCHAR *delete_all_sandboxes = L"delete_all_sandboxes";
+    static const WCHAR *compact_delete_v3 = L"compact_delete_v3";
     static const WCHAR *_logoff           = L"_logoff";
     static const WCHAR *_silent           = L"_silent";
     static const WCHAR *_phase            = L"_phase";
@@ -1003,6 +1004,24 @@ BOOL Parse_Command_Line(void)
     } else if (wcsncmp(cmd, delete_all_sandboxes, wcslen(delete_all_sandboxes)) == 0) {
 
         return die(Delete_All_Sandboxes());
+
+    // compact the DeleteV3 file and registry journals
+
+    } else if (_wcsicmp(cmd, compact_delete_v3) == 0) {
+
+        if (!SbieApi_QueryProcessInfo(
+                    (HANDLE)(ULONG_PTR)GetCurrentProcessId(), 0)) {
+            ChildCmdLine = cmd;
+            return TRUE;
+        }
+
+        typedef LONG (WINAPI *P_SbieDll_CompactDeleteV3)(void);
+        HMODULE module = GetModuleHandle(SBIEDLL);
+        P_SbieDll_CompactDeleteV3 compact = module
+            ? (P_SbieDll_CompactDeleteV3)GetProcAddress(module, "SbieDll_CompactDeleteV3")
+            : NULL;
+        LONG status = compact ? compact() : STATUS_NOT_SUPPORTED;
+        return die(NT_SUCCESS(status) ? EXIT_SUCCESS : EXIT_FAILURE);
 
     //
     // if rest is exactly "disable_force" or "disable_force_off"

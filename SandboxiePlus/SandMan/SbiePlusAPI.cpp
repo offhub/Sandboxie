@@ -301,6 +301,71 @@ bool CSandBoxPlus::IsFileDeleted(const QString& RealPath, const QString& Snapsho
 	return IsFileDeleted(RealPath, NewerSnapshot, SnapshotList, DeletedPaths);
 }
 
+static int CSandBoxPlus__FindUnescapedPipe(const QString& Line, int Start = 0)
+{
+	for (int i = Start; i < Line.length(); ++i) {
+		if (Line.at(i) == QLatin1Char('\\') && i + 1 < Line.length()) {
+			++i;
+			continue;
+		}
+		if (Line.at(i) == QLatin1Char('|'))
+			return i;
+	}
+	return -1;
+}
+
+static QString CSandBoxPlus__UnescapeDeleteV3Field(const QString& Field)
+{
+	QString Result;
+	Result.reserve(Field.length());
+	for (int i = 0; i < Field.length(); ++i) {
+		QChar Ch = Field.at(i);
+		if (Ch == QLatin1Char('\\') && i + 1 < Field.length()) {
+			QChar Esc = Field.at(++i);
+			if (Esc == QLatin1Char('|') || Esc == QLatin1Char('\\'))
+				Ch = Esc;
+			else if (Esc == QLatin1Char('r'))
+				Ch = QLatin1Char('\r');
+			else if (Esc == QLatin1Char('n'))
+				Ch = QLatin1Char('\n');
+			else {
+				Result.append(QLatin1Char('\\'));
+				Ch = Esc;
+			}
+		}
+		Result.append(Ch);
+	}
+	return Result;
+}
+
+static void CSandBoxPlus__ReadDeletedPaths(const QString& PathsFile, bool IsV3, QList<QString>& Deleted, CSbieAPI* pAPI)
+{
+	QFile File(PathsFile);
+	if (!File.open(QFile::ReadOnly))
+		return;
+	QByteArray Data = File.readAll();
+	File.close();
+	QString Text = QString::fromWCharArray((const wchar_t*)Data.constData(), Data.size() / sizeof(wchar_t));
+	QTextStream in(&Text);
+	while (!in.atEnd()) {
+		QString Line = in.readLine();
+		QString Path;
+		if (IsV3) {
+			int Sep = CSandBoxPlus__FindUnescapedPipe(Line);
+			if (Sep < 0 || Line.mid(Sep + 1) != "1")
+				continue;
+			Path = CSandBoxPlus__UnescapeDeleteV3Field(Line.left(Sep));
+		} else {
+			QStringList Fields = Line.split("|");
+			if (Fields.length() < 2 || Fields[1] != "1")
+				continue;
+			Path = Fields[0];
+		}
+		if (!Path.isEmpty())
+			Deleted.append(pAPI->Nt2DosPath(Path));
+	}
+}
+
 void CSandBoxPlus::ScanStartMenu()
 {
 	QStringList SnapshotList;
@@ -316,29 +381,20 @@ void CSandBoxPlus::ScanStartMenu()
 	QMap<QString, QList<QString>> DeletedPaths;
 	foreach (const QString& Snapshot, SnapshotList)
 	{
-		QString PathsFile = GetFileRoot();
+		QString PathsBase = GetFileRoot();
 		if (!Snapshot.isEmpty())
-			PathsFile += "\\snapshot-" + Snapshot;
-		PathsFile += "\\FilePaths.dat";
+			PathsBase += "\\snapshot-" + Snapshot;
 
-		QFile File(PathsFile);
-		if (File.open(QFile::ReadOnly)) {
-			QByteArray Data = File.readAll();
-			File.close();
-			QString Text = QString::fromWCharArray((const wchar_t*)Data.constData(), Data.size()/sizeof(wchar_t));
-
-			QList<QString> Deleted;
-
-			QTextStream in(&Text);
-			while (!in.atEnd()) {
-				QStringList Line = in.readLine().split("|");
-				if (Line.length() < 2 || Line[1] != "1")
-					continue; // not a delete entry
-				Deleted.append(theAPI->Nt2DosPath(Line[0]));
-			}
-
-			DeletedPaths[Snapshot] = Deleted;
+		QString V3Dat = PathsBase + "\\FilePaths_v3.dat";
+		QString V3Log = PathsBase + "\\FilePaths_v3.sbie";
+		QList<QString> Deleted;
+		if (QFile::exists(V3Dat) || QFile::exists(V3Log)) {
+			CSandBoxPlus__ReadDeletedPaths(V3Dat, true, Deleted, theAPI);
+			CSandBoxPlus__ReadDeletedPaths(V3Log, true, Deleted, theAPI);
+		} else {
+			CSandBoxPlus__ReadDeletedPaths(PathsBase + "\\FilePaths.dat", false, Deleted, theAPI);
 		}
+		DeletedPaths[Snapshot] = Deleted;
 	}
 
 	QMap<QString, SFoundLink> FoundLinks;

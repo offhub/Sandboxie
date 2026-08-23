@@ -46,6 +46,8 @@ extern P_NtDeviceIoControlFile __sys_NtDeviceIoControlFile;
 static NTSTATUS SbieApi_Ioctl(ULONG64 *parms);
 
 static NTSTATUS SbieApi_IoctlTrace(ULONG64 *parms);
+NTSTATUS File_CompactDeleteV3(void);
+NTSTATUS Key_CompactDeleteV3(void);
 
 //---------------------------------------------------------------------------
 // Variables
@@ -53,6 +55,28 @@ static NTSTATUS SbieApi_IoctlTrace(ULONG64 *parms);
 
 
 HANDLE SbieApi_DeviceHandle = INVALID_HANDLE_VALUE;
+
+
+//---------------------------------------------------------------------------
+// SbieDll_CompactDeleteV3
+//---------------------------------------------------------------------------
+
+LONG SbieDll_CompactDeleteV3(void)
+{
+    NTSTATUS status = File_CompactDeleteV3();
+
+    if (status != STATUS_SUCCESS && status != STATUS_NOT_SUPPORTED)
+        return status;
+
+    NTSTATUS keyStatus = Key_CompactDeleteV3();
+    if (keyStatus != STATUS_SUCCESS && keyStatus != STATUS_NOT_SUPPORTED)
+        return keyStatus;
+
+    if (status == STATUS_NOT_SUPPORTED && keyStatus == STATUS_NOT_SUPPORTED)
+        return STATUS_NOT_SUPPORTED;
+
+    return STATUS_SUCCESS;
+}
 
 // SboxDll does not link in the CRT. Instead, it piggybacks onto the CRT routines that are in ntdll.dll.
 // However, the ntdll.lib from the 7600 DDK does not export everything we need. So we must use runtime dynamic linking.

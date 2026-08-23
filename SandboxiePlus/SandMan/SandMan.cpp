@@ -2483,11 +2483,15 @@ void CSandMan::OnBoxSelected()
 SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, bool DeleteSnapshots)
 {
 	SB_STATUS Ret = SB_OK;
+	auto pBoxEx = pBox.objectCast<CSandBoxPlus>();
+	m_DeletingBoxes.insert(pBox->GetName());
 
 	if (Mode != eAuto) {
 		Ret = pBox->TerminateAll();
-		if (Ret.IsError())
+		if (Ret.IsError()) {
+			m_DeletingBoxes.remove(pBox->GetName());
 			return Ret;
+		}
 		UpdateProcesses();
 	}
 
@@ -2499,18 +2503,24 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, boo
 		AutoDeleteSnapshotTarget = UseAsyncDelete ? "Default" : "Current";
 	const bool UseCurrentSnapshot = Mode == eAuto
 		&& AutoDeleteSnapshotTarget.compare("Current", Qt::CaseInsensitive) == 0;
-
 	if (pBoxEx->UseImageFile()) {
 		if (pBoxEx->GetMountRoot().isEmpty()) {
-			if (Mode != eForDelete)
+			if (Mode != eForDelete) {
+				m_DeletingBoxes.remove(pBox->GetName());
 				return CSbieStatus(SB_DeleteNoMount);
+			}
 
-			if(QFile::exists(pBoxEx->GetBoxImagePath()) && !QFile::remove(pBoxEx->GetBoxImagePath()))
+			if(QFile::exists(pBoxEx->GetBoxImagePath()) && !QFile::remove(pBoxEx->GetBoxImagePath())) {
+				m_DeletingBoxes.remove(pBox->GetName());
 				return SB_ERR(SB_DeleteFailed, QVariantList() << pBoxEx->GetName() << pBoxEx->GetBoxImagePath());
+			}
 
-			if(QDir().exists(pBoxEx->GetFileRoot()) && !QDir().rmdir(pBoxEx->GetFileRoot()))
+			if(QDir().exists(pBoxEx->GetFileRoot()) && !QDir().rmdir(pBoxEx->GetFileRoot())) {
+				m_DeletingBoxes.remove(pBox->GetName());
 				return SB_ERR(SB_DeleteFailed, QVariantList() << pBoxEx->GetName() << pBoxEx->GetFileRoot());
+			}
 
+			m_DeletingBoxes.remove(pBox->GetName());
 			return Ret;
 		}
 	}
@@ -2573,6 +2583,7 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, boo
 	}
 
 finish:
+	m_DeletingBoxes.remove(pBox->GetName());
 	m_iDeletingContent = qMax(0, m_iDeletingContent - 1);
 	if (m_pTrayIcon) {
 		bool isConnected = theAPI->IsConnected();
@@ -2768,6 +2779,8 @@ void CSandMan::OnBoxOpened(const CSandBoxPtr& pBox)
 
 void CSandMan::OnBoxClosed(const CSandBoxPtr& pBox)
 {
+	const bool bAutoCompactFinished = m_AutoCompactingV3Boxes.remove(pBox->GetName());
+
 	foreach(const QString & Value, pBox->GetTextList("OnBoxTerminate", true, false, true)) {
 		QString Value2 = pBox->Expand(Value);
 		CSbieProgressPtr pProgress = CSbieUtils::RunCommand(Value2, true);
@@ -2810,10 +2823,29 @@ void CSandMan::OnBoxClosed(const CSandBoxPtr& pBox)
 			DeleteBoxContent(pBox, eAuto, DeleteSnapshots);
 		}
 	}
+
+	const bool bAutoDelete = pBox->GetBool("AutoDelete", false);
+	const bool bAutoRemove = pBox->GetBool("AutoRemove", false);
+	const bool bUseFileDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseFileDeleteV3", false);
+	const bool bUseRegDeleteV3Global = theAPI->GetGlobalSettings()->GetBool("UseRegDeleteV3", false);
+	const bool bDeleteV3Enabled = pBox->GetBool("UseFileDeleteV3", bUseFileDeleteV3Global)
+		|| pBox->GetBool("UseRegDeleteV3", bUseRegDeleteV3Global);
+	if (!bAutoCompactFinished
+		&& !bAutoDelete
+		&& !bAutoRemove
+		&& !m_DeletingBoxes.contains(pBox->GetName())
+		&& bDeleteV3Enabled
+		&& pBox->GetBool("AutoCompactV3", false)) {
+		m_AutoCompactingV3Boxes.insert(pBox->GetName());
+		SB_RESULT(quint32) Status = RunStart(pBox->GetName(), "compact_delete_v3");
+		if (Status.IsError())
+			m_AutoCompactingV3Boxes.remove(pBox->GetName());
+	}
 }
 
 void CSandMan::OnBoxCleaned(CSandBoxPlus* pBoxEx)
 {
+	m_DeletingBoxes.remove(pBoxEx->GetName());
 	if (pBoxEx->GetBool("AutoRemove", false))
 	{
 		if (theConf->GetBool("Options/AutoBoxOpsNotify", false))
@@ -4653,6 +4685,7 @@ QString CSandMan::FormatError(const SB_STATUS& Error)
 	case SB_PasswordBad:	Message = tr("The config password must not be longer than 64 characters"); break;
 	case SB_Canceled:		Message = tr("The operation was canceled by the user"); break;
 	case SB_DeleteNoMount:	Message = tr("The content of an unmounted sandbox can not be deleted"); break;
+	case SB_SnapNoSpace:	Message = tr("Not enough free space for the snapshot operation"); break;
 
 	case SB_OtherError:		Message = tr("%1"); break;
 

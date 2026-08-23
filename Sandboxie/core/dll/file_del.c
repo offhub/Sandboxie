@@ -26,6 +26,26 @@
 //---------------------------------------------------------------------------
 
 #define FILE_PATH_FILE_NAME     L"FilePaths.dat"
+#define FILE_PATH_LOG_FILE_NAME L"FilePaths.sbie"
+
+// Delete V3 file names, used exclusively in v3 mode.
+// V3 = V2 + forced journaling + new format (escaped entries, opcode 3 for reg values).
+// Not backward compatible with v2 files; switching requires a clean box.
+#define FILE_PATH_FILE_NAME_V3     L"FilePaths_v3.dat"
+#define FILE_PATH_LOG_FILE_NAME_V3 L"FilePaths_v3.sbie"
+
+// Hard-cap: force compaction regardless of user settings or burst state.
+// 64-bit: 512 MB (MaxSizeKB limit 1 GB / 2); 32-bit: 256 MB (1 GB / 4)
+#ifdef _WIN64
+#define FILE_JOURNAL_HARD_CAP_BYTES  (512UL * 1024UL * 1024UL)
+#else
+#define FILE_JOURNAL_HARD_CAP_BYTES  (256UL * 1024UL * 1024UL)
+#endif
+#define FILE_JOURNAL_MAX_RECORD_BYTES (512UL * 1024UL)
+
+NTSYSAPI NTSTATUS NTAPI NtFlushBuffersFile(
+    HANDLE FileHandle,
+    PIO_STATUS_BLOCK IoStatusBlock);
 
 // path flags, saved to file
 #define FILE_DELETED_FLAG       0x0001
@@ -48,13 +68,25 @@
 // Structures and Types
 //---------------------------------------------------------------------------
 
+#define PATH_LIST_HASH_THRESHOLD  8    // switch to hash table above this many children
+#define PATH_LIST_INITIAL_BUCKETS 16   // initial bucket count (must be power of 2)
+
+typedef struct _PATH_NODE PATH_NODE;
+typedef struct _PATH_LIST {
+    LIST         list;          // MUST be first member, cast to LIST* is always valid
+    PATH_NODE**  buckets;       // hash buckets (NULL while list.count <= threshold)
+    ULONG        bucket_count;  // number of buckets, always a power of 2
+} PATH_LIST;
+
 typedef struct _PATH_NODE {
-    LIST_ELEM list_elem;
-    LIST items;
-    ULONG flags;
-    WCHAR* relocation;
-    ULONG name_len;
-    WCHAR name[1];
+    LIST_ELEM    list_elem;
+    PATH_LIST    items;         // children list + optional hash table
+    PATH_NODE*   hash_chain;    // intrusive chain within parent's hash bucket
+    ULONG        flags;
+    WCHAR*       relocation;
+    ULONG        name_hash;     // FNV-1a case-insensitive hash of name[]
+    ULONG        name_len;
+    WCHAR        name[1];
 } PATH_NODE;
 
 
@@ -63,26 +95,116 @@ typedef struct _PATH_NODE {
 //---------------------------------------------------------------------------
 
 
-static LIST File_PathRoot;
+static PATH_LIST File_PathRoot;
 static CRITICAL_SECTION *File_PathRoot_CritSec = NULL;
 
 static HANDLE File_BoxRootWatcher = NULL;
 static IO_STATUS_BLOCK File_NotifyIosb;
 static FILE_NOTIFY_INFORMATION File_NotifyInfo[2];
 static ULONG File_BoxRootChangeBits = 0;
+static HANDLE File_VfsMutex = NULL;
 
 static ULONG64 File_PathsFileSize = 0;
 static ULONG64 File_PathsFileDate = 0;
+static ULONG64 File_PathsLogFileSize = 0;
+static ULONG64 File_PathsLogFileDate = 0;
+static ULONG64 File_PathsLogReplayOffset = 0;
+static ULONG File_PathsLogLineCount = 0;
+static volatile LONG File_LastRefreshTick = 0;
+static volatile ULONG File_PathsVersion = 0; // bumped on every path-tree reload; observed by File_Merge
+static ULONG File_PathRefreshIntervalMs = 50;
+static BOOLEAN File_DeleteV3 = FALSE; // v3 mode: journal + new format always enabled
+static ULONG File_DeleteV3JournalMaxSizeBytes = 1024 * 1024;
+static ULONG File_DeleteV3JournalMaxLines = 10000;
+static ULONG File_DeleteV3JournalKeepOpenMs = 0;
+static HANDLE File_PathsLogAppendHandle = NULL;
+static ULONG File_PathsLogAppendLastTick = 0;
+
+static ULONG File_DeleteV3CompactionBusyWritesPerSec = 100;  // 0 = burst-defer disabled
+static ULONG File_DeleteV3CompactionBusyHoldMs = 60000;    // hold window after burst detected (ms)
+static ULONG File_DeleteV3CompactionMinGraceMs = 5000;     // min grace before first compaction (ms)
+static ULONG File_CompactionBusyUntilTick = 0;             // process-local defer-until tick
+static ULONG File_RecentWriteCount = 0;                    // writes in current rate window
+static ULONG File_RecentWriteWindowTick = 0;               // start tick of current rate window
+
+static HANDLE           File_SharedBusyHandle = NULL;       // named section handle
+static volatile LONG*   File_SharedBusyUntilTick = NULL;    // mapped cross-process BusyUntilTick
+
+// Per-box named object names, populated in File_InitDelete_v2 with Dll_BoxName so that
+// boxes sharing an OpenIpcPath=*SBIE* rule cannot cross-contaminate each other's
+// compaction locks or burst-deferral counters.
+// Worst-case length: "SBIE_" + 32-char box name + "_VFS_Compact_Mutex" + NUL = 56 WCHAR.
+static WCHAR File_VfsMutexName[64];
+static WCHAR File_VfsCompactMutexName[64];
+static WCHAR File_VfsBusyTickName[64];
+
+//---------------------------------------------------------------------------
+// VPATH_JOURNAL_CTX - bundles all per-VFS journal state so that the shared
+// Vfs_AppendAndMaybeCompact_internal helper can serve both the file VFS and
+// the registry VCM journal without code duplication.
+// key_del.c re-declares this struct (must keep in sync).
+//---------------------------------------------------------------------------
+
+typedef struct _VPATH_JOURNAL_CTX {
+    // Log (.sbie) and snapshot (.dat) file names, pointer-to-pointer so the
+    // ctx always reflects the current mode even if File_SetDeleteV3 is called
+    // after init.
+    const WCHAR**       pLogName;
+    const WCHAR**       pDatName;
+    // Path translation callbacks (NULL = no translation, e.g. registry paths)
+    WCHAR*        (*TranslateForWrite)(const WCHAR*);
+    WCHAR*        (*TranslateForLoad)(const WCHAR*);
+    // Critical section and in-memory tree
+    CRITICAL_SECTION*   CritSec;
+    PATH_LIST*          Root;
+    // Keep-open append handle cache
+    HANDLE*             pAppendHandle;
+    ULONG*              pAppendLastTick;
+    ULONG*              pKeepOpenMs;
+    // Journal size / replay tracking
+    ULONG64*            pLogFileSize;
+    ULONG64*            pLogFileDate;
+    ULONG64*            pReplayOffset;
+    ULONG*              pLogLineCount;
+    // Compaction thresholds (pointers so runtime setter changes are picked up)
+    ULONG*              pMaxSizeBytes;
+    ULONG*              pMaxLines;
+    // Burst-deferral settings
+    ULONG*              pBusyWritesPerSec;
+    ULONG*              pBusyHoldMs;
+    ULONG*              pMinGraceMs;
+    // Burst-deferral counters
+    ULONG*              pRecentWriteCount;
+    ULONG*              pRecentWriteWindowTick;
+    ULONG*              pBusyUntilTick;
+    volatile LONG*      pSharedBusyUntilTick;
+    // Compaction mutex name (points to a per-box [64]-char WCHAR array)
+    WCHAR*              compactMutexName;
+    // Snapshot (.dat) size/date tracking, updated post-compact
+    ULONG64*            pDatFileSize;
+    ULONG64*            pDatFileDate;
+    volatile ULONG*     pPathsVersion;
+    // v3 mode flag - pointer so the ctx tracks the live global
+    BOOLEAN*            pIsV3;
+} VPATH_JOURNAL_CTX;
+
+static VPATH_JOURNAL_CTX File_JournalCtx;
+static const WCHAR* File_CurrentLogName;
+static const WCHAR* File_CurrentDatName;
 
 //---------------------------------------------------------------------------
 // Functions
 //---------------------------------------------------------------------------
 
-static ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation);
+static ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation, BOOLEAN CheckChildren);
+static const WCHAR* File_TrimTrailingBackslashes(const WCHAR* Path, int slot);
 static BOOLEAN File_SavePathTree();
 static BOOLEAN File_LoadPathTree();
 static VOID File_RefreshPathTree();
 BOOLEAN File_InitDelete_v2();
+VOID File_SetDeleteV3RefreshInterval(ULONG IntervalMs);
+VOID File_SetDeleteV3(BOOLEAN Enabled);
+VOID File_SetDeleteV3JournalMaxSizeKB(ULONG MaxSizeKB);
 
 static NTSTATUS File_MarkDeleted_v2(const WCHAR *TruePath);
 static ULONG File_IsDeleted_v2(const WCHAR* TruePath);
@@ -97,14 +219,39 @@ BOOL File_GetAttributes_internal(const WCHAR *name, ULONG64 *size, ULONG64 *date
 
 HANDLE File_AcquireMutex(const WCHAR* MutexName);
 void File_ReleaseMutex(HANDLE hMutex);
-#define FILE_VFS_MUTEX SBIE L"_VFS_Mutex"
+// Names are built at init time (File_InitDelete_v2) to include Dll_BoxName,
+// so that boxes with overlapping OpenIpcPath rules cannot share these objects.
+#define FILE_VFS_MUTEX         File_VfsMutexName
+#define FILE_VFS_COMPACT_MUTEX File_VfsCompactMutexName
+// A 4-byte page-file-backed named section shared among all sandbox processes
+// for the same sandbox.  Holds the cross-process BusyUntilTick (ULONG / LONG),
+// atomically updated via InterlockedCompareExchange so no mutex is needed.
+#define FILE_VFS_BUSY_TICK     File_VfsBusyTickName
+
+#define FILE_UTF16_LE_BOM ((WCHAR)0xFEFF)
+
+ULONG File_AppendPathJournalDelete_internal(HANDLE hPathsFile, const WCHAR* Path, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3);
+ULONG File_AppendPathJournalRelocation_internal(HANDLE hPathsFile, const WCHAR* OldPath, const WCHAR* NewPath, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3);
+ULONG File_AppendPathJournalValueDelete_internal(HANDLE hPathsFile, const WCHAR* KeyPath, const WCHAR* ValueName, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3);
+BOOLEAN File_LoadPathJournal_internal(PATH_LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *), ULONG64* pReplayOffset, ULONG* pAppliedLines, BOOLEAN IsJournal);
+BOOLEAN File_MarkDeleted_internal(PATH_LIST* Root, const WCHAR* Path, BOOLEAN* pTruncated);
+VOID File_SetRelocation_internal(PATH_LIST* Root, const WCHAR *OldTruePath, const WCHAR *NewTruePath);
+BOOLEAN File_CompactPathJournal_internal(CRITICAL_SECTION* CritSec, PATH_LIST* Root, const WCHAR* datName, const WCHAR* logName, WCHAR* (*TranslatePath)(const WCHAR*), ULONG64* pLogSize, ULONG64* pLogDate, ULONG64* pReplayOffset, HANDLE* pAppendHandle, BOOLEAN isV3);
+VOID File_UpdateJournalState_internal(ULONG BytesWritten, ULONG64* pLogFileSize, ULONG64* pReplayOffset, ULONG* pLogLineCount, ULONG WritesPerSecThreshold, ULONG HoldMs, ULONG MinGraceMs, ULONG* pRecentWriteCount, ULONG* pRecentWriteWindowTick, ULONG* pBusyUntilTick);
+BOOLEAN File_ShouldCompactJournal_internal(ULONG WritesPerSecThreshold, ULONG BusyUntilTick, ULONG64 LogFileSize, ULONG MaxSizeBytes, ULONG LogLineCount, ULONG MaxLines);
+VOID File_SetDeleteV3JournalMaxLines(ULONG MaxLines);
+VOID File_SetDeleteV3JournalKeepOpenMs(ULONG KeepOpenMs);
+VOID File_SetDeleteV3CompactionMinGraceMs(ULONG MinGraceMs);
+VOID File_AtomicTickMax(volatile LONG* pShared, ULONG newVal);
+BOOLEAN Vfs_AppendAndMaybeCompact_internal(VPATH_JOURNAL_CTX* ctx, BOOLEAN isDelete, const WCHAR* Path, const WCHAR* NewPath, BOOLEAN* pApplied);
+BOOLEAN Vfs_CompactJournalNow_internal(VPATH_JOURNAL_CTX* ctx);
 
 //---------------------------------------------------------------------------
 // File_ClearPathBranche
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_ClearPathBranche_internal(LIST* parent)
+_FX VOID File_ClearPathBranche_internal(PATH_LIST* parent)
 {
     PATH_NODE* child = List_Head(parent);
     while (child) {
@@ -113,12 +260,69 @@ _FX VOID File_ClearPathBranche_internal(LIST* parent)
 
         File_ClearPathBranche_internal(&child->items);
 
-        List_Remove(parent, child);
+        List_Remove((LIST*)parent, child);
         if(child->relocation) Dll_Free(child->relocation);
         Dll_Free(child);
 
         child = next_child;
     }
+    if (parent->buckets) {
+        Dll_Free(parent->buckets);
+        parent->buckets = NULL;
+        parent->bucket_count = 0;
+    }
+}
+
+
+static ULONG PathNode_HashName(const WCHAR* name, ULONG len) {
+    ULONG hash = 2166136261UL;
+    for (ULONG i = 0; i < len; i++) {
+        WCHAR c = name[i];
+        if (c >= L'A' && c <= L'Z') c |= 0x20;
+        hash ^= (ULONG)(USHORT)c;
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+static void PathList_BuildTable(PATH_LIST* parent, ULONG bucket_count) {
+    parent->buckets = Dll_Alloc(bucket_count * sizeof(PATH_NODE*));
+    if (!parent->buckets) return;
+    memzero(parent->buckets, bucket_count * sizeof(PATH_NODE*));
+    parent->bucket_count = bucket_count;
+    PATH_NODE* child = List_Head(parent);
+    while (child) {
+        ULONG idx = child->name_hash & (bucket_count - 1);
+        child->hash_chain = parent->buckets[idx];
+        parent->buckets[idx] = child;
+        child = List_Next(child);
+    }
+}
+
+static void PathList_Rebuild(PATH_LIST* parent) {
+    if (parent->buckets) {
+        Dll_Free(parent->buckets);
+        parent->buckets = NULL;
+        parent->bucket_count = 0;
+    }
+    if (parent->list.count > PATH_LIST_HASH_THRESHOLD) {
+        ULONG bc = PATH_LIST_INITIAL_BUCKETS;
+        while ((ULONG)parent->list.count > bc * 3 / 4) bc <<= 1;
+        PathList_BuildTable(parent, bc);
+    }
+}
+
+static void PathList_RemoveFromTable(PATH_LIST* parent, PATH_NODE* node) {
+    ULONG idx = node->name_hash & (parent->bucket_count - 1);
+    PATH_NODE** pp = &parent->buckets[idx];
+    while (*pp) {
+        if (*pp == node) {
+            *pp = node->hash_chain;
+            break;
+        }
+        pp = &(*pp)->hash_chain;
+    }
+    node->hash_chain = NULL;
 }
 
 
@@ -127,29 +331,60 @@ _FX VOID File_ClearPathBranche_internal(LIST* parent)
 //---------------------------------------------------------------------------
 
 
-_FX PATH_NODE* File_GetPathNode_internal(LIST* parent, const WCHAR* name, ULONG name_len, BOOLEAN can_add) 
+_FX PATH_NODE* File_GetPathNode_internal(PATH_LIST* parent, const WCHAR* name, ULONG name_len, BOOLEAN can_add)
 {
+    ULONG hash = PathNode_HashName(name, name_len);
     PATH_NODE* child;
-    
-    child = List_Head(parent);
-    while (child) {
 
-        if (child->name_len == name_len && _wcsnicmp(child->name, name, name_len) == 0)
-            break;
-
-        child = List_Next(child);
+    if (parent->buckets) {
+        // O(1) hash lookup
+        ULONG idx = hash & (parent->bucket_count - 1);
+        child = parent->buckets[idx];
+        while (child) {
+            if (child->name_hash == hash && child->name_len == name_len
+                    && _wcsnicmp(child->name, name, name_len) == 0)
+                break;
+            child = child->hash_chain;
+        }
+    } else {
+        // O(n) linear scan for small lists
+        child = List_Head(parent);
+        while (child) {
+            if (child->name_len == name_len && _wcsnicmp(child->name, name, name_len) == 0)
+                break;
+            child = List_Next(child);
+        }
     }
 
     if (!child && can_add) {
 
         child = Dll_Alloc(sizeof(PATH_NODE) + name_len*sizeof(WCHAR));
+        if (!child) return NULL;
         memzero(child, sizeof(PATH_NODE));
-        //List_Init(child->items); // done by memzero
         child->name_len = name_len;
+        child->name_hash = hash;
         wmemcpy(child->name, name, name_len);
         child->name[name_len] = L'\0';
 
-        List_Insert_After(parent, NULL, child);
+        List_Insert_After((LIST*)parent, NULL, child);
+
+        if (parent->buckets) {
+            // Insert into existing table; grow if load factor exceeds 75%
+            if ((ULONG)parent->list.count > parent->bucket_count * 3 / 4) {
+                ULONG new_bc = parent->bucket_count * 2;
+                Dll_Free(parent->buckets);
+                parent->buckets = NULL;
+                parent->bucket_count = 0;
+                PathList_BuildTable(parent, new_bc);
+            } else {
+                ULONG idx = hash & (parent->bucket_count - 1);
+                child->hash_chain = parent->buckets[idx];
+                parent->buckets[idx] = child;
+            }
+        } else if (parent->list.count > PATH_LIST_HASH_THRESHOLD) {
+            // Threshold crossed: build initial hash table
+            PathList_BuildTable(parent, PATH_LIST_INITIAL_BUCKETS);
+        }
     }
 
     return child;
@@ -161,9 +396,9 @@ _FX PATH_NODE* File_GetPathNode_internal(LIST* parent, const WCHAR* name, ULONG 
 //---------------------------------------------------------------------------
 
 
-_FX PATH_NODE* File_FindPathBranche_internal(LIST* Root, const WCHAR* Path, LIST** pParent, BOOLEAN can_add) 
+_FX PATH_NODE* File_FindPathBranche_internal(PATH_LIST* Root, const WCHAR* Path, PATH_LIST** pParent, BOOLEAN can_add)
 {
-    LIST* Parent = Root;
+    PATH_LIST* Parent = Root;
     PATH_NODE* Node;
     const WCHAR* next;
     for (const WCHAR* ptr = Path; *ptr; ptr = next + 1) {
@@ -192,9 +427,9 @@ _FX PATH_NODE* File_FindPathBranche_internal(LIST* Root, const WCHAR* Path, LIST
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_SetPathFlags_internal(LIST* Root, const WCHAR* Path, ULONG setFlags, ULONG clrFlags, const WCHAR* Relocation)
+_FX VOID File_SetPathFlags_internal(PATH_LIST* Root, const WCHAR* Path, ULONG setFlags, ULONG clrFlags, const WCHAR* Relocation)
 {
-    PATH_NODE* Parent = Root;
+    PATH_LIST* Parent = Root;
     PATH_NODE* Node;
     const WCHAR* next;
     for (const WCHAR* ptr = Path; *ptr; ptr = next + 1) {
@@ -204,6 +439,12 @@ _FX VOID File_SetPathFlags_internal(LIST* Root, const WCHAR* Path, ULONG setFlag
         if(!next) next = wcschr(ptr, L'\0'); // last
         
         Node = File_GetPathNode_internal(Parent, ptr, (ULONG)(next - ptr), TRUE);
+        if (!Node)
+            return; // OOM: allocation of an intermediate or leaf node failed; silently abort.
+                    // Callers (File_MarkDeleted_internal, File_SetRelocation_internal, the .dat
+                    // loader) treat a missing node as "not deleted / not relocated", which is the
+                    // safest degradation: a false-negative (guest code reaches real host files) is
+                    // always better than a NULL-deref crash of the sandboxed process.
 
         if (*next == L'\0') { // set flag always on the last element only
 
@@ -219,7 +460,12 @@ _FX VOID File_SetPathFlags_internal(LIST* Root, const WCHAR* Path, ULONG setFlag
             if ((setFlags & FILE_RELOCATION_FLAG) != 0 && Relocation != NULL) {
                 if (Relocation && wcslen(Relocation) > 0) {
                     Node->relocation = Dll_Alloc((wcslen(Relocation) + 1) * sizeof(WCHAR));
-                    wcscpy(Node->relocation, Relocation);
+                    if (Node->relocation)
+                        wcscpy(Node->relocation, Relocation);
+                    else
+                        Node->flags &= ~FILE_RELOCATION_FLAG; // Alloc failed; clear the flag so
+                                                               // the node is not left half-wired
+                                                               // (flag set but no target string).
                 }
             }
 
@@ -235,15 +481,14 @@ _FX VOID File_SetPathFlags_internal(LIST* Root, const WCHAR* Path, ULONG setFlag
 //---------------------------------------------------------------------------
 
 
-_FX ULONG File_GetPathFlags_internal(LIST* Root, const WCHAR* Path, WCHAR** pRelocation, BOOLEAN CheckChildren)
+_FX ULONG File_GetPathFlags_internal(PATH_LIST* Root, const WCHAR* Path, WCHAR** pRelocation, BOOLEAN CheckChildren)
 {
     ULONG Flags = 0;
     const WCHAR* Relocation = NULL;
     const WCHAR* SubPath = NULL;
 
-    LIST* Parent = Root;
+    PATH_LIST* Parent = Root;
     PATH_NODE* Node;
-    PATH_NODE* child;
     const WCHAR* next;
     for (const WCHAR* ptr = Path; *ptr; ptr = next + 1) {
         next = wcschr(ptr, L'\\');
@@ -272,16 +517,8 @@ _FX ULONG File_GetPathFlags_internal(LIST* Root, const WCHAR* Path, WCHAR** pRel
             if ((Node->flags & FILE_DELETED_FLAG) != 0)
                 Flags |= FILE_DELETED_FLAG; // flag set for the path
 
-            if (CheckChildren) {
-                child = List_Head(&Node->items);
-                while (child) {
-                    if ((child->flags & Flags) == Flags) {
-                        Flags |= FILE_CHILDREN_DELETED_FLAG; // path set for children
-                        break;
-                    }
-                    child = List_Next(child);
-                }
-            }
+            if (CheckChildren && Node->items.list.count != 0)
+                Flags |= FILE_CHILDREN_DELETED_FLAG;
 
             break;
         }
@@ -384,7 +621,7 @@ _FX const WCHAR* File_NormalizePath(const WCHAR* path, int slot)
 //---------------------------------------------------------------------------
 
 
-_FX ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation)
+_FX ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation, BOOLEAN CheckChildren)
 {
     ULONG Flags;
 
@@ -392,11 +629,33 @@ _FX ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation)
 
     EnterCriticalSection(File_PathRoot_CritSec);
 
-    Flags = File_GetPathFlags_internal(&File_PathRoot, File_NormalizePath(Path, NORM_NAME_BUFFER), pRelocation, TRUE);
+    Flags = File_GetPathFlags_internal(&File_PathRoot,
+        File_TrimTrailingBackslashes(File_NormalizePath(Path, NORM_NAME_BUFFER), MISC_NAME_BUFFER),
+        pRelocation, CheckChildren);
 
     LeaveCriticalSection(File_PathRoot_CritSec);
 
     return Flags;
+}
+
+
+_FX const WCHAR* File_TrimTrailingBackslashes(const WCHAR* Path, int slot)
+{
+    ULONG len = (ULONG)wcslen(Path);
+    while (len > 1 && Path[len - 1] == L'\\') {
+        if (len == 3 && Path[1] == L':')
+            break;
+        len -= 1;
+    }
+
+    if (Path[len] == L'\0')
+        return Path;
+
+    THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
+    WCHAR* Trimmed = Dll_GetTlsNameBuffer(TlsData, slot, (len + 1) * sizeof(WCHAR));
+    wmemcpy(Trimmed, Path, len);
+    Trimmed[len] = L'\0';
+    return Trimmed;
 }
 
 
@@ -405,45 +664,432 @@ _FX ULONG File_GetPathFlags(const WCHAR* Path, WCHAR** pRelocation)
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_AppendPathEntry_internal(HANDLE hPathsFile, const WCHAR* Path, ULONG SetFlags, const WCHAR* Relocation, WCHAR* (*TranslatePath)(const WCHAR*))
+static BOOLEAN File_IsValidStoragePath_internal(const WCHAR* Path)
 {
-    const WCHAR CrLf[] = L"\r\n";
-    WCHAR FlagStr[16] = L"|";
+    const WCHAR* backslash;
 
-    IO_STATUS_BLOCK IoStatusBlock;
+    if (!Path || !Path[0])
+        return FALSE;
 
-    // write the path
-    WCHAR* PathEx = TranslatePath ? TranslatePath(Path) : NULL;
-    NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, PathEx ? PathEx : (WCHAR*)Path, wcslen(PathEx ? PathEx : Path) * sizeof(WCHAR), NULL, NULL);
-    if (PathEx) Dll_Free(PathEx);
+    if (Path[0] == L'\\' && Path[1] == L'\\')
+        return TRUE;
 
-    // write the flags
-    _ultow(SetFlags, FlagStr + 1, 16);
-    NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, FlagStr, wcslen(FlagStr) * sizeof(WCHAR), NULL, NULL);
+    backslash = wcschr(Path + (Path[0] == L'\\' ? 1 : 0), L'\\');
+    if (!backslash)
+        backslash = wcschr(Path, L'\0');
 
-    // write the relocation
-    if (Relocation != NULL) {
-
-        NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, FlagStr, sizeof(WCHAR), NULL, NULL); // write |
-
-        WCHAR* RelocationEx = TranslatePath ? TranslatePath(Relocation) : NULL;
-        NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, RelocationEx ? RelocationEx : (WCHAR*)Relocation, wcslen(RelocationEx ? RelocationEx : Relocation) * sizeof(WCHAR), NULL, NULL);
-        if (RelocationEx) Dll_Free(RelocationEx);
-    }
-
-    // write line ending
-    NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, (void*)CrLf, sizeof(CrLf) - sizeof(WCHAR), NULL, NULL);
+    return (backslash > Path && *(backslash - 1) == L':');
 }
 
+
+static BOOLEAN File_IsValidStorageFallbackPath_internal(const WCHAR* Path)
+{
+    if (File_IsValidStoragePath_internal(Path))
+        return TRUE;
+
+    if (!Path || !Path[0])
+        return FALSE;
+
+    return (_wcsnicmp(Path, L"\\Device\\", 8) == 0 ||
+            _wcsnicmp(Path, L"\\??\\", 4) == 0 ||
+            _wcsnicmp(Path, L"\\SystemRoot\\", 12) == 0);
+}
+
+
+static BOOLEAN File_IsDosDrivePath_internal(const WCHAR* Path)
+{
+    WCHAR c;
+
+    if (!Path)
+        return FALSE;
+
+    c = Path[0];
+    return (((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z')) &&
+            Path[1] == L':' &&
+            (Path[2] == L'\\' || Path[2] == L'/' || Path[2] == L'\0'));
+}
+
+
+static BOOLEAN File_IsDriveLessDosPath_internal(const WCHAR* Path)
+{
+    if (!Path)
+        return FALSE;
+
+    return (Path[0] == L':' &&
+            (Path[1] == L'\\' || Path[1] == L'/' || Path[1] == L'\0'));
+}
+
+
+static BOOLEAN File_HasMalformedDosPathPair_internal(const WCHAR* Path1, const WCHAR* Path2)
+{
+    return (File_IsDriveLessDosPath_internal(Path1) ||
+            (Path2 && File_IsDriveLessDosPath_internal(Path2)));
+}
+
+
+static const WCHAR* File_GetPathForStorage_internal(
+    const WCHAR* Path, WCHAR* (*TranslatePath)(const WCHAR*), WCHAR** pPathEx)
+{
+    *pPathEx = NULL;
+
+    if (!TranslatePath)
+        return Path;
+
+    *pPathEx = TranslatePath(Path);
+    if (*pPathEx) {
+        if (File_IsValidStoragePath_internal(*pPathEx))
+            return *pPathEx;
+
+        Dll_Free(*pPathEx);
+        *pPathEx = NULL;
+    }
+
+    if (File_IsValidStorageFallbackPath_internal(Path))
+        return Path;
+
+    return NULL;
+}
+
+
+_FX BOOLEAN File_AppendPathEntry_internal(HANDLE hPathsFile, const WCHAR* Path, ULONG SetFlags, const WCHAR* Relocation, WCHAR* (*TranslatePath)(const WCHAR*))
+{
+    IO_STATUS_BLOCK IoStatusBlock;
+
+    WCHAR* PathEx = NULL;
+    const WCHAR* FinalPath = File_GetPathForStorage_internal(Path, TranslatePath, &PathEx);
+    if (!FinalPath)
+        return FALSE;
+
+    WCHAR* RelocationEx = NULL;
+    const WCHAR* FinalRelocation = NULL;
+    if (Relocation != NULL)
+        FinalRelocation = File_GetPathForStorage_internal(Relocation, TranslatePath, &RelocationEx);
+    if (Relocation != NULL && !FinalRelocation) {
+        if (PathEx) Dll_Free(PathEx);
+        return FALSE;
+    }
+
+    WCHAR FlagStr[16];
+    _ultow(SetFlags, FlagStr, 16);
+
+    // Build and write the entire line in a single NtWriteFile call: path|flags[|relocation]\r\n
+    ULONG LineLen = (ULONG)(wcslen(FinalPath) + 1 + wcslen(FlagStr) + 2);
+    if (FinalRelocation)
+        LineLen += 1 + (ULONG)wcslen(FinalRelocation);
+
+    WCHAR* Line = Dll_Alloc((LineLen + 1) * sizeof(WCHAR));
+    if (!Line) {
+        if (PathEx) Dll_Free(PathEx);
+        if (RelocationEx) Dll_Free(RelocationEx);
+        return FALSE;
+    }
+    wcscpy(Line, FinalPath);
+    wcscat(Line, L"|");
+    wcscat(Line, FlagStr);
+    if (FinalRelocation) {
+        wcscat(Line, L"|");
+        wcscat(Line, FinalRelocation);
+    }
+    wcscat(Line, L"\r\n");
+
+    NTSTATUS status = NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Line, LineLen * sizeof(WCHAR), NULL, NULL);
+    Dll_Free(Line);
+
+    if (PathEx) Dll_Free(PathEx);
+    if (RelocationEx) Dll_Free(RelocationEx);
+    return NT_SUCCESS(status) && (ULONG)IoStatusBlock.Information == LineLen * sizeof(WCHAR);
+}
+
+static WCHAR* File_JournalEscapeField_internal(const WCHAR* in)
+{
+    ULONG inLen;
+    WCHAR* out;
+    ULONG si, di;
+
+    if (!in)
+        return NULL;
+
+    inLen = (ULONG)wcslen(in);
+    out = Dll_Alloc((inLen * 2 + 1) * sizeof(WCHAR));
+    if (!out)
+        return NULL;
+
+    si = 0;
+    di = 0;
+    while (si < inLen) {
+        WCHAR ch = in[si++];
+        if (ch == L'\\' || ch == L'|') {
+            out[di++] = L'\\';
+            out[di++] = ch;
+        } else if (ch == L'\r') {
+            out[di++] = L'\\';
+            out[di++] = L'r';
+        } else if (ch == L'\n') {
+            out[di++] = L'\\';
+            out[di++] = L'n';
+        } else {
+            out[di++] = ch;
+        }
+    }
+    out[di] = L'\0';
+    return out;
+}
+
+static WCHAR* File_JournalUnescapeField_internal(const WCHAR* in)
+{
+    ULONG inLen;
+    WCHAR* out;
+    ULONG si, di;
+
+    if (!in)
+        return NULL;
+
+    inLen = (ULONG)wcslen(in);
+    out = Dll_Alloc((inLen + 1) * sizeof(WCHAR));
+    if (!out)
+        return NULL;
+
+    si = 0;
+    di = 0;
+    while (si < inLen) {
+        WCHAR ch = in[si++];
+        if (ch == L'\\' && si < inLen) {
+            WCHAR esc = in[si++];
+            if (esc == L'|' || esc == L'\\')
+                ch = esc;
+            else if (esc == L'r')
+                ch = L'\r';
+            else if (esc == L'n')
+                ch = L'\n';
+            else {
+                // Unknown escape: keep both bytes for forward compatibility.
+                out[di++] = L'\\';
+                ch = esc;
+            }
+        }
+        out[di++] = ch;
+    }
+    out[di] = L'\0';
+    return out;
+}
+
+static WCHAR* File_JournalFindUnescapedPipe_internal(WCHAR* in)
+{
+    WCHAR* p = in;
+    if (!p)
+        return NULL;
+
+    while (*p) {
+        if (*p == L'\\' && p[1]) {
+            p += 2;
+            continue;
+        }
+        if (*p == L'|')
+            return p;
+        ++p;
+    }
+    return NULL;
+}
+
+
+//---------------------------------------------------------------------------
+// File_AppendPathJournalDelete_internal
+//---------------------------------------------------------------------------
+
+
+_FX ULONG File_AppendPathJournalDelete_internal(HANDLE hPathsFile, const WCHAR* Path, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3)
+{
+    IO_STATUS_BLOCK IoStatusBlock;
+    NTSTATUS status;
+
+    WCHAR* PathEx = NULL;
+    const WCHAR* FinalPath = File_GetPathForStorage_internal(Path, TranslatePath, &PathEx);
+    if (!FinalPath)
+        return 0;
+
+    WCHAR* EscapedPath = NULL;
+    const WCHAR* WritePath = FinalPath;
+    if (isV3) {
+        EscapedPath = File_JournalEscapeField_internal(FinalPath);
+        if (!EscapedPath) {
+            if (PathEx) Dll_Free(PathEx);
+            return 0;
+        }
+        WritePath = EscapedPath;
+    }
+
+    ULONG LineLen = (ULONG)wcslen(WritePath) + 1 + 1 + 2; // <path>|1\r\n
+    WCHAR* Line = Dll_Alloc((LineLen + 1) * sizeof(WCHAR));
+    if (!Line) {
+        if (EscapedPath) Dll_Free(EscapedPath);
+        if (PathEx) Dll_Free(PathEx);
+        return 0;
+    }
+    wcscpy(Line, WritePath);
+    wcscat(Line, L"|1");
+    wcscat(Line, L"\r\n");
+
+    ULONG BytesToWrite = LineLen * sizeof(WCHAR);
+    status = NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Line, BytesToWrite, NULL, NULL);
+    Dll_Free(Line);
+    if (EscapedPath) Dll_Free(EscapedPath);
+
+    if (PathEx) Dll_Free(PathEx);
+
+    // Return bytes written so callers can update the size cache incrementally
+    // without an extra NtQueryAttributesFile stat syscall under the VFS mutex.
+    if (NT_SUCCESS(status) && IoStatusBlock.Information == BytesToWrite)
+        return BytesToWrite;
+    return 0;
+}
+
+
+//---------------------------------------------------------------------------
+// File_AppendPathJournalRelocation_internal
+//---------------------------------------------------------------------------
+
+
+_FX ULONG File_AppendPathJournalRelocation_internal(HANDLE hPathsFile, const WCHAR* OldPath, const WCHAR* NewPath, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3)
+{
+    IO_STATUS_BLOCK IoStatusBlock;
+    NTSTATUS status;
+
+    WCHAR* OldPathEx = NULL;
+    WCHAR* NewPathEx = NULL;
+    const WCHAR* FinalOldPath = File_GetPathForStorage_internal(OldPath, TranslatePath, &OldPathEx);
+    const WCHAR* FinalNewPath = File_GetPathForStorage_internal(NewPath, TranslatePath, &NewPathEx);
+    if (!FinalOldPath || !FinalNewPath) {
+        if (OldPathEx) Dll_Free(OldPathEx);
+        if (NewPathEx) Dll_Free(NewPathEx);
+        return 0;
+    }
+
+    WCHAR* EscapedOldPath = NULL;
+    WCHAR* EscapedNewPath = NULL;
+    const WCHAR* WriteOldPath = FinalOldPath;
+    const WCHAR* WriteNewPath = FinalNewPath;
+    if (isV3) {
+        EscapedOldPath = File_JournalEscapeField_internal(FinalOldPath);
+        EscapedNewPath = File_JournalEscapeField_internal(FinalNewPath);
+        if (!EscapedOldPath || !EscapedNewPath) {
+            if (EscapedOldPath) Dll_Free(EscapedOldPath);
+            if (EscapedNewPath) Dll_Free(EscapedNewPath);
+            if (OldPathEx) Dll_Free(OldPathEx);
+            if (NewPathEx) Dll_Free(NewPathEx);
+            return 0;
+        }
+        WriteOldPath = EscapedOldPath;
+        WriteNewPath = EscapedNewPath;
+    }
+
+    ULONG LineLen = (ULONG)wcslen(WriteOldPath) + 1 + 1 + 1 + (ULONG)wcslen(WriteNewPath) + 2; // <old>|2|<new>\r\n
+    WCHAR* Line = Dll_Alloc((LineLen + 1) * sizeof(WCHAR));
+    if (!Line) {
+        if (EscapedOldPath) Dll_Free(EscapedOldPath);
+        if (EscapedNewPath) Dll_Free(EscapedNewPath);
+        if (OldPathEx) Dll_Free(OldPathEx);
+        if (NewPathEx) Dll_Free(NewPathEx);
+        return 0;
+    }
+    wcscpy(Line, WriteOldPath);
+    wcscat(Line, L"|");
+    wcscat(Line, L"2");
+    wcscat(Line, L"|");
+    wcscat(Line, WriteNewPath);
+    wcscat(Line, L"\r\n");
+
+    ULONG BytesToWrite = LineLen * sizeof(WCHAR);
+    status = NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Line, BytesToWrite, NULL, NULL);
+    Dll_Free(Line);
+    if (EscapedOldPath) Dll_Free(EscapedOldPath);
+    if (EscapedNewPath) Dll_Free(EscapedNewPath);
+
+    if (OldPathEx) Dll_Free(OldPathEx);
+    if (NewPathEx) Dll_Free(NewPathEx);
+
+    // Return bytes written so callers can update the size cache incrementally
+    // without an extra NtQueryAttributesFile stat syscall under the VFS mutex.
+    if (NT_SUCCESS(status) && IoStatusBlock.Information == BytesToWrite)
+        return BytesToWrite;
+    return 0;
+}
+
+
+//---------------------------------------------------------------------------
+// File_AppendPathJournalValueDelete_internal
+//---------------------------------------------------------------------------
+
+
+_FX ULONG File_AppendPathJournalValueDelete_internal(HANDLE hPathsFile, const WCHAR* KeyPath, const WCHAR* ValueName, WCHAR* (*TranslatePath)(const WCHAR*), BOOLEAN isV3)
+{
+    IO_STATUS_BLOCK IoStatusBlock;
+    NTSTATUS status;
+
+    if (!ValueName)
+        return 0;
+
+    WCHAR* KeyPathEx = NULL;
+    const WCHAR* FinalKeyPath = File_GetPathForStorage_internal(KeyPath, TranslatePath, &KeyPathEx);
+    if (!FinalKeyPath)
+        return 0;
+
+    WCHAR* EscapedKeyPath = NULL;
+    WCHAR* EscapedValue = NULL;
+    const WCHAR* WriteKeyPath = FinalKeyPath;
+    const WCHAR* WriteValue = ValueName;
+
+    if (isV3) {
+        EscapedKeyPath = File_JournalEscapeField_internal(FinalKeyPath);
+        EscapedValue = File_JournalEscapeField_internal(ValueName);
+        if (!EscapedKeyPath || !EscapedValue) {
+            if (EscapedKeyPath) Dll_Free(EscapedKeyPath);
+            if (EscapedValue) Dll_Free(EscapedValue);
+            if (KeyPathEx) Dll_Free(KeyPathEx);
+            return 0;
+        }
+        WriteKeyPath = EscapedKeyPath;
+        WriteValue = EscapedValue;
+    }
+
+    ULONG LineLen = (ULONG)wcslen(WriteKeyPath) + 1 + 1 + 1 + (ULONG)wcslen(WriteValue) + 2; // <key>|3|<value>
+
+    WCHAR* Line = Dll_Alloc((LineLen + 1) * sizeof(WCHAR));
+    if (!Line) {
+        if (EscapedKeyPath) Dll_Free(EscapedKeyPath);
+        if (EscapedValue) Dll_Free(EscapedValue);
+        if (KeyPathEx) Dll_Free(KeyPathEx);
+        return 0;
+    }
+
+    wcscpy(Line, WriteKeyPath);
+    wcscat(Line, L"|");
+    wcscat(Line, L"3");
+    wcscat(Line, L"|");
+    wcscat(Line, WriteValue);
+    wcscat(Line, L"\r\n");
+
+    ULONG BytesToWrite = LineLen * sizeof(WCHAR);
+    status = NtWriteFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Line, BytesToWrite, NULL, NULL);
+    Dll_Free(Line);
+    if (EscapedKeyPath) Dll_Free(EscapedKeyPath);
+    if (EscapedValue) Dll_Free(EscapedValue);
+
+    if (KeyPathEx) Dll_Free(KeyPathEx);
+
+    if (NT_SUCCESS(status) && IoStatusBlock.Information == BytesToWrite)
+        return BytesToWrite;
+    return 0;
+}
 
 //---------------------------------------------------------------------------
 // File_SavePathNode_internal
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_SavePathNode_internal(HANDLE hPathsFile, LIST* parent, WCHAR* Path, ULONG Length, ULONG SetFlags, WCHAR* (*TranslatePath)(const WCHAR *)) 
+_FX VOID File_SavePathNode_internal(HANDLE hPathsFile, PATH_LIST* parent, WCHAR* Path, ULONG Length, ULONG SetFlags, WCHAR* (*TranslatePath)(const WCHAR *), BOOLEAN* pFailed)
 {
     // append  L"\\"
+    if (Length + 1 >= 0x7FFF) return; // path too deep to serialize safely; skip subtree
     Path[Length++] = L'\\'; //Path[Length] = L'0';
     WCHAR* PathBase = Path + Length;
 
@@ -451,21 +1097,229 @@ _FX VOID File_SavePathNode_internal(HANDLE hPathsFile, LIST* parent, WCHAR* Path
     child = List_Head(parent);
     while (child) {
 
+        if (Length + child->name_len >= 0x7FFF) { child = List_Next(child); continue; }
         wmemcpy(PathBase, child->name, child->name_len + 1);
         ULONG Path_Len = Length + child->name_len;
 
         //
-        // don't write down flags that were already set for the parent, 
-        // unless we have a relocation, that resets everything
+        // don't write down flags that were already set for the parent,
+        // unless we have a relocation, which resets the inherited context for
+        // that child and its subtree only (use a per-child local, not a mutation
+        // of SetFlags, mutating SetFlags would corrupt subsequent siblings).
         //
 
-        if ((child->flags & FILE_RELOCATION_FLAG) != 0)
-            SetFlags = 0;
+        ULONG ChildSetFlags = (child->flags & FILE_RELOCATION_FLAG) ? 0 : SetFlags;
 
-        if ((child->flags & ~SetFlags) != 0 || child->relocation != NULL) 
-            File_AppendPathEntry_internal(hPathsFile, Path, child->flags, child->relocation, TranslatePath);
+        if ((child->flags & ~ChildSetFlags) != 0 || child->relocation != NULL)
+            if (!File_AppendPathEntry_internal(hPathsFile, Path, child->flags, child->relocation, TranslatePath))
+                if (pFailed) *pFailed = TRUE;
 
-        File_SavePathNode_internal(hPathsFile, &child->items, Path, Path_Len, SetFlags | child->flags, TranslatePath);
+        File_SavePathNode_internal(hPathsFile, &child->items, Path, Path_Len, ChildSetFlags | child->flags, TranslatePath, pFailed);
+
+        child = List_Next(child);
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// PATH_TREE_BUF -- growable in-memory write buffer for tree serialization.
+//---------------------------------------------------------------------------
+
+typedef struct _PATH_TREE_BUF {
+    WCHAR*  Data;
+    ULONG   Used;   // WCHARs stored
+    ULONG   Cap;    // WCHARs allocated
+    BOOLEAN OOM;    // set on Dll_Alloc failure
+} PATH_TREE_BUF;
+
+static VOID File_TreeBufAppend(PATH_TREE_BUF* b, const WCHAR* s, ULONG n)
+{
+    if (b->OOM || !n) return;
+    if (n > 0xFFFFFFFFUL - b->Used) { b->OOM = TRUE; return; }
+    if (b->Used + n > b->Cap) {
+        ULONG nc = b->Cap ? b->Cap * 2 : 8192; // initial 16 KB
+        // Guard against ULONG overflow in the doubling: if b->Cap * 2 wrapped,
+        // nc is now smaller than b->Cap.  Treat as out-of-memory.
+        if (b->Cap && nc < b->Cap) { b->OOM = TRUE; return; }
+        while (nc < b->Used + n) {
+            ULONG nc2 = nc * 2;
+            if (nc2 <= nc) { b->OOM = TRUE; return; } // overflow guard
+            nc = nc2;
+        }
+        WCHAR* d = (WCHAR*)Dll_Alloc(nc * sizeof(WCHAR));
+        if (!d) { b->OOM = TRUE; return; }
+        if (b->Data) { wmemcpy(d, b->Data, b->Used); Dll_Free(b->Data); }
+        b->Data = d; b->Cap = nc;
+    }
+    wmemcpy(b->Data + b->Used, s, n);
+    b->Used += n;
+}
+
+//---------------------------------------------------------------------------
+// File_AppendPathEntryToBuffer_internal
+// Mirrors File_AppendPathEntry_internal writing to an in-memory PATH_TREE_BUF.
+//---------------------------------------------------------------------------
+
+static VOID File_AppendPathEntryToBuffer_internal(PATH_TREE_BUF* Buf, const WCHAR* Path, ULONG SetFlags, const WCHAR* Relocation, WCHAR* (*TranslatePath)(const WCHAR*))
+{
+    WCHAR* PathEx = NULL;
+    const WCHAR* FinalPath = File_GetPathForStorage_internal(Path, TranslatePath, &PathEx);
+    if (!FinalPath) { Buf->OOM = TRUE; return; }
+
+    WCHAR* RelocationEx = NULL;
+    const WCHAR* FinalRelocation = NULL;
+    if (Relocation) {
+        FinalRelocation = File_GetPathForStorage_internal(Relocation, TranslatePath, &RelocationEx);
+        if (!FinalRelocation) { if (PathEx) Dll_Free(PathEx); Buf->OOM = TRUE; return; }
+    }
+
+    WCHAR FlagStr[16];
+    _ultow(SetFlags, FlagStr, 16);
+
+    File_TreeBufAppend(Buf, FinalPath,       (ULONG)wcslen(FinalPath));
+    File_TreeBufAppend(Buf, L"|",            1);
+    File_TreeBufAppend(Buf, FlagStr,         (ULONG)wcslen(FlagStr));
+    if (FinalRelocation) {
+        File_TreeBufAppend(Buf, L"|",        1);
+        File_TreeBufAppend(Buf, FinalRelocation, (ULONG)wcslen(FinalRelocation));
+    }
+    File_TreeBufAppend(Buf, L"\r\n",         2);
+
+    if (PathEx)       Dll_Free(PathEx);
+    if (RelocationEx) Dll_Free(RelocationEx);
+}
+
+//---------------------------------------------------------------------------
+// File_SerializePathNodeToBuffer
+// Mirrors File_SavePathNode_internal writing to an in-memory PATH_TREE_BUF.
+//---------------------------------------------------------------------------
+
+static VOID File_SerializePathNodeToBuffer(PATH_TREE_BUF* Buf, PATH_LIST* parent, WCHAR* Path, ULONG Length, ULONG SetFlags, WCHAR* (*TranslatePath)(const WCHAR*))
+{
+    if (Length + 1 >= 0x7FFF) { Buf->OOM = TRUE; return; }
+    Path[Length++] = L'\\';
+    WCHAR* PathBase = Path + Length;
+
+    PATH_NODE* child = List_Head(parent);
+    while (child) {
+        if (Length + child->name_len >= 0x7FFF) { Buf->OOM = TRUE; return; }
+        wmemcpy(PathBase, child->name, child->name_len + 1);
+        ULONG Path_Len = Length + child->name_len;
+
+        ULONG ChildSetFlags = (child->flags & FILE_RELOCATION_FLAG) ? 0 : SetFlags;
+
+        if ((child->flags & ~ChildSetFlags) != 0 || child->relocation != NULL)
+            File_AppendPathEntryToBuffer_internal(Buf, Path, child->flags, child->relocation, TranslatePath);
+
+        File_SerializePathNodeToBuffer(Buf, &child->items, Path, Path_Len, ChildSetFlags | child->flags, TranslatePath);
+        child = List_Next(child);
+    }
+}
+
+//---------------------------------------------------------------------------
+// File_AppendPathEntryToBufferV3_internal
+// V3 variant: writes opcode 1 (delete) and opcode 2 (relocation) lines
+// with pipe/backslash escaping, matching the journal format.
+//---------------------------------------------------------------------------
+
+static VOID File_AppendPathEntryToBufferV3_internal(PATH_TREE_BUF* Buf, const WCHAR* Path,
+    ULONG NewFlags, const WCHAR* Relocation, WCHAR* (*TranslatePath)(const WCHAR*))
+{
+    WCHAR* PathEx = NULL;
+    const WCHAR* FinalPath = File_GetPathForStorage_internal(Path, TranslatePath, &PathEx);
+    if (!FinalPath) { Buf->OOM = TRUE; return; }
+
+    WCHAR* EscapedPath = File_JournalEscapeField_internal(FinalPath);
+    if (!EscapedPath) { if (PathEx) Dll_Free(PathEx); Buf->OOM = TRUE; return; }
+
+    if (Relocation) {
+        WCHAR* RelocationEx = NULL;
+        const WCHAR* FinalRelocation = File_GetPathForStorage_internal(Relocation, TranslatePath, &RelocationEx);
+        if (FinalRelocation) {
+            WCHAR* EscapedRelocation = File_JournalEscapeField_internal(FinalRelocation);
+            if (EscapedRelocation) {
+                File_TreeBufAppend(Buf, EscapedPath, (ULONG)wcslen(EscapedPath));
+                File_TreeBufAppend(Buf, L"|2|", 3);
+                File_TreeBufAppend(Buf, EscapedRelocation, (ULONG)wcslen(EscapedRelocation));
+                File_TreeBufAppend(Buf, L"\r\n", 2);
+                Dll_Free(EscapedRelocation);
+            } else
+                Buf->OOM = TRUE;
+        } else
+            Buf->OOM = TRUE;
+        if (RelocationEx) Dll_Free(RelocationEx);
+    }
+
+    if (NewFlags & FILE_DELETED_FLAG) {
+        File_TreeBufAppend(Buf, EscapedPath, (ULONG)wcslen(EscapedPath));
+        File_TreeBufAppend(Buf, L"|1\r\n", 4);
+    }
+
+    Dll_Free(EscapedPath);
+    if (PathEx) Dll_Free(PathEx);
+}
+
+//---------------------------------------------------------------------------
+// File_SerializePathNodeToBufferV3
+// V3 variant: emits opcode 1/2/3 lines with escaping.
+// Value-delete marker nodes (name[0] == L'$') are emitted as opcode 3, but only
+// for registry paths (TranslatePath == NULL).  The registry VCM stores
+// value-delete markers as '$'-prefixed child names; the file VFS never does this,
+// and real NT paths like $Recycle.Bin or $MFT must be serialized normally.
+//---------------------------------------------------------------------------
+
+VOID File_SerializePathNodeToBufferV3(PATH_TREE_BUF* Buf, PATH_LIST* parent,
+    WCHAR* Path, ULONG Length, ULONG SetFlags, WCHAR* (*TranslatePath)(const WCHAR*))
+{
+    if (Length + 1 >= 0x7FFF) { Buf->OOM = TRUE; return; }
+    Path[Length++] = L'\\';
+    WCHAR* PathBase = Path + Length;
+
+    PATH_NODE* child = List_Head(parent);
+    while (child) {
+        if (Length + child->name_len >= 0x7FFF) { Buf->OOM = TRUE; return; }
+        wmemcpy(PathBase, child->name, child->name_len + 1);
+        ULONG Path_Len = Length + child->name_len;
+
+        // Relocation resets the ancestor-flag context for this child and its subtree,
+        // but must not affect subsequent siblings (per-child local, not a mutation of SetFlags).
+        ULONG ChildSetFlags = (child->flags & FILE_RELOCATION_FLAG) ? 0 : SetFlags;
+
+        // Value-delete marker nodes exist only in the registry tree; file paths
+        // starting with '$' (e.g. $Recycle.Bin, $MFT) must be serialized normally.
+        // TranslatePath is NULL for registry paths and non-NULL for file paths.
+        if (TranslatePath == NULL && child->name_len > 0 && child->name[0] == L'$') {
+            // Emit opcode 3: parent_path|3|value_name
+            if (child->flags & FILE_DELETED_FLAG) {
+                WCHAR savedChar = Path[Length - 1]; // the '\' before marker
+                Path[Length - 1] = L'\0'; // null-terminate parent path
+
+                WCHAR* ParentPathEx = NULL;
+                const WCHAR* FinalParentPath = File_GetPathForStorage_internal(Path, TranslatePath, &ParentPathEx);
+                if (FinalParentPath) {
+                    WCHAR* EscapedParent = File_JournalEscapeField_internal(FinalParentPath);
+                    WCHAR* EscapedValue = File_JournalEscapeField_internal(child->name + 1);
+                    if (EscapedParent && EscapedValue) {
+                        File_TreeBufAppend(Buf, EscapedParent, (ULONG)wcslen(EscapedParent));
+                        File_TreeBufAppend(Buf, L"|3|", 3);
+                        File_TreeBufAppend(Buf, EscapedValue, (ULONG)wcslen(EscapedValue));
+                        File_TreeBufAppend(Buf, L"\r\n", 2);
+                    } else
+                        Buf->OOM = TRUE;
+                    if (EscapedParent) Dll_Free(EscapedParent);
+                    if (EscapedValue) Dll_Free(EscapedValue);
+                } else
+                    Buf->OOM = TRUE;
+                if (ParentPathEx) Dll_Free(ParentPathEx);
+                Path[Length - 1] = savedChar; // restore
+            }
+            // Marker nodes are leaf-only; skip recursion.
+        } else {
+            if ((child->flags & ~ChildSetFlags) != 0 || child->relocation != NULL)
+                File_AppendPathEntryToBufferV3_internal(Buf, Path, child->flags, child->relocation, TranslatePath);
+
+            File_SerializePathNodeToBufferV3(Buf, &child->items, Path, Path_Len, ChildSetFlags | child->flags, TranslatePath);
+        }
 
         child = List_Next(child);
     }
@@ -477,7 +1331,7 @@ _FX VOID File_SavePathNode_internal(HANDLE hPathsFile, LIST* parent, WCHAR* Path
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN File_SeekToEndOfFile(HANDLE fileHandle) 
+_FX BOOLEAN File_SeekToEndOfFile(HANDLE fileHandle, ULONG64* pEndOfFile)
 {
     NTSTATUS status;
     IO_STATUS_BLOCK ioStatusBlock;
@@ -486,6 +1340,8 @@ _FX BOOLEAN File_SeekToEndOfFile(HANDLE fileHandle)
     status = NtQueryInformationFile(fileHandle, &ioStatusBlock, &fileStandardInfo, sizeof(FILE_STANDARD_INFORMATION), FileStandardInformation);
     if (NT_SUCCESS(status)) 
     {
+        if (pEndOfFile)
+            *pEndOfFile = fileStandardInfo.EndOfFile.QuadPart;
         FILE_POSITION_INFORMATION filePosition;
         filePosition.CurrentByteOffset = fileStandardInfo.EndOfFile;
 
@@ -501,9 +1357,11 @@ _FX BOOLEAN File_SeekToEndOfFile(HANDLE fileHandle)
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN File_OpenDataFile(const WCHAR* name, HANDLE* hPathsFile, BOOLEAN Append)
+_FX BOOLEAN File_OpenDataFile(const WCHAR* name, HANDLE* hPathsFile, BOOLEAN Append, ULONG64* pEndOfFile)
 {
-    WCHAR PathsFile[MAX_PATH] = { 0 };
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return FALSE;
     wcscpy(PathsFile, Dll_BoxFilePath);
     wcscat(PathsFile, L"\\");
     wcscat(PathsFile, name);
@@ -515,13 +1373,94 @@ _FX BOOLEAN File_OpenDataFile(const WCHAR* name, HANDLE* hPathsFile, BOOLEAN App
     InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
     IO_STATUS_BLOCK IoStatusBlock;
-    if (!NT_SUCCESS(NtCreateFile(hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ, Append ? FILE_OPEN_IF : FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0)))
-        return FALSE;
+    BOOLEAN ok = NT_SUCCESS(NtCreateFile(hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, Append ? FILE_OPEN_IF : FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0));
+    Dll_Free(PathsFile);
+    if (!ok) return FALSE;
 
-    if (Append && !File_SeekToEndOfFile(*hPathsFile)) {
+    if (Append) {
+        if (!File_SeekToEndOfFile(*hPathsFile, pEndOfFile)) {
+            NtClose(*hPathsFile);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+
+_FX BOOLEAN File_OpenDataFileAppendShared(const WCHAR* name, HANDLE* hPathsFile, ULONG64* pEndOfFile)
+{
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return FALSE;
+    wcscpy(PathsFile, Dll_BoxFilePath);
+    wcscat(PathsFile, L"\\");
+    wcscat(PathsFile, name);
+
+    UNICODE_STRING objname;
+    RtlInitUnicodeString(&objname, PathsFile);
+
+    OBJECT_ATTRIBUTES objattrs;
+    InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    IO_STATUS_BLOCK IoStatusBlock;
+    BOOLEAN ok = NT_SUCCESS(NtCreateFile(hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0));
+    Dll_Free(PathsFile);
+    if (!ok) return FALSE;
+
+    if (!File_SeekToEndOfFile(*hPathsFile, pEndOfFile)) {
         NtClose(*hPathsFile);
+        *hPathsFile = NULL;
         return FALSE;
     }
+
+    return TRUE;
+}
+
+
+_FX VOID File_DeleteDataFile(const WCHAR* name)
+{
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return;
+    wcscpy(PathsFile, Dll_BoxFilePath);
+    wcscat(PathsFile, L"\\");
+    wcscat(PathsFile, name);
+
+    UNICODE_STRING objname;
+    RtlInitUnicodeString(&objname, PathsFile);
+
+    OBJECT_ATTRIBUTES objattrs;
+    InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    NtDeleteFile(&objattrs);
+    Dll_Free(PathsFile);
+}
+
+
+_FX BOOLEAN File_TryAcquireCompactionMarker(HANDLE* hCompactMutex, const WCHAR* name)
+{
+    *hCompactMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, name);
+    if (!*hCompactMutex) {
+        *hCompactMutex = CreateMutex(NULL, FALSE, name);
+    }
+    if (!*hCompactMutex) {
+        // Low-resource or restricted-permissions condition: compaction silently
+        // skipped.  Journal will continue to grow past its configured limits until
+        // the condition is resolved.
+        return FALSE;
+    }
+
+    DWORD compact_wait = WaitForSingleObject(*hCompactMutex, 0);
+    if (compact_wait != WAIT_OBJECT_0 && compact_wait != WAIT_ABANDONED) {
+        // Another process is already compacting, let it finish; skip here.
+        CloseHandle(*hCompactMutex);
+        *hCompactMutex = NULL;
+        return FALSE;
+    }
+    // WAIT_ABANDONED means the previous owner crashed mid-compaction; we now
+    // own the mutex and should proceed so the journal doesn't grow unbounded.
 
     return TRUE;
 }
@@ -532,19 +1471,118 @@ _FX BOOLEAN File_OpenDataFile(const WCHAR* name, HANDLE* hPathsFile, BOOLEAN App
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_SavePathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *))
+_FX BOOLEAN File_SavePathTree_internal(PATH_LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *))
 {
-    HANDLE hPathsFile;
-    if (!File_OpenDataFile(name, &hPathsFile, FALSE))
-        return;
-    
     WCHAR* Path = (WCHAR *)Dll_Alloc((0x7FFF + 1)*sizeof(WCHAR)); // max nt path
+    if (!Path) return FALSE;
 
-    File_SavePathNode_internal(hPathsFile, Root, Path, 0, 0, TranslatePath);
+    HANDLE hPathsFile;
+    if (!File_OpenDataFile(name, &hPathsFile, FALSE, NULL)) {
+        Dll_Free(Path);
+        return FALSE;
+    }
+
+    BOOLEAN failed = FALSE;
+    File_SavePathNode_internal(hPathsFile, Root, Path, 0, 0, TranslatePath, &failed);
 
     Dll_Free(Path);
 
     NtClose(hPathsFile);
+    return !failed;
+}
+
+
+//---------------------------------------------------------------------------
+// File_WriteBufferToDataFile
+// Flushes a serialized tree to a same-directory temporary file, then replaces
+// the .dat file with one rename.
+//---------------------------------------------------------------------------
+
+BOOLEAN File_WriteBufferToDataFile(const WCHAR* name, const WCHAR* data, ULONG cch)
+{
+    if (cch > FILE_JOURNAL_HARD_CAP_BYTES / sizeof(WCHAR))
+        return FALSE;
+
+    ULONG nameLen = (ULONG)wcslen(name);
+    WCHAR* tempName = Dll_Alloc((nameLen + 48) * sizeof(WCHAR));
+    ULONG rootLen = (ULONG)wcslen(Dll_BoxFilePath);
+    WCHAR* tempPath = Dll_Alloc((rootLen + nameLen + 50) * sizeof(WCHAR));
+    WCHAR* targetPath = Dll_Alloc((rootLen + nameLen + 2) * sizeof(WCHAR));
+    if (!tempName || !tempPath || !targetPath) {
+        if (tempName) Dll_Free(tempName);
+        if (tempPath) Dll_Free(tempPath);
+        if (targetPath) Dll_Free(targetPath);
+        return FALSE;
+    }
+
+    wcscpy(targetPath, Dll_BoxFilePath);
+    wcscat(targetPath, L"\\");
+    wcscat(targetPath, name);
+
+    HANDLE hFile = NULL;
+    BOOLEAN tempCreated = FALSE;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    for (ULONG attempt = 0; attempt != 8; ++attempt) {
+        Sbie_snwprintf(tempName, nameLen + 48, L"%s.tmp.%08X.%08X.%08X", name,
+            GetCurrentProcessId(), GetCurrentThreadId(), GetTickCount() + attempt);
+        wcscpy(tempPath, Dll_BoxFilePath);
+        wcscat(tempPath, L"\\");
+        wcscat(tempPath, tempName);
+
+        UNICODE_STRING tempObjName;
+        RtlInitUnicodeString(&tempObjName, tempPath);
+        OBJECT_ATTRIBUTES tempObjAttrs;
+        InitializeObjectAttributes(&tempObjAttrs, &tempObjName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+        status = NtCreateFile(&hFile, GENERIC_WRITE | DELETE | SYNCHRONIZE,
+            &tempObjAttrs, &iosb, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_CREATE, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
+            NULL, 0);
+        if (NT_SUCCESS(status)) {
+            tempCreated = TRUE;
+            break;
+        }
+        hFile = NULL;
+    }
+
+    BOOLEAN ok = hFile != NULL;
+    ULONG bytes = cch * sizeof(WCHAR);
+    if (ok && bytes != 0) {
+        status = NtWriteFile(hFile, NULL, NULL, NULL, &iosb, (PVOID)data, bytes, NULL, NULL);
+        ok = NT_SUCCESS(status) && iosb.Information == bytes;
+    }
+    if (ok)
+        ok = NT_SUCCESS(NtFlushBuffersFile(hFile, &iosb));
+
+    FILE_RENAME_INFORMATION* renameInfo = NULL;
+    if (ok) {
+        ULONG targetBytes = (ULONG)wcslen(targetPath) * sizeof(WCHAR);
+        ULONG infoSize = sizeof(FILE_RENAME_INFORMATION) + targetBytes;
+        renameInfo = Dll_Alloc(infoSize);
+        if (!renameInfo)
+            ok = FALSE;
+        else {
+            memzero(renameInfo, infoSize);
+            renameInfo->ReplaceIfExists = TRUE;
+            renameInfo->FileNameLength = targetBytes;
+            memcpy(renameInfo->FileName, targetPath, targetBytes);
+            // This is an internal box-metadata replacement.  Going through the
+            // hooked NtSetInformationFile would route it through File_RenameFile
+            // as if an application renamed a virtualized file, preventing the
+            // intended physical same-directory replacement.
+            status = __sys_NtSetInformationFile(hFile, &iosb, renameInfo, infoSize,
+                FileRenameInformation);
+            ok = NT_SUCCESS(status);
+        }
+    }
+
+    if (renameInfo) Dll_Free(renameInfo);
+    if (hFile) NtClose(hFile);
+    if (!ok && tempCreated) File_DeleteDataFile(tempName);
+    Dll_Free(targetPath);
+    Dll_Free(tempPath);
+    Dll_Free(tempName);
+    return ok;
 }
 
 
@@ -555,12 +1593,22 @@ _FX VOID File_SavePathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*Tran
 
 _FX WCHAR* File_TranslateNtToDosPathForDatFile(const WCHAR *NtPath)
 {
+    if (!NtPath)
+        return NULL;
+
     WCHAR *DosPath = NULL;
     ULONG len_nt;
 
     len_nt = wcslen(NtPath) + 11;
     DosPath = Dll_Alloc(len_nt * sizeof(WCHAR));
+    if (!DosPath) return NULL;
     wcscpy(DosPath, NtPath);
+
+    // Already-DOS input can be seen from legacy/corrupt state and must be kept
+    // unchanged. Running the NT->DOS fallback below on "E:\\..." would strip
+    // the drive letter and produce malformed ":\\...".
+    if (File_IsDosDrivePath_internal(DosPath))
+        return DosPath;
 
     //
     // Hack Hack: when we load a drive which does not exist we create an entry like
@@ -568,11 +1616,13 @@ _FX WCHAR* File_TranslateNtToDosPathForDatFile(const WCHAR *NtPath)
     // here we must handle that special case and strip the L'\\'
     //
 
-    const WCHAR* backslash = wcschr(DosPath+1, L'\\');
-    if (!backslash) backslash = wcschr(DosPath, L'\0');
-    if (*(backslash - 1) == L':') {
-        wmemmove(DosPath, DosPath + 1, wcslen(DosPath)); // -1 (for '\\') + 1 (for '\0')
-        return DosPath;
+    if (DosPath[0] == L'\\') {
+        const WCHAR* backslash = wcschr(DosPath + 1, L'\\');
+        if (!backslash) backslash = wcschr(DosPath, L'\0');
+        if (backslash > DosPath && *(backslash - 1) == L':') {
+            wmemmove(DosPath, DosPath + 1, wcslen(DosPath)); // -1 (for '\\') + 1 (for '\0')
+            return DosPath;
+        }
     }
 
 
@@ -633,14 +1683,41 @@ _FX WCHAR* File_TranslateNtToDosPathForDatFile(const WCHAR *NtPath)
 
 _FX BOOLEAN File_SavePathTree()
 {
+    const WCHAR* datName = File_DeleteV3 ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+    BOOLEAN bSaved = FALSE;
+
     EnterCriticalSection(File_PathRoot_CritSec);
 
-    File_SavePathTree_internal(&File_PathRoot, FILE_PATH_FILE_NAME, File_TranslateNtToDosPathForDatFile);
+    if (File_DeleteV3) {
+        PATH_TREE_BUF buf = { NULL, 0, 0, FALSE };
+        WCHAR* tmpPath = (WCHAR*)Dll_Alloc((0x7FFF + 1) * sizeof(WCHAR));
+        if (tmpPath) {
+            File_SerializePathNodeToBufferV3(&buf, &File_PathRoot, tmpPath, 0, 0, File_TranslateNtToDosPathForDatFile);
+            Dll_Free(tmpPath);
+        } else {
+            buf.OOM = TRUE; // Treat tmpPath alloc failure as OOM to avoid truncating the .dat
+        }
+        if (!buf.OOM)
+            bSaved = File_WriteBufferToDataFile(datName, buf.Data, buf.Used);
+        if (buf.Data)
+            Dll_Free(buf.Data);
+    } else {
+        bSaved = File_SavePathTree_internal(&File_PathRoot, datName, File_TranslateNtToDosPathForDatFile);
+    }
 
-    File_GetAttributes_internal(FILE_PATH_FILE_NAME, &File_PathsFileSize, &File_PathsFileDate, NULL);
+    // Only update the freshness cache when the write succeeded.  File_OpenDataFile opens
+    // with FILE_OVERWRITE_IF, so a failed NtWriteFile leaves the .dat truncated (0 bytes).
+    // Caching that wrong state would suppress the reload that other processes need in order
+    // to recover via the .sbie journal.  Leaving the cache at its previous values lets
+    // File_RefreshPathTree detect the size/date change and trigger the correct full reload.
+    if (bSaved)
+        File_GetAttributes_internal(datName, &File_PathsFileSize, &File_PathsFileDate, NULL);
 
     LeaveCriticalSection(File_PathRoot_CritSec);
 
+    // Return TRUE unconditionally: no caller checks this value, SavePathTree is
+    // always used as a best-effort fallback.  The bSaved flag above controls the
+    // freshness-cache update, which is the only observable outcome that matters.
     return TRUE;
 }
 
@@ -653,10 +1730,17 @@ _FX BOOLEAN File_SavePathTree()
 _FX HANDLE File_AcquireMutex(const WCHAR *MutexName)
 {
     HANDLE hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, MutexName);
-    if (! hMutex)
+    if (! hMutex) {
         hMutex = CreateMutex(NULL, FALSE, MutexName);
-    if (hMutex)
-        WaitForSingleObject(hMutex, 5000);
+    }
+    if (hMutex) {
+        DWORD wait_res = WaitForSingleObject(hMutex, 5000);
+        if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED) {
+            // Timeout or error: do not return a handle the caller doesn't own.
+            CloseHandle(hMutex);
+            return NULL;
+        }
+    }
 
     return hMutex;
 }
@@ -683,9 +1767,11 @@ _FX void File_ReleaseMutex(HANDLE hMutex)
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN File_LoadPathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *))
+_FX BOOLEAN File_LoadPathTree_internal(PATH_LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *))
 {
-    WCHAR PathsFile[MAX_PATH] = { 0 };
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return FALSE;
     wcscpy(PathsFile, Dll_BoxFilePath);
     wcscat(PathsFile, L"\\");
     wcscat(PathsFile, name);
@@ -698,23 +1784,45 @@ _FX BOOLEAN File_LoadPathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*T
 
     HANDLE hPathsFile;
     IO_STATUS_BLOCK IoStatusBlock;
-    if (!NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_READ | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0))) {
-        if (NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ, FILE_CREATE, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0)))
+    if (!NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_READ | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0))) {
+        if (NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0)))
             NtClose(hPathsFile);
+        Dll_Free(PathsFile);
         return FALSE;
     }
+    Dll_Free(PathsFile);
+
+    FILE_STANDARD_INFORMATION FileStdInfo;
+    memzero(&FileStdInfo, sizeof(FileStdInfo));
+    NtQueryInformationFile(hPathsFile, &IoStatusBlock, &FileStdInfo, sizeof(FileStdInfo), FileStandardInformation);
+    // Match the journal loader: cap at FILE_JOURNAL_HARD_CAP_BYTES to prevent
+    // ULONG overflow in (fileSize + 128) and limit allocation on corrupt .dat files.
+    ULONG fileSize = (FileStdInfo.EndOfFile.QuadPart > (ULONG64)FILE_JOURNAL_HARD_CAP_BYTES)
+        ? (ULONG)FILE_JOURNAL_HARD_CAP_BYTES : (ULONG)FileStdInfo.EndOfFile.QuadPart;
+
+    WCHAR* Buffer = (WCHAR *)Dll_Alloc(fileSize + 128);
+    if (!Buffer) {
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    NTSTATUS readStatus = NtReadFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Buffer, fileSize, NULL, NULL);
+    if (!NT_SUCCESS(readStatus)) {
+        // Transient I/O error: release resources without touching the tree so that
+        // the caller sees the stale (in-memory) state rather than an empty one.
+        Dll_Free(Buffer);
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    ULONG bytesRead = (ULONG)IoStatusBlock.Information;
+    if (bytesRead & 1)
+        bytesRead -= 1; // malformed/truncated byte stream: keep WCHAR alignment
+    Buffer[bytesRead/sizeof(WCHAR)] = L'\0';
 
     File_ClearPathBranche_internal(Root);
 
-    LARGE_INTEGER fileSize;
-    GetFileSizeEx(hPathsFile, &fileSize);
-
-    WCHAR* Buffer = (WCHAR *)Dll_Alloc((ULONG)fileSize.QuadPart + 128);
-    DWORD bytesRead;
-    ReadFile(hPathsFile, Buffer, (DWORD)fileSize.QuadPart, &bytesRead, NULL);
-    Buffer[bytesRead/sizeof(WCHAR)] = L'\0';
-
     WCHAR* Next = Buffer;
+    if (bytesRead >= sizeof(WCHAR) && Next[0] == FILE_UTF16_LE_BOM)
+        Next += 1;
     while (*Next) {
         WCHAR* Line = Next;
         WCHAR* End = wcschr(Line, L'\n');
@@ -740,11 +1848,21 @@ _FX BOOLEAN File_LoadPathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*T
 
         WCHAR* endptr;
         ULONG Flags = wcstoul(Sep + 1, &endptr, 16);
+        // Mask to the two on-disk flag bits.  A corrupted or externally-edited .dat file could
+        // otherwise set internal volatile bits (0xFFFF0000) on tree nodes, producing false
+        // "deleted" or "relocated" results.
+        Flags &= (FILE_DELETED_FLAG | FILE_RELOCATION_FLAG);
         if (endptr && *endptr == L'|') 
             Relocation = endptr + 1;
 
+        if (File_HasMalformedDosPathPair_internal(Path, Relocation)) {
+            *Sep = L'|';
+            Line[LineLen] = savechar;
+            continue;
+        }
+
         WCHAR* PathEx = TranslatePath ? TranslatePath(Path) : NULL;
-        WCHAR* RelocationEx = TranslatePath ? TranslatePath(Relocation) : NULL;
+        WCHAR* RelocationEx = (TranslatePath && Relocation) ? TranslatePath(Relocation) : NULL;
 
         File_SetPathFlags_internal(Root, PathEx ? PathEx : Path, Flags, 0, RelocationEx ? RelocationEx : Relocation);
 
@@ -760,6 +1878,366 @@ _FX BOOLEAN File_LoadPathTree_internal(LIST* Root, const WCHAR* name, WCHAR* (*T
     NtClose(hPathsFile);
 
     return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// File_LoadPathJournal_internal
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN File_LoadPathJournal_internal(PATH_LIST* Root, const WCHAR* name, WCHAR* (*TranslatePath)(const WCHAR *), ULONG64* pReplayOffset, ULONG* pAppliedLines, BOOLEAN IsJournal)
+{
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return FALSE;
+    wcscpy(PathsFile, Dll_BoxFilePath);
+    wcscat(PathsFile, L"\\");
+    wcscat(PathsFile, name);
+
+    UNICODE_STRING objname;
+    RtlInitUnicodeString(&objname, PathsFile);
+
+    OBJECT_ATTRIBUTES objattrs;
+    InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    HANDLE hPathsFile;
+    IO_STATUS_BLOCK IoStatusBlock;
+    if (!NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_READ | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN,
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0))) {
+        // Side-effect: if the .sbie journal file doesn't exist yet, create an empty one so
+        // that File_RefreshPathTree's size/date change-detection has a stable inode to watch.
+        if (NT_SUCCESS(NtCreateFile(&hPathsFile, GENERIC_WRITE | SYNCHRONIZE, &objattrs, &IoStatusBlock, NULL, 0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF,
+                FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0)))
+            NtClose(hPathsFile);
+        Dll_Free(PathsFile);
+        return FALSE;
+    }
+    Dll_Free(PathsFile);
+
+    if (pAppliedLines)
+        *pAppliedLines = 0;
+
+    FILE_STANDARD_INFORMATION FileStdInfo;
+    memzero(&FileStdInfo, sizeof(FileStdInfo));
+    if (!NT_SUCCESS(NtQueryInformationFile(hPathsFile, &IoStatusBlock, &FileStdInfo,
+            sizeof(FileStdInfo), FileStandardInformation)) ||
+            FileStdInfo.EndOfFile.QuadPart > (ULONG64)FILE_JOURNAL_HARD_CAP_BYTES) {
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    ULONG fileSize = (ULONG)FileStdInfo.EndOfFile.QuadPart;
+
+    ULONG readOffset = 0;
+    if (pReplayOffset && *pReplayOffset <= fileSize)
+        readOffset = (ULONG)*pReplayOffset;
+
+    if (readOffset) {
+        FILE_POSITION_INFORMATION filePosition;
+        filePosition.CurrentByteOffset.QuadPart = readOffset;
+        // If the seek fails, reading from the wrong offset would re-apply already-processed
+        // entries, corrupting the in-memory tree.  Return FALSE so the caller falls back to
+        // a full reload rather than silently replaying stale data.
+        if (!NT_SUCCESS(NtSetInformationFile(hPathsFile, &IoStatusBlock, &filePosition, sizeof(FILE_POSITION_INFORMATION), FilePositionInformation))) {
+            NtClose(hPathsFile);
+            return FALSE;
+        }
+    }
+
+    ULONG readSize = (readOffset < fileSize) ? (fileSize - readOffset) : 0;
+    // Defense-in-depth: readSize <= fileSize <= FILE_JOURNAL_HARD_CAP_BYTES already,
+    // but keep the explicit clamp to make the Dll_Alloc(readSize + 128) safety obvious.
+    if (readSize > (ULONG)FILE_JOURNAL_HARD_CAP_BYTES)
+        readSize = (ULONG)FILE_JOURNAL_HARD_CAP_BYTES;
+    WCHAR* Buffer = (WCHAR *)Dll_Alloc(readSize + 128);
+    if (!Buffer) {
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    NTSTATUS read_status = NtReadFile(hPathsFile, NULL, NULL, NULL, &IoStatusBlock, Buffer, readSize, NULL, NULL);
+    if (!NT_SUCCESS(read_status)) {
+        Dll_Free(Buffer);
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    ULONG bytesRead = (ULONG)IoStatusBlock.Information;
+    if (bytesRead > readSize)
+        bytesRead = readSize;
+    if (!IsJournal && bytesRead != readSize) {
+        Dll_Free(Buffer);
+        NtClose(hPathsFile);
+        return FALSE;
+    }
+    if (bytesRead & 1) {
+        if (!IsJournal) {
+            Dll_Free(Buffer);
+            NtClose(hPathsFile);
+            return FALSE;
+        }
+        bytesRead -= 1; // tolerate an in-progress journal WCHAR only
+    }
+    Buffer[bytesRead / sizeof(WCHAR)] = L'\0';
+
+    WCHAR* ParseStart = Buffer;
+    if (readOffset == 0 && bytesRead >= sizeof(WCHAR) && ParseStart[0] == FILE_UTF16_LE_BOM)
+        ParseStart += 1;
+
+    // Only parse complete lines to avoid losing operations when the last line
+    // is observed mid-write by a concurrent reader.
+    WCHAR* ParseEnd = Buffer + (bytesRead / sizeof(WCHAR));
+    if (bytesRead != 0 && ParseEnd > ParseStart && ParseEnd[-1] != L'\n') {
+        if (!IsJournal) {
+            Dll_Free(Buffer);
+            NtClose(hPathsFile);
+            return FALSE;
+        }
+        WCHAR* LastNl = wcsrchr(ParseStart, L'\n');
+        if (LastNl)
+            ParseEnd = LastNl + 1;
+        else
+            ParseEnd = ParseStart;
+    }
+
+    BOOLEAN loadFailed = FALSE;
+    WCHAR* Next = ParseStart;
+    while (Next < ParseEnd && *Next) {
+        WCHAR* Line = Next;
+        WCHAR* End = wcschr(Line, L'\n');
+        if (End == NULL) {
+            End = ParseEnd;
+            Next = End;
+        } else
+            Next = End + 1;
+
+        LONG LineLen = (LONG)(End - Line);
+        if (LineLen >= 1 && Line[LineLen - 1] == L'\r')
+            LineLen -= 1;
+        if (LineLen < 3)
+            continue;
+
+        WCHAR savechar = Line[LineLen];
+        Line[LineLen] = L'\0';
+
+        WCHAR* Sep1 = File_JournalFindUnescapedPipe_internal(Line);
+        if (Sep1) {
+            *Sep1 = L'\0';
+            WCHAR* Part2 = Sep1 + 1;
+            WCHAR* Sep2 = File_JournalFindUnescapedPipe_internal(Part2);
+
+            // Separator contract: only unescaped '|' is structural. Escaped
+            // payload pipes are written as '\|' and must not split fields.
+            // This keeps opcode parsing stable for both plain and escaped
+            // journal lines while still using opcodes 1/2/3 only.
+
+            // Journal format:
+            // path|1 (delete)
+            // path|2|newPath (relocation)
+            // keyPath|3|valueName (registry value delete, key_del.c)
+            // In escaped mode, payload fields are backslash-escaped but opcodes
+            // remain 1/2/3 for backward-compatible reads.
+            if (_wcsicmp(Part2, L"1") == 0) {
+                WCHAR* ParsedPath = File_JournalUnescapeField_internal(Line);
+                if (!ParsedPath) {
+                    loadFailed = TRUE;
+                } else if (File_HasMalformedDosPathPair_internal(ParsedPath, NULL)) {
+                    Dll_Free(ParsedPath);
+                    *Sep1 = L'|';
+                    Line[LineLen] = savechar;
+                    continue;
+                } else {
+                    WCHAR* PathEx = TranslatePath ? TranslatePath(ParsedPath) : NULL;
+                    const WCHAR* FinalPath = File_TrimTrailingBackslashes(PathEx ? PathEx : ParsedPath, TMPL_NAME_BUFFER);
+                    BOOLEAN truncated = FALSE;
+                    BOOLEAN marked = File_MarkDeleted_internal(Root, FinalPath, &truncated);
+                    if (!marked && truncated)
+                        loadFailed = TRUE;
+                    else if (pAppliedLines)
+                        *pAppliedLines += 1;
+                    if (PathEx) Dll_Free(PathEx);
+                    Dll_Free(ParsedPath);
+                }
+            }
+            else if (Sep2) {
+                *Sep2 = L'\0';
+                if (_wcsicmp(Part2, L"2") == 0) {
+                    WCHAR* ParsedOld = File_JournalUnescapeField_internal(Line);
+                    WCHAR* ParsedNew = File_JournalUnescapeField_internal(Sep2 + 1);
+                    if (!ParsedOld || !ParsedNew) {
+                        if (ParsedOld) Dll_Free(ParsedOld);
+                        if (ParsedNew) Dll_Free(ParsedNew);
+                        loadFailed = TRUE;
+                    } else if (File_HasMalformedDosPathPair_internal(ParsedOld, ParsedNew)) {
+                        Dll_Free(ParsedOld);
+                        Dll_Free(ParsedNew);
+                        *Sep2 = L'|';
+                        *Sep1 = L'|';
+                        Line[LineLen] = savechar;
+                        continue;
+                    } else {
+                        WCHAR* OldPathEx = TranslatePath ? TranslatePath(ParsedOld) : NULL;
+                        WCHAR* NewPathEx = TranslatePath ? TranslatePath(ParsedNew) : NULL;
+                        const WCHAR* FinalOldPath = File_TrimTrailingBackslashes(OldPathEx ? OldPathEx : ParsedOld, TMPL_NAME_BUFFER);
+                        const WCHAR* FinalNewPath = File_TrimTrailingBackslashes(NewPathEx ? NewPathEx : ParsedNew, NORM_NAME_BUFFER);
+                        File_SetRelocation_internal(Root, FinalOldPath, FinalNewPath);
+                        PATH_NODE* NewNode = File_FindPathBranche_internal(Root, FinalNewPath, NULL, FALSE);
+                        if (!NewNode || !(NewNode->flags & FILE_RELOCATION_FLAG) || !NewNode->relocation)
+                            loadFailed = TRUE;
+                        else if (pAppliedLines)
+                            *pAppliedLines += 1;
+                        if (OldPathEx) Dll_Free(OldPathEx);
+                        if (NewPathEx) Dll_Free(NewPathEx);
+                        Dll_Free(ParsedOld);
+                        Dll_Free(ParsedNew);
+                    }
+                }
+                else if (_wcsicmp(Part2, L"3") == 0) {
+                    // Opcode 3 is a registry value-delete marker produced only by the
+                    // registry VCM serializer (TranslatePath == NULL).  The file VFS
+                    // serializer never emits opcode 3 because '$'-prefixed names there
+                    // are legitimate paths (e.g. $Recycle.Bin, $MFT).  Skip silently
+                    // when loading a file journal to match the serializer's guard and
+                    // prevent injection of '$'-marker nodes via corrupt/tampered data.
+                    if (TranslatePath != NULL) {
+                        *Sep2 = L'|';
+                        *Sep1 = L'|';
+                        Line[LineLen] = savechar;
+                        continue;
+                    }
+                    WCHAR* ParsedKey = File_JournalUnescapeField_internal(Line);
+                    WCHAR* ParsedValue = File_JournalUnescapeField_internal(Sep2 + 1);
+                    if (!ParsedKey || !ParsedValue) {
+                        if (ParsedKey) Dll_Free(ParsedKey);
+                        if (ParsedValue) Dll_Free(ParsedValue);
+                        loadFailed = TRUE;
+                    } else if (File_IsDriveLessDosPath_internal(ParsedKey)) {
+                        Dll_Free(ParsedKey);
+                        Dll_Free(ParsedValue);
+                        *Sep2 = L'|';
+                        *Sep1 = L'|';
+                        Line[LineLen] = savechar;
+                        continue;
+                    } else {
+                    WCHAR* KeyPathEx = TranslatePath ? TranslatePath(ParsedKey) : NULL;
+                    const WCHAR* FinalKeyPath = File_TrimTrailingBackslashes(KeyPathEx ? KeyPathEx : ParsedKey, TMPL_NAME_BUFFER);
+
+                    ULONG pathLen = (ULONG)wcslen(FinalKeyPath);
+                    ULONG valueLen = (ULONG)wcslen(ParsedValue);
+                    WCHAR* FullPath = (WCHAR*)Dll_Alloc((pathLen + 1 + 1 + valueLen + 1) * sizeof(WCHAR));
+                    if (FullPath) {
+                        wcscpy(FullPath, FinalKeyPath);
+                        FullPath[pathLen] = L'\\';
+                        FullPath[pathLen + 1] = L'$';
+                        FullPath[pathLen + 2] = L'\0';
+                        wcscat(FullPath, ParsedValue);
+
+                        BOOLEAN truncated = FALSE;
+                        BOOLEAN marked = File_MarkDeleted_internal(Root, FullPath, &truncated);
+                        Dll_Free(FullPath);
+                        if (!marked && truncated)
+                            loadFailed = TRUE;
+                        else if (pAppliedLines)
+                            *pAppliedLines += 1;
+                    } else
+                        loadFailed = TRUE;
+
+                    if (KeyPathEx) Dll_Free(KeyPathEx);
+                    Dll_Free(ParsedKey);
+                    Dll_Free(ParsedValue);
+                    }
+                }
+                *Sep2 = L'|';
+            }
+
+            *Sep1 = L'|';
+        }
+
+        Line[LineLen] = savechar;
+        if (loadFailed)
+            break;
+    }
+
+    ULONG consumedBytes = (ULONG)((ParseEnd - Buffer) * sizeof(WCHAR));
+    Dll_Free(Buffer);
+    NtClose(hPathsFile);
+
+    if (loadFailed)
+        return FALSE;
+
+    if (pReplayOffset)
+        *pReplayOffset = (ULONG64)readOffset + consumedBytes;
+
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// File_CompactPathJournal_internal
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN File_CompactPathJournal_internal(CRITICAL_SECTION* CritSec, PATH_LIST* Root, const WCHAR* datName, const WCHAR* logName, WCHAR* (*TranslatePath)(const WCHAR*), ULONG64* pLogSize, ULONG64* pLogDate, ULONG64* pReplayOffset, HANDLE* pAppendHandle, BOOLEAN isV3)
+{
+    // Close the caller's keep-open append handle (still under CritSec on entry).
+    if (pAppendHandle && *pAppendHandle) {
+        NtClose(*pAppendHandle);
+        *pAppendHandle = NULL;
+    }
+
+    // The caller reloads .dat plus .sbie under the VFS mutex before entering here.
+    // Serialize that complete tree to a heap buffer so all disk IO can be done
+    // outside CritSec (Phase 2), keeping in-process query latency low.
+    PATH_TREE_BUF compactBuf;
+    compactBuf.Data = NULL; compactBuf.Used = 0; compactBuf.Cap = 0; compactBuf.OOM = FALSE;
+    BOOLEAN bSerializedOK = FALSE;
+    WCHAR* tmpPath = (WCHAR*)Dll_Alloc((0x7FFF + 1) * sizeof(WCHAR)); // max NT path
+    if (tmpPath) {
+        if (isV3)
+            File_SerializePathNodeToBufferV3(&compactBuf, Root, tmpPath, 0, 0, TranslatePath);
+        else
+            File_SerializePathNodeToBuffer(&compactBuf, Root, tmpPath, 0, 0, TranslatePath);
+        bSerializedOK = TRUE;
+        Dll_Free(tmpPath);
+        tmpPath = NULL;
+    }
+
+    // Release CritSec: tree snapshot is in compactBuf; the VFS mutex prevents concurrent
+    // tree-modification by any other thread (they also require the VFS mutex first).
+    // CritSec is intentionally released during disk I/O to avoid blocking in-process
+    // readers (e.g. File_IsDeleted_v2) during potentially long compaction writes.
+    // The VFS mutex (held by the caller) prevents concurrent tree mutations, all
+    // writers also acquire the VFS mutex before CritSec.  Readers only hold CritSec
+    // for the duration of their lookup, and the tree remains in a consistent state
+    // throughout because no mutations can happen without the VFS mutex.
+    LeaveCriticalSection(CritSec);
+
+    // Phase 2 (outside CritSec): all disk IO.
+    BOOLEAN bLogTruncated = FALSE;
+    if (bSerializedOK && !compactBuf.OOM) {
+        // Publish a fully flushed same-directory temporary file with one rename.
+        // The old .dat remains intact if creation, write, flush, or replacement fails.
+        if (File_WriteBufferToDataFile(datName, compactBuf.Data, compactBuf.Used)) {
+            HANDLE hLogFile;
+            if (File_OpenDataFile(logName, &hLogFile, FALSE, NULL)) {
+                NtClose(hLogFile);
+                if (pLogSize && pLogDate)
+                    File_GetAttributes_internal(logName, pLogSize, pLogDate, NULL);
+                if (pReplayOffset)
+                    *pReplayOffset = 0;
+                bLogTruncated = TRUE;
+            }
+        }
+    }
+
+    if (compactBuf.Data)
+        Dll_Free(compactBuf.Data);
+
+    // Re-acquire CritSec so the caller's LeaveCriticalSection remains valid and
+    // post-compact state updates (.dat size/date, line count) stay protected.
+    EnterCriticalSection(CritSec);
+    // Note: caller resets its own line count after this call only when TRUE is returned.
+    return bLogTruncated;
 }
 
 
@@ -830,15 +2308,58 @@ _FX WCHAR *File_TranslateDosToNtPathForDatFile(const WCHAR *DosPath)
 
 _FX BOOLEAN File_LoadPathTree()
 {
-    HANDLE hMutex = File_AcquireMutex(FILE_VFS_MUTEX);
+    const WCHAR* datName = File_DeleteV3 ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+    const WCHAR* logName = File_DeleteV3 ? FILE_PATH_LOG_FILE_NAME_V3 : FILE_PATH_LOG_FILE_NAME;
+
+    DWORD wait_res = WaitForSingleObject(File_VfsMutex, 5000);
+    if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED)
+        return FALSE;
 
     EnterCriticalSection(File_PathRoot_CritSec);
 
-    File_LoadPathTree_internal(&File_PathRoot, FILE_PATH_FILE_NAME, File_TranslateDosToNtPathForDatFile);
+    if (File_DeleteV3) {
+        PATH_LIST newRoot;
+        memzero(&newRoot, sizeof(newRoot));
+        ULONG64 datSize = 0, logSize = 0, ignoredDate = 0, dummy_offset = 0;
+        BOOLEAN datExists = File_GetAttributes_internal(datName, &datSize, &ignoredDate, NULL);
+        BOOLEAN datOk = !datExists || datSize == 0 ||
+            File_LoadPathJournal_internal(&newRoot, datName,
+                File_TranslateDosToNtPathForDatFile, &dummy_offset, NULL, FALSE);
+        ULONG applied_lines = 0;
+        ULONG64 replayOffset = 0;
+        BOOLEAN logExists = File_GetAttributes_internal(logName, &logSize, &ignoredDate, NULL);
+        BOOLEAN logOk = !logExists || logSize == 0 ||
+            File_LoadPathJournal_internal(&newRoot, logName,
+                File_TranslateDosToNtPathForDatFile, &replayOffset, &applied_lines, TRUE);
+        if (!datOk || !logOk) {
+            File_ClearPathBranche_internal(&newRoot);
+            LeaveCriticalSection(File_PathRoot_CritSec);
+            ReleaseMutex(File_VfsMutex);
+            return FALSE;
+        }
+        PATH_LIST oldRoot = File_PathRoot;
+        File_PathRoot = newRoot;
+        File_ClearPathBranche_internal(&oldRoot);
+        File_PathsLogReplayOffset = replayOffset;
+        File_PathsLogLineCount = applied_lines;
+    } else {
+        // V2: legacy .dat format only, no journal interaction.
+        // Mirror the V3 transient-error guard: if the internal load failed and we
+        // previously had data (File_PathsFileSize > 0), bail out without advancing
+        // the freshness cache so RefreshPathTree retries on the next poll.
+        BOOLEAN v2Ok = File_LoadPathTree_internal(&File_PathRoot, datName, File_TranslateDosToNtPathForDatFile);
+        if (!v2Ok && File_PathsFileSize > 0) {
+            LeaveCriticalSection(File_PathRoot_CritSec);
+            ReleaseMutex(File_VfsMutex);
+            return FALSE;
+        }
+    }
 
     LeaveCriticalSection(File_PathRoot_CritSec);
 
-    File_ReleaseMutex(hMutex);
+    ReleaseMutex(File_VfsMutex);
+
+    File_PathsVersion++;
 
     return TRUE;
 }
@@ -851,23 +2372,255 @@ _FX BOOLEAN File_LoadPathTree()
 
 _FX VOID File_RefreshPathTree()
 {
-    if (File_TestBoxRootChange(0)) {
+    const WCHAR* datName = File_DeleteV3 ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+    const WCHAR* logName = File_DeleteV3 ? FILE_PATH_LOG_FILE_NAME_V3 : FILE_PATH_LOG_FILE_NAME;
 
-        ULONG64 PathsFileSize = 0;
-        ULONG64 PathsFileDate = 0;
-        if (File_GetAttributes_internal(FILE_PATH_FILE_NAME, &PathsFileSize, &PathsFileDate, NULL)
-            && (File_PathsFileSize != PathsFileSize || File_PathsFileDate != PathsFileDate)) {
+    BOOLEAN boxChanged = FALSE;
+    if (File_DeleteV3) {
+        ULONG ticks_now = GetTickCount();
+        LONG ticks_prev = InterlockedExchangeAdd(&File_LastRefreshTick, 0);
+        if ((LONG)(ticks_now - (ULONG)ticks_prev) < (LONG)File_PathRefreshIntervalMs)
+            return;
+        InterlockedExchange(&File_LastRefreshTick, (LONG)ticks_now);
 
-            File_PathsFileSize = PathsFileSize;
-            File_PathsFileDate = PathsFileDate;
+        // Some systems may occasionally miss change notifications for sidecar
+        // journals, so V3 also polls metadata at its configured debounce rate.
+        boxChanged = File_TestBoxRootChange(0);
+    } else if (!File_TestBoxRootChange(0)) {
+        // Preserve V2's watcher-driven hot path.  It has no sidecar journal
+        // whose changes need periodic polling.
+        return;
+    }
 
-            //
-            // something changed, reload the path tree
-            //
+    ULONG64 PathsFileSize = 0;
+    ULONG64 PathsFileDate = 0;
+    ULONG64 PathsLogFileSize = 0;
+    ULONG64 PathsLogFileDate = 0;
 
-            File_LoadPathTree();
+    BOOLEAN bReload = FALSE;
+    BOOLEAN bDatChanged = FALSE;
+    BOOLEAN bLogChanged = FALSE;
+    BOOLEAN datExists = File_GetAttributes_internal(datName, &PathsFileSize, &PathsFileDate, NULL);
+    if ((datExists && (File_PathsFileSize != PathsFileSize || File_PathsFileDate != PathsFileDate))
+        || (!datExists && (File_PathsFileSize != 0 || File_PathsFileDate != 0))) {
+
+        // Don't update globals yet; defer until after reload succeeds.
+        bReload = TRUE;
+        bDatChanged = TRUE;
+    }
+
+    BOOLEAN logExists = File_DeleteV3
+        && File_GetAttributes_internal(logName, &PathsLogFileSize, &PathsLogFileDate, NULL);
+    if (File_DeleteV3
+        && ((logExists && (File_PathsLogFileSize != PathsLogFileSize || File_PathsLogFileDate != PathsLogFileDate))
+            || (!logExists && (File_PathsLogFileSize != 0 || File_PathsLogFileDate != 0)))) {
+
+        // Don't update globals yet; defer until after reload succeeds.
+        bLogChanged = TRUE;
+        bReload = TRUE;
+    }
+
+    if (!bReload && !boxChanged)
+        return;
+
+    // A watcher event without a detected metadata change can occur when concurrent
+    // writes land within the same poll interval (same-second timestamp granularity).
+    // Promote boxChanged to bReload so those writes are also picked up.
+    bReload |= boxChanged;
+
+    if (bReload) {
+        //
+        // something changed, reload the path tree
+        //
+        if (bDatChanged || !File_DeleteV3) {
+            if (File_LoadPathTree()) {
+                if (bDatChanged) {
+                    File_PathsFileSize = PathsFileSize;
+                    File_PathsFileDate = PathsFileDate;
+                }
+                if (bLogChanged) {
+                    File_PathsLogFileSize = PathsLogFileSize;
+                    File_PathsLogFileDate = PathsLogFileDate;
+                }
+            }
+        } else {
+            DWORD wait_res = WaitForSingleObject(File_VfsMutex, 5000);
+            if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED) {
+                // mutex not acquired, do a safe full reload instead
+                File_LoadPathTree();
+                return;
+            }
+            EnterCriticalSection(File_PathRoot_CritSec);
+
+            ULONG64 old_replay_offset = File_PathsLogReplayOffset;
+            ULONG applied_lines = 0;
+            if (!File_LoadPathJournal_internal(&File_PathRoot, logName, File_TranslateDosToNtPathForDatFile, &File_PathsLogReplayOffset, &applied_lines, TRUE)) {
+                LeaveCriticalSection(File_PathRoot_CritSec);
+                ReleaseMutex(File_VfsMutex);
+                File_LoadPathTree();
+                return;
+            }
+            // If the journal shrank, another process compacted it and updated
+            // the .dat.  The incremental replay would miss those compacted entries,
+            // so fall back to a full reload to pick up the new .dat state.
+            if (File_PathsLogReplayOffset < old_replay_offset) {
+                LeaveCriticalSection(File_PathRoot_CritSec);
+                ReleaseMutex(File_VfsMutex);
+                File_LoadPathTree();
+                return;
+            }
+            File_PathsLogLineCount += applied_lines;
+            File_PathsVersion++;
+
+            if (bLogChanged) {
+                File_PathsLogFileSize = PathsLogFileSize;
+                File_PathsLogFileDate = PathsLogFileDate;
+            }
+            LeaveCriticalSection(File_PathRoot_CritSec);
+            ReleaseMutex(File_VfsMutex);
         }
     }
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3RefreshInterval
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3RefreshInterval(ULONG IntervalMs)
+{
+    if (IntervalMs > 5000)
+        IntervalMs = 5000;
+    File_PathRefreshIntervalMs = IntervalMs;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3
+//
+// Must be called only during process initialisation (File_Init), before any
+// delete or relocation operations take place.  The mode flag is read without
+// synchronisation throughout the hot path; toggling it at runtime would cause
+// races between readers that see old vs new values and is therefore unsafe.
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3(BOOLEAN Enabled)
+{
+    File_DeleteV3 = Enabled;
+    File_CurrentLogName = Enabled ? FILE_PATH_LOG_FILE_NAME_V3 : FILE_PATH_LOG_FILE_NAME;
+    File_CurrentDatName = Enabled ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3JournalMaxSizeKB
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3JournalMaxSizeKB(ULONG MaxSizeKB)
+{
+    // Cap at the per-bitness hard-cap so user-configured compaction always fires
+    // before the hard cap: 512 MB on 64-bit, 256 MB on 32-bit.
+#ifdef _WIN64
+    if (MaxSizeKB > 512 * 1024)
+        MaxSizeKB = 512 * 1024;
+#else
+    if (MaxSizeKB > 256 * 1024)
+        MaxSizeKB = 256 * 1024;
+#endif
+    File_DeleteV3JournalMaxSizeBytes = MaxSizeKB * 1024;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3JournalMaxLines
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3JournalMaxLines(ULONG MaxLines)
+{
+    if (MaxLines > 100000000)
+        MaxLines = 100000000;
+    File_DeleteV3JournalMaxLines = MaxLines;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3JournalKeepOpenMs
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3JournalKeepOpenMs(ULONG KeepOpenMs)
+{
+    if (KeepOpenMs > 60000)
+        KeepOpenMs = 60000;
+    File_DeleteV3JournalKeepOpenMs = KeepOpenMs;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3CompactionBusyWritesPerSec
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3CompactionBusyWritesPerSec(ULONG WritesPerSec)
+{
+    if (WritesPerSec > 100000)
+        WritesPerSec = 100000;
+    File_DeleteV3CompactionBusyWritesPerSec = WritesPerSec;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3CompactionBusyHoldMs
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3CompactionBusyHoldMs(ULONG HoldMs)
+{
+    if (HoldMs > 300000)
+        HoldMs = 300000;
+    File_DeleteV3CompactionBusyHoldMs = HoldMs;
+}
+
+
+//---------------------------------------------------------------------------
+// File_SetDeleteV3CompactionMinGraceMs
+// Internal tuning knob, intentionally NOT wired to sandbox configuration.
+// The hard-coded default (5 s) is appropriate for all practical deployments;
+// exposing it would add config surface without user benefit.
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_SetDeleteV3CompactionMinGraceMs(ULONG MinGraceMs)
+{
+    if (MinGraceMs > 300000)
+        MinGraceMs = 300000;
+    File_DeleteV3CompactionMinGraceMs = MinGraceMs;
+}
+
+
+//---------------------------------------------------------------------------
+// File_AtomicTickMax
+//
+// Lock-free CAS loop that writes newVal into *pShared only when newVal is
+// strictly later (in tick space) than the current value.  Safe to call from
+// any process at any time, no additional synchronisation needed.
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_AtomicTickMax(volatile LONG* pShared, ULONG newVal)
+{
+    if (!pShared)
+        return;
+    LONG expected;
+    do {
+        expected = *pShared;
+        if ((LONG)(newVal - (ULONG)expected) <= 0)
+            return; // newVal is not later than current, nothing to do
+    } while (InterlockedCompareExchange(pShared, (LONG)newVal, expected) != expected);
 }
 
 
@@ -878,22 +2631,90 @@ _FX VOID File_RefreshPathTree()
 
 _FX BOOLEAN File_InitDelete_v2()
 {
-    List_Init(&File_PathRoot);
+    memzero(&File_PathRoot, sizeof(PATH_LIST));
 
     File_PathRoot_CritSec = Dll_Alloc(sizeof(CRITICAL_SECTION));
+    if (!File_PathRoot_CritSec) return FALSE;
     InitializeCriticalSectionAndSpinCount(File_PathRoot_CritSec, 1000);
 
-    File_LoadPathTree();
+    // Build per-box named-object names. Including Dll_BoxName means that even
+    // if a box has an OpenIpcPath rule matching "SBIE*", processes in different
+    // boxes cannot share these synchronisation objects.
+    Sbie_snwprintf(File_VfsMutexName,        ARRAYSIZE(File_VfsMutexName),        L"SBIE_%s_VFS_Mutex",         Dll_BoxName);
+    Sbie_snwprintf(File_VfsCompactMutexName, ARRAYSIZE(File_VfsCompactMutexName), L"SBIE_%s_VFS_Compact_Mutex", Dll_BoxName);
+    Sbie_snwprintf(File_VfsBusyTickName,     ARRAYSIZE(File_VfsBusyTickName),     L"SBIE_%s_VFS_BusyTick",      Dll_BoxName);
+
+    // Create the inter-process mutex BEFORE calling File_LoadPathTree so the
+    // initial load is correctly serialized against other processes.
+    {
+        File_VfsMutex = CreateMutex(NULL, FALSE, FILE_VFS_MUTEX);
+    }
+
+    if (File_DeleteV3) {
+        // Named page-file-backed section, shared among all sandbox processes for
+        // cross-process burst-deferral.  Only needed in v3 journal mode.
+        File_SharedBusyHandle = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(LONG), FILE_VFS_BUSY_TICK);
+        if (File_SharedBusyHandle)
+            File_SharedBusyUntilTick = (volatile LONG*)MapViewOfFile(File_SharedBusyHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LONG));
+
+        // Initialise the file VFS journal context used by Vfs_AppendAndMaybeCompact_internal.
+        // All fields are pointers to module-global variables; setters update those variables
+        // directly, so the context always reflects the current configuration.
+        File_JournalCtx.pLogName            = &File_CurrentLogName;
+        File_JournalCtx.pDatName            = &File_CurrentDatName;
+        File_JournalCtx.TranslateForWrite   = File_TranslateNtToDosPathForDatFile;
+        File_JournalCtx.TranslateForLoad    = File_TranslateDosToNtPathForDatFile;
+        File_JournalCtx.CritSec             = File_PathRoot_CritSec;
+        File_JournalCtx.Root                = &File_PathRoot;
+        File_JournalCtx.pAppendHandle       = &File_PathsLogAppendHandle;
+        File_JournalCtx.pAppendLastTick     = &File_PathsLogAppendLastTick;
+        File_JournalCtx.pKeepOpenMs         = &File_DeleteV3JournalKeepOpenMs;
+        File_JournalCtx.pLogFileSize        = &File_PathsLogFileSize;
+        File_JournalCtx.pLogFileDate        = &File_PathsLogFileDate;
+        File_JournalCtx.pReplayOffset       = &File_PathsLogReplayOffset;
+        File_JournalCtx.pLogLineCount       = &File_PathsLogLineCount;
+        File_JournalCtx.pMaxSizeBytes       = &File_DeleteV3JournalMaxSizeBytes;
+        File_JournalCtx.pMaxLines           = &File_DeleteV3JournalMaxLines;
+        File_JournalCtx.pBusyWritesPerSec   = &File_DeleteV3CompactionBusyWritesPerSec;
+        File_JournalCtx.pBusyHoldMs         = &File_DeleteV3CompactionBusyHoldMs;
+        File_JournalCtx.pMinGraceMs         = &File_DeleteV3CompactionMinGraceMs;
+        File_JournalCtx.pRecentWriteCount   = &File_RecentWriteCount;
+        File_JournalCtx.pRecentWriteWindowTick = &File_RecentWriteWindowTick;
+        File_JournalCtx.pBusyUntilTick      = &File_CompactionBusyUntilTick;
+        File_JournalCtx.pSharedBusyUntilTick = File_SharedBusyUntilTick;
+        File_JournalCtx.compactMutexName    = File_VfsCompactMutexName;
+        File_JournalCtx.pDatFileSize        = &File_PathsFileSize;
+        File_JournalCtx.pDatFileDate        = &File_PathsFileDate;
+        File_JournalCtx.pPathsVersion       = &File_PathsVersion;
+        File_JournalCtx.pIsV3               = &File_DeleteV3;
+    }
+
+    BOOLEAN pathsLoaded = File_LoadPathTree(); // sets File_PathsLogReplayOffset and File_PathsLogLineCount
 
 //#ifdef WITH_DEBUG
 //    File_SavePathTree();
 //#endif
 
-    File_GetAttributes_internal(FILE_PATH_FILE_NAME, &File_PathsFileSize, &File_PathsFileDate, NULL);
+    // Update the dat/log size+date caches used by File_RefreshPathTree for
+    // change-detection.  File_LoadPathTree does not update these in journal mode.
+    {
+        const WCHAR* datName = File_DeleteV3 ? FILE_PATH_FILE_NAME_V3 : FILE_PATH_FILE_NAME;
+        const WCHAR* logName = File_DeleteV3 ? FILE_PATH_LOG_FILE_NAME_V3 : FILE_PATH_LOG_FILE_NAME;
+        File_GetAttributes_internal(datName, &File_PathsFileSize, &File_PathsFileDate, NULL);
+        if (File_DeleteV3)
+            File_GetAttributes_internal(logName, &File_PathsLogFileSize, &File_PathsLogFileDate, NULL);
+    }
+    // NOTE: do NOT reset File_PathsLogReplayOffset / File_PathsLogLineCount here;
+    // File_LoadPathTree already initialised them correctly.
+    File_PathsLogAppendLastTick = 0;
+    if (File_PathsLogAppendHandle) {
+        NtClose(File_PathsLogAppendHandle);
+        File_PathsLogAppendHandle = NULL;
+    }
 
     File_InitBoxRootWatcher();
 
-    return TRUE;
+    return !File_DeleteV3 || pathsLoaded;
 }
 
 
@@ -949,16 +2770,76 @@ _FX BOOL File_TestBoxRootChange(ULONG WatchBit)
     if(NtWaitForSingleObject(File_BoxRootWatcher, 0, &Timeout) == WAIT_OBJECT_0) {
     //if (WaitForSingleObject(File_BoxRootWatcher, 0) == WAIT_OBJECT_0) {
 
-        File_BoxRootChangeBits = -1; // set all bits
+        InterlockedOr((LONG*)&File_BoxRootChangeBits, -1); // set all bits atomically
 
         //FindNextChangeNotification(File_BoxRootWatcher); // rearm the watcher
         NtNotifyChangeDirectoryFile(File_BoxRootWatcher, NULL, NULL, NULL, &File_NotifyIosb, File_NotifyInfo, sizeof(File_NotifyInfo), 3u, 1u);
     }
 
     ULONG WatchMask = 1 << WatchBit;
-    BOOL bRet = (File_BoxRootChangeBits & WatchMask) != 0; // check requested bit
-    File_BoxRootChangeBits &= ~WatchMask; // clear requested bit
+    LONG prev = InterlockedAnd((LONG*)&File_BoxRootChangeBits, ~(LONG)WatchMask); // clear bit atomically
+    BOOL bRet = (prev & (LONG)WatchMask) != 0;
     return bRet;
+}
+
+
+//---------------------------------------------------------------------------
+// File_UpdateJournalState_internal
+//---------------------------------------------------------------------------
+
+
+_FX VOID File_UpdateJournalState_internal(ULONG BytesWritten, ULONG64* pLogFileSize, ULONG64* pReplayOffset, ULONG* pLogLineCount,
+    ULONG WritesPerSecThreshold, ULONG HoldMs, ULONG MinGraceMs, ULONG* pRecentWriteCount, ULONG* pRecentWriteWindowTick, ULONG* pBusyUntilTick)
+{
+    // Keep cached size/replay/line counters in sync with successful local appends.
+    *pLogFileSize += BytesWritten;
+    *pReplayOffset += BytesWritten;
+    *pLogLineCount += 1;
+
+    if (WritesPerSecThreshold != 0) {
+        ULONG busy_ticks = GetTickCount();
+        *pRecentWriteCount += 1;
+
+        if (*pRecentWriteWindowTick == 0) {
+            *pRecentWriteWindowTick = busy_ticks;
+            // Pre-arm the busy window on the first write so the burst-deferral
+            // window is active from the very start and compaction cannot fire
+            // during the first 1-second rate-measurement blind spot.
+            if (MinGraceMs > 0) {
+                ULONG grace_until = busy_ticks + MinGraceMs;
+                if (*pBusyUntilTick == 0 || (LONG)(grace_until - *pBusyUntilTick) > 0)
+                    *pBusyUntilTick = grace_until;
+            }
+        }
+
+        ULONG elapsed = busy_ticks - *pRecentWriteWindowTick;
+        if (elapsed >= 1000) {
+            // Guard against ULONG overflow: if write count already exceeds the
+            // threshold per millisecond, clamp rather than overflow the multiply.
+            ULONG rate = (*pRecentWriteCount > 0xFFFFFFFF / 1000)
+                ? 0xFFFFFFFF
+                : (*pRecentWriteCount * 1000) / (elapsed ? elapsed : 1);
+            *pRecentWriteCount = 0;
+            *pRecentWriteWindowTick = busy_ticks;
+            if (rate >= WritesPerSecThreshold)
+                *pBusyUntilTick = busy_ticks + HoldMs;
+        }
+    }
+}
+
+
+//---------------------------------------------------------------------------
+// File_ShouldCompactJournal_internal
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN File_ShouldCompactJournal_internal(ULONG WritesPerSecThreshold, ULONG BusyUntilTick, ULONG64 LogFileSize, ULONG MaxSizeBytes,
+    ULONG LogLineCount, ULONG MaxLines)
+{
+    BOOLEAN bHighIO = (WritesPerSecThreshold != 0 && BusyUntilTick != 0 && (LONG)(GetTickCount() - BusyUntilTick) < 0);
+    BOOLEAN bCompactBySize = (!bHighIO && MaxSizeBytes != 0 && LogFileSize >= MaxSizeBytes);
+    BOOLEAN bCompactByLines = (!bHighIO && MaxLines != 0 && LogLineCount >= MaxLines);
+    return (bCompactBySize || bCompactByLines);
 }
 
 
@@ -967,17 +2848,18 @@ _FX BOOL File_TestBoxRootChange(ULONG WatchBit)
 //---------------------------------------------------------------------------
 
 
-_FX BOOLEAN File_MarkDeleted_internal(LIST* Root, const WCHAR* Path, BOOLEAN* pTruncated)
+_FX BOOLEAN File_MarkDeleted_internal(PATH_LIST* Root, const WCHAR* Path, BOOLEAN* pTruncated)
 {
     // 1. remove deleted branch
 
-    LIST* Parent = NULL;
+    PATH_LIST* Parent = NULL;
     PATH_NODE* Node = File_FindPathBranche_internal(Root, Path, &Parent, FALSE);
     if (Node) {
-        if (Node->flags == FILE_DELETED_FLAG && Node->items.count == 0)
+        if (Node->flags == FILE_DELETED_FLAG && Node->items.list.count == 0)
             return FALSE; // already marked deleted
 
-        List_Remove(Parent, Node);
+        if (Parent->buckets) PathList_RemoveFromTable(Parent, Node);
+        List_Remove((LIST*)Parent, Node);
 
         File_ClearPathBranche_internal(&Node->items);
         if (Node->relocation) Dll_Free(Node->relocation);
@@ -989,9 +2871,424 @@ _FX BOOLEAN File_MarkDeleted_internal(LIST* Root, const WCHAR* Path, BOOLEAN* pT
 
     File_SetPathFlags_internal(Root, Path, FILE_DELETED_FLAG, 0, NULL);
 
-    // done
+    // Verify that step 2 actually created the node in the tree.
+    // File_SetPathFlags_internal is VOID and silently swallows allocation
+    // failures, so OOM leaves the path unmarked with no indication of failure.
+    // If the node is absent after the call, signal the caller via *pTruncated
+    // so it falls through to a full disk-write path (journal append in V3 mode,
+    // SavePathTree in V2 mode) rather than silently skipping persistence.
+    {
+        PATH_LIST* vp = NULL;
+        PATH_NODE* vn = File_FindPathBranche_internal(Root, Path, &vp, FALSE);
+        if (!vn || !(vn->flags & FILE_DELETED_FLAG)) {
+            if (pTruncated) *pTruncated = TRUE;
+            return FALSE;
+        }
+    }
 
     return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// File_IsDeletedLeaf_internal
+//---------------------------------------------------------------------------
+
+
+static BOOLEAN File_IsDeletedLeaf_internal(PATH_LIST* Root, const WCHAR* Path)
+{
+    PATH_NODE* Node = File_FindPathBranche_internal(Root, Path, NULL, FALSE);
+    return Node && Node->flags == FILE_DELETED_FLAG && Node->items.list.count == 0;
+}
+
+
+//---------------------------------------------------------------------------
+// Vjs_OpenHandle_internal
+//
+// Acquire (or reuse) the journal log handle for appending. Context-generic
+// replacement for the former module-specific *_OpenJournalHandle functions.
+// *pOneShotHandle is set TRUE when the returned handle must be closed by the
+// caller after use.
+//---------------------------------------------------------------------------
+
+static BOOLEAN Vjs_OpenHandle_internal(VPATH_JOURNAL_CTX* ctx, HANDLE* phHandle,
+    BOOLEAN* pOneShotHandle, ULONG64* pEndOfFile)
+{
+    *pOneShotHandle = TRUE;
+    *phHandle = NULL;
+
+    if (*ctx->pKeepOpenMs != 0) {
+        ULONG ticks_now = GetTickCount();
+        if (*ctx->pAppendHandle && (LONG)(ticks_now - *ctx->pAppendLastTick) > (LONG)*ctx->pKeepOpenMs) {
+            NtClose(*ctx->pAppendHandle);
+            *ctx->pAppendHandle = NULL;
+        }
+        if (!*ctx->pAppendHandle && File_OpenDataFileAppendShared(
+                *ctx->pLogName, ctx->pAppendHandle, pEndOfFile)) {
+            *ctx->pAppendLastTick = ticks_now;
+        }
+        if (*ctx->pAppendHandle) {
+            if (!File_SeekToEndOfFile(*ctx->pAppendHandle, pEndOfFile)) {
+                NtClose(*ctx->pAppendHandle);
+                *ctx->pAppendHandle = NULL;
+                return FALSE;
+            }
+            *phHandle = *ctx->pAppendHandle;
+            *pOneShotHandle = FALSE;
+            return TRUE;
+        }
+    }
+
+    File_OpenDataFile(*ctx->pLogName, phHandle, TRUE, pEndOfFile);
+    // *pOneShotHandle is already TRUE; caller must close the handle after use.
+    return *phHandle != NULL;
+}
+
+
+static BOOLEAN Vjs_ReloadTree_internal(VPATH_JOURNAL_CTX* ctx)
+{
+    PATH_LIST newRoot;
+    memzero(&newRoot, sizeof(newRoot));
+    ULONG64 datSize = 0, datDate = 0, logSize = 0, logDate = 0, dummyOffset = 0;
+    BOOLEAN datExists = File_GetAttributes_internal(*ctx->pDatName, &datSize, &datDate, NULL);
+    BOOLEAN datOk = !datExists || datSize == 0 ||
+        File_LoadPathJournal_internal(&newRoot, *ctx->pDatName,
+            ctx->TranslateForLoad, &dummyOffset, NULL, FALSE);
+    ULONG appliedLines = 0;
+    ULONG64 replayOffset = 0;
+    BOOLEAN logExists = File_GetAttributes_internal(*ctx->pLogName, &logSize, &logDate, NULL);
+    BOOLEAN logOk = !logExists || logSize == 0 ||
+        File_LoadPathJournal_internal(&newRoot, *ctx->pLogName,
+            ctx->TranslateForLoad, &replayOffset, &appliedLines, TRUE);
+    if (!datOk || !logOk) {
+        File_ClearPathBranche_internal(&newRoot);
+        return FALSE;
+    }
+
+    EnterCriticalSection(ctx->CritSec);
+    PATH_LIST oldRoot = *ctx->Root;
+    *ctx->Root = newRoot;
+    File_ClearPathBranche_internal(&oldRoot);
+    if (ctx->pPathsVersion)
+        *ctx->pPathsVersion += 1;
+    LeaveCriticalSection(ctx->CritSec);
+    *ctx->pReplayOffset = replayOffset;
+    *ctx->pLogLineCount = appliedLines;
+    *ctx->pDatFileSize = datExists ? datSize : 0;
+    *ctx->pDatFileDate = datExists ? datDate : 0;
+    *ctx->pLogFileSize = logExists ? logSize : 0;
+    *ctx->pLogFileDate = logExists ? logDate : 0;
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
+// Vfs_CompactJournalNow_internal
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN Vfs_CompactJournalNow_internal(VPATH_JOURNAL_CTX* ctx)
+{
+    HANDLE hCompactMutex = NULL;
+    BOOLEAN compacted = FALSE;
+
+    if (File_TryAcquireCompactionMarker(&hCompactMutex, ctx->compactMutexName)) {
+        if (Vjs_ReloadTree_internal(ctx)) {
+            EnterCriticalSection(ctx->CritSec);
+            compacted = File_CompactPathJournal_internal(ctx->CritSec, ctx->Root,
+                *ctx->pDatName, *ctx->pLogName, ctx->TranslateForWrite,
+                ctx->pLogFileSize, ctx->pLogFileDate,
+                ctx->pReplayOffset, ctx->pAppendHandle, *ctx->pIsV3);
+            if (compacted)
+                *ctx->pLogLineCount = 0;
+            File_GetAttributes_internal(*ctx->pDatName,
+                ctx->pDatFileSize, ctx->pDatFileDate, NULL);
+            LeaveCriticalSection(ctx->CritSec);
+        }
+        File_ReleaseMutex(hCompactMutex);
+    }
+
+    return compacted;
+}
+
+
+//---------------------------------------------------------------------------
+// Vfs_AppendAndMaybeCompact_internal
+//
+// Opens the journal, appends one delete or relocation entry, updates the
+// cached counters, and triggers compaction when thresholds are exceeded.
+// Returns TRUE only after the entry was appended and applied to the local tree.
+// On failure, the caller reports the operation as unsuccessful.
+// isDelete: TRUE = "path|1" delete entry; FALSE = "old|2|new" relocation.
+//---------------------------------------------------------------------------
+
+_FX BOOLEAN Vfs_AppendAndMaybeCompact_internal(
+    VPATH_JOURNAL_CTX* ctx,
+    BOOLEAN isDelete,
+    const WCHAR* Path,
+    const WCHAR* NewPath,
+    BOOLEAN* pApplied)
+{
+    ULONG bJournalPersisted = 0;
+    HANDLE hPathsFile = NULL;
+    BOOLEAN one_shot_handle = TRUE;
+    ULONG64 appendOffset = 0;
+    WCHAR* pathCopy = NULL;
+    WCHAR* newPathCopy = NULL;
+    WCHAR* valuePath = NULL;
+    BOOLEAN noOp = FALSE;
+    *pApplied = FALSE;
+
+    if (!Path || !*Path || (!isDelete && !NewPath) || wcslen(Path) >= 0x7FFF ||
+            (NewPath && (!*NewPath || wcslen(NewPath) >= 0x7FFF)))
+        return FALSE;
+
+    Vjs_OpenHandle_internal(ctx, &hPathsFile, &one_shot_handle, &appendOffset);
+
+    if (hPathsFile && appendOffset > FILE_JOURNAL_HARD_CAP_BYTES - FILE_JOURNAL_MAX_RECORD_BYTES) {
+        if (one_shot_handle)
+            NtClose(hPathsFile);
+        else {
+            NtClose(*ctx->pAppendHandle);
+            *ctx->pAppendHandle = NULL;
+        }
+        hPathsFile = NULL;
+
+        HANDLE hCompactMutex = NULL;
+        BOOLEAN compacted = FALSE;
+        if (File_TryAcquireCompactionMarker(&hCompactMutex, ctx->compactMutexName)) {
+            if (Vjs_ReloadTree_internal(ctx)) {
+                EnterCriticalSection(ctx->CritSec);
+                compacted = File_CompactPathJournal_internal(ctx->CritSec, ctx->Root,
+                    *ctx->pDatName, *ctx->pLogName, ctx->TranslateForWrite,
+                    ctx->pLogFileSize, ctx->pLogFileDate,
+                    ctx->pReplayOffset, ctx->pAppendHandle, *ctx->pIsV3);
+                LeaveCriticalSection(ctx->CritSec);
+            }
+            File_ReleaseMutex(hCompactMutex);
+        }
+        if (!compacted)
+            return FALSE;
+
+        *ctx->pLogLineCount = 0;
+        File_GetAttributes_internal(*ctx->pDatName,
+            ctx->pDatFileSize, ctx->pDatFileDate, NULL);
+        one_shot_handle = TRUE;
+        appendOffset = 0;
+        Vjs_OpenHandle_internal(ctx, &hPathsFile, &one_shot_handle, &appendOffset);
+    }
+
+    if (hPathsFile) {
+        if (appendOffset != *ctx->pReplayOffset) {
+            pathCopy = Dll_Alloc(((ULONG)wcslen(Path) + 1) * sizeof(WCHAR));
+            if (NewPath)
+                newPathCopy = Dll_Alloc(((ULONG)wcslen(NewPath) + 1) * sizeof(WCHAR));
+            if (!pathCopy || (NewPath && !newPathCopy))
+                goto finish;
+            wcscpy(pathCopy, Path);
+            if (newPathCopy) wcscpy(newPathCopy, NewPath);
+
+            BOOLEAN reconciled = FALSE;
+            if (appendOffset > *ctx->pReplayOffset) {
+                ULONG appliedLines = 0;
+                EnterCriticalSection(ctx->CritSec);
+                reconciled = File_LoadPathJournal_internal(ctx->Root, *ctx->pLogName,
+                    ctx->TranslateForLoad, ctx->pReplayOffset, &appliedLines, TRUE);
+                LeaveCriticalSection(ctx->CritSec);
+                if (reconciled)
+                    *ctx->pLogLineCount += appliedLines;
+            } else {
+                reconciled = Vjs_ReloadTree_internal(ctx);
+            }
+            if (!reconciled)
+                goto finish;
+
+            if (*ctx->pReplayOffset < appendOffset) {
+                FILE_END_OF_FILE_INFORMATION eofInfo;
+                eofInfo.EndOfFile.QuadPart = *ctx->pReplayOffset;
+                IO_STATUS_BLOCK iosb;
+                if (!NT_SUCCESS(NtSetInformationFile(hPathsFile, &iosb, &eofInfo,
+                        sizeof(eofInfo), FileEndOfFileInformation)) ||
+                        !File_SeekToEndOfFile(hPathsFile, &appendOffset))
+                    goto finish;
+            }
+            if (*ctx->pReplayOffset != appendOffset)
+                goto finish;
+            Path = pathCopy;
+            NewPath = newPathCopy;
+        }
+
+        if (isDelete) {
+            const WCHAR* deletePath = Path;
+            if (NewPath) {
+                deletePath = NULL;
+                SIZE_T pathLen = wcslen(Path);
+                SIZE_T valueLen = wcslen(NewPath);
+                if (pathLen + valueLen + 2 < 0x7FFF) {
+                    valuePath = Dll_Alloc((ULONG)(pathLen + valueLen + 3) * sizeof(WCHAR));
+                    if (valuePath) {
+                        wcscpy(valuePath, Path);
+                        wcscat(valuePath, L"\\$");
+                        wcscat(valuePath, NewPath);
+                        deletePath = valuePath;
+                    }
+                }
+            }
+
+            if (deletePath) {
+                // Reconcile above so this check includes writes from other sandbox processes.
+                EnterCriticalSection(ctx->CritSec);
+                noOp = File_IsDeletedLeaf_internal(ctx->Root, deletePath);
+                LeaveCriticalSection(ctx->CritSec);
+            }
+
+            if (noOp) {
+                *ctx->pLogFileSize = appendOffset;
+                if (one_shot_handle)
+                    NtClose(hPathsFile);
+                else
+                    *ctx->pAppendLastTick = GetTickCount();
+                hPathsFile = NULL;
+                *pApplied = TRUE;
+                goto finish;
+            }
+        }
+
+        *ctx->pLogFileSize = appendOffset;
+        if (hPathsFile) {
+            if (isDelete) {
+                if (NewPath)
+                    bJournalPersisted = File_AppendPathJournalValueDelete_internal(
+                        hPathsFile, Path, NewPath, ctx->TranslateForWrite, *ctx->pIsV3);
+                else
+                    bJournalPersisted = File_AppendPathJournalDelete_internal(
+                        hPathsFile, Path, ctx->TranslateForWrite, *ctx->pIsV3);
+            }
+            else
+                bJournalPersisted = File_AppendPathJournalRelocation_internal(
+                    hPathsFile, Path, NewPath, ctx->TranslateForWrite, *ctx->pIsV3);
+        }
+        if (one_shot_handle) {
+            NtClose(hPathsFile);
+            hPathsFile = NULL;
+        } else {
+            *ctx->pAppendLastTick = GetTickCount();
+            hPathsFile = NULL; // The cached handle remains owned by the context.
+        }
+
+        if (bJournalPersisted) {
+            EnterCriticalSection(ctx->CritSec);
+            if (isDelete) {
+                WCHAR* applyPath = (WCHAR*)Path;
+                WCHAR* fullPath = valuePath;
+                if (NewPath) {
+                    applyPath = fullPath;
+                    if (!fullPath) {
+                        SIZE_T pathLen = wcslen(Path);
+                        SIZE_T valueLen = wcslen(NewPath);
+                        if (pathLen + valueLen + 2 < 0x7FFF) {
+                            fullPath = Dll_Alloc((ULONG)(pathLen + valueLen + 3) * sizeof(WCHAR));
+                            if (fullPath) {
+                                wcscpy(fullPath, Path);
+                                wcscat(fullPath, L"\\$");
+                                wcscat(fullPath, NewPath);
+                                applyPath = fullPath;
+                            }
+                        }
+                    }
+                }
+                BOOLEAN truncated = FALSE;
+                BOOLEAN changed = applyPath && File_MarkDeleted_internal(ctx->Root, applyPath, &truncated);
+                *pApplied = changed || (applyPath && !truncated);
+                if (fullPath && fullPath != valuePath) Dll_Free(fullPath);
+            } else {
+                File_SetRelocation_internal(ctx->Root, Path, NewPath);
+                PATH_NODE* node = File_FindPathBranche_internal(ctx->Root, NewPath, NULL, FALSE);
+                *pApplied = node && (node->flags & FILE_RELOCATION_FLAG) && node->relocation;
+            }
+            LeaveCriticalSection(ctx->CritSec);
+            if (!*pApplied)
+                goto finish;
+
+            File_UpdateJournalState_internal(bJournalPersisted,
+                ctx->pLogFileSize, ctx->pReplayOffset, ctx->pLogLineCount,
+                *ctx->pBusyWritesPerSec, *ctx->pBusyHoldMs, *ctx->pMinGraceMs,
+                ctx->pRecentWriteCount, ctx->pRecentWriteWindowTick, ctx->pBusyUntilTick);
+
+            // Publish local BusyUntilTick to the cross-process shared region so
+            // other sandbox processes also defer compaction during a burst.
+            File_AtomicTickMax(ctx->pSharedBusyUntilTick, *ctx->pBusyUntilTick);
+            ULONG effectiveBusy = ctx->pSharedBusyUntilTick
+                ? (ULONG)*ctx->pSharedBusyUntilTick : *ctx->pBusyUntilTick;
+
+            if (File_ShouldCompactJournal_internal(*ctx->pBusyWritesPerSec, effectiveBusy,
+                    *ctx->pLogFileSize, *ctx->pMaxSizeBytes,
+                    *ctx->pLogLineCount, *ctx->pMaxLines)
+                || *ctx->pLogFileSize >= FILE_JOURNAL_HARD_CAP_BYTES) {
+
+                HANDLE hCompactMutex = NULL;
+                if (File_TryAcquireCompactionMarker(&hCompactMutex, ctx->compactMutexName)) {
+                    if (Vjs_ReloadTree_internal(ctx)) {
+                        EnterCriticalSection(ctx->CritSec);
+                        if (File_CompactPathJournal_internal(ctx->CritSec, ctx->Root,
+                                *ctx->pDatName, *ctx->pLogName,
+                                ctx->TranslateForWrite,
+                                ctx->pLogFileSize, ctx->pLogFileDate,
+                                ctx->pReplayOffset, ctx->pAppendHandle, *ctx->pIsV3)) {
+                            *ctx->pLogLineCount = 0;
+                            // Mandatory post-compact busy tick: prevents back-to-back compactions
+                            // when limits are set low (burst would otherwise re-trigger
+                            // compaction on the very next write that pushes over the threshold).
+                            ULONG post = GetTickCount() + *ctx->pBusyHoldMs;
+                            if ((LONG)(post - *ctx->pBusyUntilTick) > 0)
+                                *ctx->pBusyUntilTick = post;
+                            File_AtomicTickMax(ctx->pSharedBusyUntilTick, *ctx->pBusyUntilTick);
+                        }
+                        File_GetAttributes_internal(*ctx->pDatName,
+                            ctx->pDatFileSize, ctx->pDatFileDate, NULL);
+                        LeaveCriticalSection(ctx->CritSec);
+                    }
+                    File_ReleaseMutex(hCompactMutex);
+                }
+            }
+        } else if (!one_shot_handle) {
+            NtClose(*ctx->pAppendHandle);
+            *ctx->pAppendHandle = NULL;
+        }
+    }
+
+finish:
+    if (hPathsFile) {
+        if (one_shot_handle)
+            NtClose(hPathsFile);
+        else if (!bJournalPersisted && ctx->pAppendHandle && *ctx->pAppendHandle) {
+            NtClose(*ctx->pAppendHandle);
+            *ctx->pAppendHandle = NULL;
+        }
+    }
+    if (newPathCopy) Dll_Free(newPathCopy);
+    if (pathCopy) Dll_Free(pathCopy);
+    if (valuePath) Dll_Free(valuePath);
+    return (bJournalPersisted != 0 || noOp) && *pApplied;
+}
+
+
+//---------------------------------------------------------------------------
+// File_CompactDeleteV3
+//---------------------------------------------------------------------------
+
+_FX NTSTATUS File_CompactDeleteV3(void)
+{
+    if (!File_DeleteV3 || !File_VfsMutex || !File_PathRoot_CritSec)
+        return STATUS_NOT_SUPPORTED;
+
+    DWORD wait_res = WaitForSingleObject(File_VfsMutex, 5000);
+    if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED)
+        return STATUS_TIMEOUT;
+
+    BOOLEAN compacted = Vfs_CompactJournalNow_internal(&File_JournalCtx);
+    ReleaseMutex(File_VfsMutex);
+
+    return compacted ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
 
@@ -1006,18 +3303,34 @@ _FX NTSTATUS File_MarkDeleted_v2(const WCHAR* TruePath)
     // add a file or directory to the deleted list
     //
 
-    HANDLE hMutex = File_AcquireMutex(FILE_VFS_MUTEX);
+    DWORD wait_res = WaitForSingleObject(File_VfsMutex, 5000);
+    if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED)
+        return STATUS_TIMEOUT;
+
+    const WCHAR* Path = File_TrimTrailingBackslashes(File_NormalizePath(TruePath, NORM_NAME_BUFFER), TMPL_NAME_BUFFER);
+    if (File_DeleteV3) {
+        BOOLEAN applied = FALSE;
+        BOOLEAN persisted = Vfs_AppendAndMaybeCompact_internal(
+            &File_JournalCtx, TRUE, Path, NULL, &applied);
+        ReleaseMutex(File_VfsMutex);
+        return persisted && applied ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+    }
 
     EnterCriticalSection(File_PathRoot_CritSec);
-
-    const WCHAR* Path = File_NormalizePath(TruePath, NORM_NAME_BUFFER);
     BOOLEAN bTruncated = FALSE;
     BOOLEAN bSet = File_MarkDeleted_internal(&File_PathRoot, Path, &bTruncated);
 
     LeaveCriticalSection(File_PathRoot_CritSec);
 
-    if (bSet)
+    // bTruncated covers the OOM case: File_MarkDeleted_internal returns FALSE
+    // but sets *pTruncated when File_SetPathFlags_internal failed silently, so
+    // we still need to write the entry to disk to recover at the next reload.
+    if (bSet || bTruncated)
     {
+        // Do NOT bump File_PathsVersion here. Per-delete invalidation can reset
+        // in-progress directory merge state and make a single delete/rename
+        // operation fan out to sibling entries. Keep version bumps tied to
+        // full reload/replay paths only (File_LoadPathTree/File_RefreshPathTree).
         //
         // Optimization: When marking a lot of host files as deleted, only append single line entries if possible instead of re creating the entire file
         //
@@ -1029,20 +3342,25 @@ _FX NTSTATUS File_MarkDeleted_v2(const WCHAR* TruePath)
             && (File_PathsFileSize == PathsFileSize && File_PathsFileDate == PathsFileDate)) {
 
             HANDLE hPathsFile;
-            if (File_OpenDataFile(FILE_PATH_FILE_NAME, &hPathsFile, TRUE))
+            if (File_OpenDataFile(FILE_PATH_FILE_NAME, &hPathsFile, TRUE, NULL))
             {
-                File_AppendPathEntry_internal(hPathsFile, Path, FILE_DELETED_FLAG, NULL, File_TranslateNtToDosPathForDatFile);
+                BOOLEAN ok = File_AppendPathEntry_internal(hPathsFile, Path, FILE_DELETED_FLAG, NULL, File_TranslateNtToDosPathForDatFile);
 
                 NtClose(hPathsFile);
 
-                File_GetAttributes_internal(FILE_PATH_FILE_NAME, &File_PathsFileSize, &File_PathsFileDate, NULL);
+                if (ok)
+                    File_GetAttributes_internal(FILE_PATH_FILE_NAME, &File_PathsFileSize, &File_PathsFileDate, NULL);
+                else
+                    File_SavePathTree();
             }
+            else
+                File_SavePathTree(); // open-for-append failed; fall back to full rewrite
         }
         else
             File_SavePathTree();
     }
 
-    File_ReleaseMutex(hMutex);
+    ReleaseMutex(File_VfsMutex);
 
     return STATUS_SUCCESS;
 }
@@ -1060,7 +3378,7 @@ _FX ULONG File_IsDeleted_v2(const WCHAR* TruePath)
     // use the dedicated test method to properly take into account relocations
     //
 
-    ULONG Flags = File_GetPathFlags(TruePath, NULL);
+    ULONG Flags = File_GetPathFlags(TruePath, NULL, FALSE);
 
     return (Flags & FILE_DELETED_MASK);
 }
@@ -1077,7 +3395,7 @@ _FX BOOLEAN File_HasDeleted_v2(const WCHAR* TruePath)
     // Check if this folder has deleted children
     //
 
-    ULONG Flags = File_GetPathFlags(TruePath, NULL);
+    ULONG Flags = File_GetPathFlags(TruePath, NULL, TRUE);
 
     return (Flags & FILE_CHILDREN_DELETED_FLAG) != 0;
 }
@@ -1088,7 +3406,7 @@ _FX BOOLEAN File_HasDeleted_v2(const WCHAR* TruePath)
 //---------------------------------------------------------------------------
 
 
-_FX VOID File_SetRelocation_internal(LIST* Root, const WCHAR *OldTruePath, const WCHAR *NewTruePath)
+_FX VOID File_SetRelocation_internal(PATH_LIST* Root, const WCHAR *OldTruePath, const WCHAR *NewTruePath)
 {
     // 0. check for no operation - in this case 5. would loop forever
 
@@ -1097,7 +3415,7 @@ _FX VOID File_SetRelocation_internal(LIST* Root, const WCHAR *OldTruePath, const
     
     // 1. separate branch from OldTruePath
     
-    LIST* Parent = NULL;
+    PATH_LIST* Parent = NULL;
     PATH_NODE* Node = File_FindPathBranche_internal(Root, OldTruePath, &Parent, FALSE);
     //if(Node) 
     //    List_Remove(Parent, Node); // leave node in it may have a delete flag
@@ -1122,6 +3440,7 @@ _FX VOID File_SetRelocation_internal(LIST* Root, const WCHAR *OldTruePath, const
     // 4. set redirection NewTruePath -> OldTruePath
 
     PATH_NODE* NewNode = File_FindPathBranche_internal(Root, NewTruePath, NULL, TRUE);
+    if (!NewNode) return; // OOM: cannot record relocation, state left consistent (deletion still applied)
 
     // OldTruePath may have a relocated parent, if so unwrap it
     if (!HasRelocation) {
@@ -1131,8 +3450,15 @@ _FX VOID File_SetRelocation_internal(LIST* Root, const WCHAR *OldTruePath, const
     }
     
     NewNode->flags |= FILE_RELOCATION_FLAG;
+    if (NewNode->relocation) {
+        Dll_Free(NewNode->relocation);
+        NewNode->relocation = NULL;
+    }
     NewNode->relocation = Dll_Alloc((wcslen(OldTruePath) + 1) * sizeof(WCHAR));
-    wcscpy(NewNode->relocation, OldTruePath);
+    if (NewNode->relocation)
+        wcscpy(NewNode->relocation, OldTruePath);
+    else
+        NewNode->flags &= ~FILE_RELOCATION_FLAG; // Alloc failed; clear flag so node is not left in a half-wired state
     
 
     // 5. reatach branch to NewTruePath
@@ -1149,6 +3475,9 @@ _FX VOID File_SetRelocation_internal(LIST* Root, const WCHAR *OldTruePath, const
 
             child = next_child;
         }
+        // Rebuild hash tables to reflect the transferred children
+        PathList_Rebuild(&Node->items);
+        PathList_Rebuild(&NewNode->items);
     }
     
 
@@ -1175,17 +3504,30 @@ _FX NTSTATUS File_SetRelocation(const WCHAR* OldTruePath, const WCHAR* NewTruePa
     // List a mapping for the new location
     //
 
-    HANDLE hMutex = File_AcquireMutex(FILE_VFS_MUTEX);
+    DWORD wait_res = WaitForSingleObject(File_VfsMutex, 5000);
+    if (wait_res != WAIT_OBJECT_0 && wait_res != WAIT_ABANDONED)
+        return STATUS_TIMEOUT;
+
+    const WCHAR* OldPath = File_TrimTrailingBackslashes(File_NormalizePath(OldTruePath, NORM_NAME_BUFFER), TMPL_NAME_BUFFER);
+    const WCHAR* NewPath = File_TrimTrailingBackslashes(File_NormalizePath(NewTruePath, MISC_NAME_BUFFER), MISC_NAME_BUFFER);
+
+    if (File_DeleteV3) {
+        BOOLEAN applied = FALSE;
+        BOOLEAN persisted = Vfs_AppendAndMaybeCompact_internal(
+            &File_JournalCtx, FALSE, OldPath, NewPath, &applied);
+        ReleaseMutex(File_VfsMutex);
+        return persisted && applied ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+    }
 
     EnterCriticalSection(File_PathRoot_CritSec);
 
-    File_SetRelocation_internal(&File_PathRoot, File_NormalizePath(OldTruePath, NORM_NAME_BUFFER), File_NormalizePath(NewTruePath, MISC_NAME_BUFFER));
+    File_SetRelocation_internal(&File_PathRoot, OldPath, NewPath);
 
     LeaveCriticalSection(File_PathRoot_CritSec);
 
     File_SavePathTree();
 
-    File_ReleaseMutex(hMutex);
+    ReleaseMutex(File_VfsMutex);
 
     return STATUS_SUCCESS;
 }
@@ -1203,7 +3545,7 @@ _FX WCHAR* File_GetRelocation(const WCHAR *TruePath)
     // 
 
     WCHAR* OldTruePath = NULL;
-    ULONG Flags = File_GetPathFlags(TruePath, &OldTruePath);
+    ULONG Flags = File_GetPathFlags(TruePath, &OldTruePath, FALSE);
     if (FILE_PATH_RELOCATED(Flags))
         return OldTruePath;
 
@@ -1218,10 +3560,13 @@ _FX WCHAR* File_GetRelocation(const WCHAR *TruePath)
 
 BOOL File_GetAttributes_internal(const WCHAR *name, ULONG64 *size, ULONG64 *date, ULONG *attrs)
 {
-    WCHAR PathsFile[MAX_PATH] = { 0 };
+    ULONG pathLen = (ULONG)wcslen(Dll_BoxFilePath) + 1 + (ULONG)wcslen(name) + 1;
+    WCHAR* PathsFile = (WCHAR*)Dll_Alloc(pathLen * sizeof(WCHAR));
+    if (!PathsFile) return FALSE;
     wcscpy(PathsFile, Dll_BoxFilePath);
     wcscat(PathsFile, L"\\");
     wcscat(PathsFile, name);
-
-    return SbieDll_QueryFileAttributes(PathsFile, size, date, attrs);
+    BOOL ret = SbieDll_QueryFileAttributes(PathsFile, size, date, attrs);
+    Dll_Free(PathsFile);
+    return ret;
 }

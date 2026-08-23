@@ -113,6 +113,8 @@ SBIEDLL_EXPORT  BOOLEAN SbieDll_Mount(const WCHAR *BoxName, const WCHAR * BoxKey
 
 SBIEDLL_EXPORT  BOOLEAN SbieDll_Unmount(const WCHAR *BoxName);
 
+SBIEDLL_EXPORT  LONG SbieDll_CompactDeleteV3(void);
+
 SBIEDLL_EXPORT  ULONG SbieDll_GetTokenElevationType(void);
 
 SBIEDLL_EXPORT  WCHAR *SbieDll_FormatMessage(ULONG code, const WCHAR **ins);
