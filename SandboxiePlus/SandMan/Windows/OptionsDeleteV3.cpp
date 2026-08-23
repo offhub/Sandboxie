@@ -151,7 +151,8 @@ public:
 		QWidget* parent = nullptr)
 		: QDialog(parent)
 	{
-		const QString BoxName = pBox ? pBox->GetName() : QString();
+		QSharedPointer<CSandBoxPlus> pBoxEx = pBox.objectCast<CSandBoxPlus>();
+		const QString BoxName = pBoxEx ? pBoxEx->GetDisplayName() : (pBox ? pBox->GetName() : QString());
 		const QString BaseTitle = COptionsWindow::tr("Delete V3 Advanced Settings");
 		setWindowTitle(BoxName.isEmpty()
 			? BaseTitle
