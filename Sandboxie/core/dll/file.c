@@ -8301,9 +8301,12 @@ _FX NTSTATUS File_RenameFile(
         if (status != STATUS_BAD_INITIAL_PC) {
 
             if (NT_SUCCESS(status)) {
-                File_HistoryRename(
-                    SourceTruePath, SourceCopyPath,
-                    TargetTruePath, TargetCopyPath, SourceIsDirectory);
+                if ((SourceFlags & FGN_IS_BOXED_PATH) ||
+                        (TargetFlags & FGN_IS_BOXED_PATH)) {
+                    File_HistoryRename(
+                        SourceTruePath, SourceCopyPath,
+                        TargetTruePath, TargetCopyPath, SourceIsDirectory);
+                }
                 goto after_rename;
             }
             __leave;
@@ -8505,8 +8508,11 @@ _FX NTSTATUS File_RenameFile(
 
     if (ReplaceIfExists) {
 
-        File_HistoryCapture(
-            TargetTruePath, TargetCopyPath, L"replace");
+        if ((SourceFlags & FGN_IS_BOXED_PATH) ||
+                (TargetFlags & FGN_IS_BOXED_PATH)) {
+            File_HistoryCapture(
+                TargetTruePath, TargetCopyPath, L"replace");
+        }
         __sys_NtDeleteFile(&objattrs);
     }
 
@@ -8584,10 +8590,13 @@ issue_rename:
 
     File_RecordRecover(FileHandle, TargetTruePath);
 
-    if (!LinkOp)
+    if (!LinkOp &&
+            ((SourceFlags & FGN_IS_BOXED_PATH) ||
+             (TargetFlags & FGN_IS_BOXED_PATH))) {
         File_HistoryRename(
             SourceTruePath, SourceCopyPath,
             TargetTruePath, TargetCopyPath, SourceIsDirectory);
+    }
 
     //
     // if the source file exists in the sandbox, we need to create an
