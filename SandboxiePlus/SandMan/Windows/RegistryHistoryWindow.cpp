@@ -14,6 +14,7 @@
 #include "../../MiscHelpers/Common/Finder.h"
 #include "../../MiscHelpers/Common/PanelView.h"
 #include "../../MiscHelpers/Common/CheckableMessageBox.h"
+#include "../../MiscHelpers/Common/TreeWidgetEx.h"
 #include "../../QSbieAPI/SbieUtils.h"
 
 #include <QAbstractButton>
@@ -94,10 +95,38 @@ namespace
         QString Value;
     };
 
+    struct SRegistryRelocation
+    {
+        QString OldPath;
+        QString NewPath;
+    };
+
     struct SRegistryState
     {
         QMap<QString, SRegistryKey> Keys;
         QMap<QString, SRegistryDeletion> Deletions;
+        QMap<QString, SRegistryRelocation> Relocations;
+        QSet<QString> RelocationSources;
+    };
+
+    enum EHostStatus
+    {
+        eHostAbsent,
+        eHostPresent,
+        eHostUnavailable
+    };
+
+    struct SHostValue
+    {
+        EHostStatus Status = eHostAbsent;
+        SRegistryValue Value;
+    };
+
+    struct SHostRegistry
+    {
+        QMap<QString, EHostStatus> KeyStatus;
+        QMap<QString, QMap<QString, SHostValue> > Values;
+        quint64 DataSize = 0;
     };
 
     bool IsSafeDirectory(const QString& path);
@@ -136,6 +165,25 @@ namespace
             return "HKCU";
         if (path.startsWith("USER\\CURRENT\\", Qt::CaseInsensitive))
             return "HKCU\\" + path.mid(13);
+        if (path.startsWith("USER\\", Qt::CaseInsensitive)) {
+            QString userPath = path.mid(5);
+            int separator = userPath.indexOf('\\');
+            QString userRoot = separator >= 0 ? userPath.left(separator)
+                : userPath;
+            if (userRoot.endsWith("_Classes", Qt::CaseInsensitive)) {
+                QString sid = userRoot.left(userRoot.size() - 8);
+                QString result = sid.compare("CURRENT",
+                    Qt::CaseInsensitive) == 0
+                    ? QStringLiteral("HKCU\\Software\\Classes")
+                    : QStringLiteral("HKU\\") + sid +
+                        QStringLiteral("_Classes");
+                if (separator >= 0) {
+                    result += QLatin1Char('\\');
+                    result += userPath.mid(separator + 1);
+                }
+                return result;
+            }
+        }
         if (path.compare("USER", Qt::CaseInsensitive) == 0)
             return "HKU";
         if (path.startsWith("USER\\", Qt::CaseInsensitive))
@@ -147,12 +195,340 @@ namespace
     {
         QString sid = theAPI ? theAPI->GetCurrentUserSid() : QString();
         QString prefix = QStringLiteral("HKU\\") + sid;
+        QString classesPrefix = prefix + QStringLiteral("_Classes");
+        if (!sid.isEmpty() && (path.compare(classesPrefix,
+                    Qt::CaseInsensitive) == 0 ||
+                path.startsWith(classesPrefix + QLatin1Char('\\'),
+                    Qt::CaseInsensitive))) {
+            path.replace(0, classesPrefix.length(),
+                QStringLiteral("HKCU\\Software\\Classes"));
+        }
         if (!sid.isEmpty() && (path.compare(prefix, Qt::CaseInsensitive) == 0 ||
                 path.startsWith(prefix + QLatin1Char('\\'),
                     Qt::CaseInsensitive))) {
             path.replace(0, prefix.length(), QStringLiteral("HKCU"));
         }
         return Fold(path);
+    }
+
+    QString RegistryPathId(const QString& path)
+    {
+        return CanonicalRegistryPath(DisplayRegistryPath(path));
+    }
+
+    bool IsHiveRootPath(const QString& path)
+    {
+        return path.compare(DisplayRegistryPath(QString()),
+            Qt::CaseInsensitive) == 0;
+    }
+
+    QString MakeDeletionId(const QString& kind, const QString& path,
+        const QString& value = QString())
+    {
+        QString foldedPath = RegistryPathId(path);
+        QString id = kind + ":" + QString::number(foldedPath.size()) +
+            ":" + foldedPath;
+        if (kind == "V")
+            id += Fold(value);
+        return id;
+    }
+
+    HKEY HostRegistryRoot(const QString& name)
+    {
+        if (name.compare("HKLM", Qt::CaseInsensitive) == 0 ||
+                name.compare("HKEY_LOCAL_MACHINE", Qt::CaseInsensitive) == 0)
+            return HKEY_LOCAL_MACHINE;
+        if (name.compare("HKCU", Qt::CaseInsensitive) == 0 ||
+                name.compare("HKEY_CURRENT_USER", Qt::CaseInsensitive) == 0)
+            return HKEY_CURRENT_USER;
+        if (name.compare("HKU", Qt::CaseInsensitive) == 0 ||
+                name.compare("HKEY_USERS", Qt::CaseInsensitive) == 0)
+            return HKEY_USERS;
+        if (name.compare("HKCR", Qt::CaseInsensitive) == 0 ||
+                name.compare("HKEY_CLASSES_ROOT", Qt::CaseInsensitive) == 0)
+            return HKEY_CLASSES_ROOT;
+        return NULL;
+    }
+
+    LSTATUS OpenHostKey(const QString& path, HKEY* key, bool* closeKey)
+    {
+        QString normalized = DisplayRegistryPath(path);
+        normalized.replace('/', '\\');
+        int separator = normalized.indexOf('\\');
+        QString rootName = separator >= 0 ? normalized.left(separator)
+            : normalized;
+        HKEY root = HostRegistryRoot(rootName);
+        if (!root)
+            return ERROR_INVALID_PARAMETER;
+
+        QString subKey = separator >= 0 ? normalized.mid(separator + 1)
+            : QString();
+        if (subKey.isEmpty()) {
+            *key = root;
+            *closeKey = false;
+            return ERROR_SUCCESS;
+        }
+
+        LSTATUS status = RegOpenKeyExW(root,
+            reinterpret_cast<LPCWSTR>(subKey.utf16()), REG_OPTION_OPEN_LINK,
+            KEY_READ, key);
+        *closeKey = status == ERROR_SUCCESS;
+        return status;
+    }
+
+    bool IsMissingHostStatus(LSTATUS status)
+    {
+        return status == ERROR_FILE_NOT_FOUND ||
+            status == ERROR_PATH_NOT_FOUND;
+    }
+
+    EHostStatus GetHostKeyStatus(SHostRegistry& host, const QString& path,
+        QString& error)
+    {
+        QString id = RegistryPathId(path);
+        auto found = host.KeyStatus.constFind(id);
+        if (found != host.KeyStatus.cend())
+            return found.value();
+
+        HKEY key = NULL;
+        bool closeKey = false;
+        LSTATUS status = OpenHostKey(path, &key, &closeKey);
+        if (closeKey)
+            RegCloseKey(key);
+
+        EHostStatus result = status == ERROR_SUCCESS ? eHostPresent
+            : IsMissingHostStatus(status) ? eHostAbsent : eHostUnavailable;
+        host.KeyStatus.insert(id, result);
+        if (result == eHostUnavailable) {
+            error = QObject::tr("Could not read the live host registry key %1: %2")
+                .arg(DisplayRegistryPath(path)).arg(status);
+        }
+        return result;
+    }
+
+    EHostStatus GetHostValue(SHostRegistry& host, const QString& path,
+        const QString& valueName, SRegistryValue& value, QString& error)
+    {
+        QString keyId = RegistryPathId(path);
+        QString valueId = Fold(valueName);
+        auto keyValues = host.Values.find(keyId);
+        if (keyValues != host.Values.end()) {
+            const QMap<QString, SHostValue>& values = keyValues.value();
+            auto found = values.constFind(valueId);
+            if (found != values.cend()) {
+                if (found.value().Status == eHostPresent)
+                    value = found.value().Value;
+                return found.value().Status;
+            }
+        }
+
+        EHostStatus keyStatus = GetHostKeyStatus(host, path, error);
+        SHostValue result;
+        result.Status = keyStatus == eHostUnavailable
+            ? eHostUnavailable : eHostAbsent;
+        if (keyStatus == eHostPresent) {
+            HKEY key = NULL;
+            bool closeKey = false;
+            LSTATUS openStatus = OpenHostKey(path, &key, &closeKey);
+            LSTATUS status = openStatus;
+            DWORD type = REG_NONE;
+            DWORD dataSize = 0;
+            if (status == ERROR_SUCCESS) {
+                LPCWSTR name = valueName.isEmpty() ? NULL
+                    : reinterpret_cast<LPCWSTR>(valueName.utf16());
+                status = RegQueryValueExW(key, name, NULL, &type, NULL,
+                    &dataSize);
+                if (status == ERROR_SUCCESS) {
+                    if (dataSize > 64 * 1024 * 1024 ||
+                            quint64(dataSize) > MaxCompareData ||
+                            host.DataSize > MaxCompareData -
+                                quint64(dataSize)) {
+                        if (closeKey)
+                            RegCloseKey(key);
+                        error = QObject::tr(
+                            "The live host registry data is too large to compare safely.");
+                        return eHostUnavailable;
+                    }
+                    QByteArray data(int(dataSize), '\0');
+                    DWORD actualSize = dataSize;
+                    status = RegQueryValueExW(key, name, NULL, &type,
+                        reinterpret_cast<LPBYTE>(data.data()), &actualSize);
+                    if (status == ERROR_SUCCESS) {
+                        result.Status = eHostPresent;
+                        result.Value.Name = valueName;
+                        result.Value.Type = type;
+                        result.Value.Data = data.left(int(actualSize));
+                        host.DataSize += quint64(actualSize);
+                    }
+                }
+            }
+            if (closeKey)
+                RegCloseKey(key);
+            if (status != ERROR_SUCCESS && !IsMissingHostStatus(status)) {
+                result.Status = eHostUnavailable;
+                error = QObject::tr(
+                    "Could not read the live host registry value %1 in %2: %3")
+                    .arg(valueName.isEmpty() ? QObject::tr("(Default)") : valueName)
+                    .arg(DisplayRegistryPath(path)).arg(status);
+            }
+        }
+
+        host.Values[keyId].insert(valueId, result);
+        if (result.Status == eHostPresent)
+            value = result.Value;
+        return result.Status;
+    }
+
+    QString ResolveHostPath(const SRegistryState& state,
+        const QString& path)
+    {
+        QString current = RegistryPathId(path);
+        QSet<QString> visited;
+        for (int count = 0; count < 64; ++count) {
+            if (visited.contains(current))
+                break;
+            visited.insert(current);
+
+            QString target = current;
+            auto relocation = state.Relocations.constEnd();
+            while (!target.isEmpty()) {
+                relocation = state.Relocations.constFind(target);
+                if (relocation != state.Relocations.cend())
+                    break;
+                int separator = target.lastIndexOf('\\');
+                if (separator < 0)
+                    target.clear();
+                else
+                    target.truncate(separator);
+            }
+            if (relocation == state.Relocations.cend())
+                break;
+            current = RegistryPathId(relocation.value().OldPath) +
+                current.mid(target.size());
+        }
+        return current;
+    }
+
+    bool HasKeyDeletion(const SRegistryState& state, QString path)
+    {
+        path = RegistryPathId(path);
+        while (!path.isEmpty()) {
+            if (state.Deletions.contains(MakeDeletionId("K", path)))
+                return true;
+            if (state.RelocationSources.contains(path))
+                return true;
+            int separator = path.lastIndexOf('\\');
+            if (separator < 0)
+                break;
+            path.truncate(separator);
+        }
+        return false;
+    }
+
+    bool HasValueDeletion(const SRegistryState& state,
+        const QString& path, const QString& valueName)
+    {
+        return HasKeyDeletion(state, path) ||
+            state.Deletions.contains(MakeDeletionId("V", path, valueName));
+    }
+
+    struct SEffectiveKey
+    {
+        bool Present = false;
+    };
+
+    bool GetEffectiveKey(const SRegistryState& state, const QString& path,
+        SHostRegistry& host, SEffectiveKey& result, QString& error)
+    {
+        result = SEffectiveKey();
+        QString id = RegistryPathId(path);
+        auto found = state.Keys.constFind(id);
+        if (found != state.Keys.cend() &&
+                found.value().LastWrite != DeleteKeyTime) {
+            result.Present = true;
+            return true;
+        }
+        if (HasKeyDeletion(state, path))
+            return true;
+
+        EHostStatus status = GetHostKeyStatus(host,
+            ResolveHostPath(state, path), error);
+        if (status == eHostUnavailable)
+            return false;
+        result.Present = status == eHostPresent;
+        return true;
+    }
+
+    bool GetEffectiveValue(const SRegistryState& state,
+        const QString& path, const SEffectiveKey& key,
+        const QString& valueName, SHostRegistry& host, bool& present,
+        SRegistryValue& value, QString& error)
+    {
+        present = false;
+        value = SRegistryValue();
+        if (!key.Present)
+            return true;
+
+        QString id = RegistryPathId(path);
+        auto rawKey = state.Keys.constFind(id);
+        if (rawKey != state.Keys.cend()) {
+            auto rawValue = rawKey.value().Values.constFind(Fold(valueName));
+            if (rawValue != rawKey.value().Values.cend()) {
+                present = true;
+                value = rawValue.value();
+                return true;
+            }
+        }
+        if (HasValueDeletion(state, path, valueName))
+            return true;
+
+        EHostStatus status = GetHostValue(host,
+            ResolveHostPath(state, path), valueName, value, error);
+        if (status == eHostUnavailable)
+            return false;
+        present = status == eHostPresent;
+        return true;
+    }
+
+    void CollectComparisonPaths(const SRegistryState& state,
+        QMap<QString, QString>& paths)
+    {
+        for (auto it = state.Keys.cbegin(); it != state.Keys.cend(); ++it) {
+            if (!IsHiveRootPath(it.value().Path))
+                paths.insert(it.key(), it.value().Path);
+        }
+        for (auto it = state.Deletions.cbegin();
+                it != state.Deletions.cend(); ++it)
+            if (!IsHiveRootPath(it.value().Path))
+                paths.insert(RegistryPathId(it.value().Path), it.value().Path);
+        for (auto it = state.Relocations.cbegin();
+                it != state.Relocations.cend(); ++it) {
+            if (!IsHiveRootPath(it.value().OldPath))
+                paths.insert(RegistryPathId(it.value().OldPath),
+                    it.value().OldPath);
+            if (!IsHiveRootPath(it.value().NewPath))
+                paths.insert(RegistryPathId(it.value().NewPath),
+                    it.value().NewPath);
+        }
+    }
+
+    void CollectComparisonValues(const SRegistryState& state,
+        QMap<QString, QMap<QString, QString> >& values)
+    {
+        for (auto key = state.Keys.cbegin(); key != state.Keys.cend(); ++key) {
+            if (IsHiveRootPath(key.value().Path))
+                continue;
+            for (auto value = key.value().Values.cbegin();
+                    value != key.value().Values.cend(); ++value)
+                values[key.key()].insert(value.key(), value.value().Name);
+        }
+        for (auto it = state.Deletions.cbegin();
+                it != state.Deletions.cend(); ++it) {
+            if (it.value().Kind == "V" &&
+                    !IsHiveRootPath(it.value().Path))
+                values[RegistryPathId(it.value().Path)].insert(
+                    Fold(it.value().Value), it.value().Value);
+        }
     }
 
     QString ExpandRegistryRoot(QString path)
@@ -175,11 +551,7 @@ namespace
     void AddDeletion(SRegistryState& state, const QString& kind,
         const QString& path, const QString& value = QString())
     {
-        QString foldedPath = Fold(path);
-        QString id = kind + ":" + QString::number(foldedPath.size()) +
-            ":" + foldedPath;
-        if (kind == "V")
-            id += Fold(value);
+        QString id = MakeDeletionId(kind, path, value);
 
         SRegistryDeletion deletion;
         deletion.Kind = kind;
@@ -188,9 +560,24 @@ namespace
         state.Deletions.insert(id, deletion);
     }
 
+    void AddRelocation(SRegistryState& state, const QString& oldPath,
+        const QString& newPath)
+    {
+        if (oldPath.isEmpty() || newPath.isEmpty())
+            return;
+        SRegistryRelocation relocation;
+        relocation.OldPath = DisplayRegistryPath(oldPath);
+        relocation.NewPath = DisplayRegistryPath(newPath);
+        QString oldId = RegistryPathId(relocation.OldPath);
+        QString newId = RegistryPathId(relocation.NewPath);
+        state.RelocationSources.insert(oldId);
+        state.Relocations.insert(newId, relocation);
+    }
+
     bool HasDeletedKey(const QSet<QString>& deletedKeys, QString path,
         bool includeSelf)
     {
+        path = RegistryPathId(path);
         if (!includeSelf) {
             int separator = path.lastIndexOf('\\');
             path = separator >= 0 ? path.left(separator) : QString();
@@ -212,15 +599,15 @@ namespace
         for (auto it = state.Deletions.cbegin();
                 it != state.Deletions.cend(); ++it) {
             if (it.value().Kind == "K")
-                deletedKeys.insert(Fold(it.value().Path));
+                deletedKeys.insert(RegistryPathId(it.value().Path));
         }
 
         auto it = state.Deletions.begin();
         while (it != state.Deletions.end()) {
             const SRegistryDeletion& deletion = it.value();
             bool covered = deletion.Kind == "K"
-                ? HasDeletedKey(deletedKeys, Fold(deletion.Path), false)
-                : HasDeletedKey(deletedKeys, Fold(deletion.Path), true);
+                ? HasDeletedKey(deletedKeys, deletion.Path, false)
+                : HasDeletedKey(deletedKeys, deletion.Path, true);
             if (covered)
                 it = state.Deletions.erase(it);
             else
@@ -336,7 +723,7 @@ namespace
         quint64 writeTime = (quint64(lastWrite.dwHighDateTime) << 32) |
             lastWrite.dwLowDateTime;
         QString displayPath = DisplayRegistryPath(path);
-        QString keyId = Fold(displayPath);
+        QString keyId = RegistryPathId(displayPath);
         SRegistryKey& current = state.Keys[keyId];
         current.Path = displayPath;
         current.LastWrite = writeTime;
@@ -572,6 +959,10 @@ namespace
                 if (!ok)
                     continue;
                 QString pathName = DisplayRegistryPath(parts.value(0));
+                if ((flags & 2) != 0 && parts.size() >= 3) {
+                    AddRelocation(state, pathName,
+                        DisplayRegistryPath(parts.value(2)));
+                }
                 if ((flags & 1) != 0) {
                     int marker = pathName.lastIndexOf("\\$");
                     if (marker >= 0)
@@ -580,7 +971,8 @@ namespace
                     else
                         AddDeletion(state, "K", pathName);
                 }
-                if (state.Deletions.size() > MaxCompareEntries) {
+                if (state.Deletions.size() + state.Relocations.size() >
+                        MaxCompareEntries) {
                     error = QObject::tr(
                         "The registry deletion metadata contains too many entries.");
                     return false;
@@ -599,10 +991,16 @@ namespace
                 UnescapeDeleteField(line.left(first)));
             if (operation == "1")
                 AddDeletion(state, "K", firstPath);
+            else if (operation == "2" && second >= 0) {
+                AddRelocation(state, firstPath,
+                    DisplayRegistryPath(UnescapeDeleteField(
+                        line.mid(second + 1))));
+            }
             else if (operation == "3" && second >= 0)
                 AddDeletion(state, "V", firstPath,
                     UnescapeDeleteField(line.mid(second + 1)));
-            if (state.Deletions.size() > MaxCompareEntries) {
+            if (state.Deletions.size() + state.Relocations.size() >
+                    MaxCompareEntries) {
                 error = QObject::tr(
                     "The registry deletion metadata contains too many entries.");
                 return false;
@@ -737,24 +1135,21 @@ namespace
         }
     }
 
-    QStringList VisibleHeaders(QTreeWidget* tree)
+    QString UserRegistryAlias(const QString& path)
     {
-        QStringList headers;
-        for (int column = 0; column < tree->columnCount(); ++column) {
-            if (!tree->isColumnHidden(column))
-                headers.append(tree->headerItem()->text(column));
-        }
-        return headers;
-    }
+        QString sid = theAPI ? theAPI->GetCurrentUserSid() : QString();
+        if (sid.isEmpty())
+            return QString();
 
-    QStringList VisibleRow(QTreeWidget* tree, QTreeWidgetItem* item)
-    {
-        QStringList row;
-        for (int column = 0; column < tree->columnCount(); ++column) {
-            if (!tree->isColumnHidden(column))
-                row.append(item->text(column));
-        }
-        return row;
+        QString sidPath = QStringLiteral("HKU\\") + sid;
+        if (path.compare(QStringLiteral("HKCU"), Qt::CaseInsensitive) == 0 ||
+                path.startsWith(QStringLiteral("HKCU\\"), Qt::CaseInsensitive))
+            return sidPath + path.mid(4);
+        if (path.compare(sidPath, Qt::CaseInsensitive) == 0 ||
+                path.startsWith(sidPath + QLatin1Char('\\'),
+                    Qt::CaseInsensitive))
+            return QStringLiteral("HKCU") + path.mid(sidPath.length());
+        return QString();
     }
 
     bool IsGenerationPayloadName(const QString& name)
@@ -874,6 +1269,90 @@ namespace
         item->setData(0, eCanonicalPath, CanonicalRegistryPath(path));
         item->setData(0, eChangeCategory, category);
     }
+
+    bool CompareHostStates(QTreeWidget* tree, const SRegistryState& older,
+        const SRegistryState& newer, QString& error, bool& truncated)
+    {
+        SHostRegistry host;
+        QMap<QString, QString> paths;
+        CollectComparisonPaths(older, paths);
+        CollectComparisonPaths(newer, paths);
+        QMap<QString, QMap<QString, QString> > olderValues;
+        QMap<QString, QMap<QString, QString> > newerValues;
+        CollectComparisonValues(older, olderValues);
+        CollectComparisonValues(newer, newerValues);
+
+        truncated = false;
+        for (auto pathIt = paths.cbegin(); pathIt != paths.cend(); ++pathIt) {
+            if (tree->topLevelItemCount() >= MaxDisplayedChanges) {
+                truncated = true;
+                break;
+            }
+
+            const QString& path = pathIt.value();
+            SEffectiveKey oldKey;
+            SEffectiveKey newKey;
+            if (!GetEffectiveKey(older, path, host, oldKey, error) ||
+                    !GetEffectiveKey(newer, path, host, newKey, error))
+                return false;
+
+            if (!oldKey.Present && !newKey.Present)
+                continue;
+            if (oldKey.Present != newKey.Present) {
+                AddChange(tree,
+                    newKey.Present ? QObject::tr("Key added")
+                                   : QObject::tr("Key removed"),
+                    path, QString(), QString(), QString(), QString(), QString(),
+                    newKey.Present ? eAdded : eDeleted);
+            }
+
+            QMap<QString, QString> valueNames = olderValues.value(pathIt.key());
+            const QMap<QString, QString> newerNames =
+                newerValues.value(pathIt.key());
+            for (auto valueIt = newerNames.cbegin();
+                    valueIt != newerNames.cend(); ++valueIt)
+                valueNames.insert(valueIt.key(), valueIt.value());
+
+            for (auto valueIt = valueNames.cbegin();
+                    valueIt != valueNames.cend(); ++valueIt) {
+                if (tree->topLevelItemCount() >= MaxDisplayedChanges) {
+                    truncated = true;
+                    break;
+                }
+
+                bool oldPresent = false;
+                bool newPresent = false;
+                SRegistryValue oldValue;
+                SRegistryValue newValue;
+                if (!GetEffectiveValue(older, path, oldKey, valueIt.value(),
+                        host, oldPresent, oldValue, error) ||
+                        !GetEffectiveValue(newer, path, newKey, valueIt.value(),
+                            host, newPresent, newValue, error))
+                    return false;
+
+                if (oldPresent && newPresent &&
+                        oldValue.Type == newValue.Type &&
+                        oldValue.Data == newValue.Data)
+                    continue;
+
+                QString change = !oldPresent ? QObject::tr("Value added")
+                    : !newPresent ? QObject::tr("Value removed")
+                                  : QObject::tr("Value changed");
+                QString name = newPresent ? newValue.Name : oldValue.Name;
+                if (name.isEmpty())
+                    name = QObject::tr("(Default)");
+                AddChange(tree, change, path, name,
+                    oldPresent ? ValueTypeName(oldValue.Type) : QString(),
+                    newPresent ? ValueTypeName(newValue.Type) : QString(),
+                    oldPresent ? FormatValue(oldValue) : QString(),
+                    newPresent ? FormatValue(newValue) : QString(),
+                    !oldPresent ? eAdded : !newPresent ? eDeleted : eModified);
+            }
+            if (truncated)
+                break;
+        }
+        return true;
+    }
 }
 
 CRegistryHistoryWindow::CRegistryHistoryWindow(const CSandBoxPtr& pBox,
@@ -950,6 +1429,13 @@ CRegistryHistoryWindow::CRegistryHistoryWindow(const CSandBoxPtr& pBox,
         tr("Hide entries with only key date changes"), this);
     m_pHideDateOnly->setChecked(theConf->GetBool(
         "RegistryHistoryWindow/HideDateOnly", true));
+    m_pFilterUserAliases = new QCheckBox(
+        tr("Match HKCU and current-user HKU paths in filters"), this);
+    m_pFilterUserAliases->setChecked(theConf->GetBool(
+        "RegistryHistoryWindow/FilterUserAliases", true));
+    m_pFilterUserAliases->setToolTip(tr(
+        "When creating a path filter from a selection, include both HKCU "
+        "and the current user's HKU\\SID spelling."));
     QWidget* viewOptionsWidget = new QWidget(this);
     QHBoxLayout* viewOptionsLayout = new QHBoxLayout(viewOptionsWidget);
     viewOptionsLayout->setContentsMargins(0, 0, 0, 0);
@@ -957,10 +1443,11 @@ CRegistryHistoryWindow::CRegistryHistoryWindow(const CSandBoxPtr& pBox,
     viewOptionsLayout->addWidget(m_pHighlightSame);
     viewOptionsLayout->addWidget(m_pShowColors);
     viewOptionsLayout->addWidget(m_pHideDateOnly);
+    viewOptionsLayout->addWidget(m_pFilterUserAliases);
     viewOptionsWidget->setVisible(false);
     mainLayout->addWidget(viewOptionsWidget);
 
-    m_pTree = new QTreeWidget(this);
+    m_pTree = new QTreeWidgetEx(this);
     m_pTree->setColumnCount(9);
     m_pTree->setHeaderLabels(QStringList()
         << tr("Change") << tr("Registry Path") << tr("Value")
@@ -977,24 +1464,36 @@ CRegistryHistoryWindow::CRegistryHistoryWindow(const CSandBoxPtr& pBox,
 
     m_pSummary = new QLabel(this);
     m_pSummary->setWordWrap(true);
-    mainLayout->addWidget(m_pSummary);
+    QPushButton* configure = new QPushButton(
+        CSandMan::GetIcon("Settings"), tr("Configure..."), this);
+    QHBoxLayout* summaryLayout = new QHBoxLayout();
+    summaryLayout->addWidget(m_pSummary, 1);
+    summaryLayout->addWidget(configure);
+    mainLayout->addLayout(summaryLayout);
 
     QHBoxLayout* bottomLayout = new QHBoxLayout();
     m_pStatus = new QLabel(this);
+    m_pSelectionStatus = new QLabel(m_pHighlightSame->isChecked()
+        ? tr("Selected: 0; Highlighted: 0") : tr("Selected: 0"), this);
+    m_pSelectionStatus->setToolTip(tr(
+        "Visible selected rows and total rows matching any selected registry "
+        "path, including selected matches."));
     QPushButton* openFolder = new QPushButton(CSandMan::GetIcon("Folder"), tr("Open History Folder"), this);
+    m_pDeleteOlder = new QPushButton(
+        CSandMan::GetIcon("Erase"), tr("Delete Older Generation..."), this);
+    m_pDeleteOlder->setEnabled(false);
     m_pDelete = new QPushButton(CSandMan::GetIcon("Erase"), tr("Delete Newer Generation..."), this);
     m_pDelete->setEnabled(false);
     m_pDeleteAll = new QPushButton(
         CSandMan::GetIcon("Erase"), tr("Delete All Generations..."), this);
     m_pDeleteAll->setEnabled(false);
-    QPushButton* configure = new QPushButton(
-        CSandMan::GetIcon("Settings"), tr("Configure..."), this);
     QPushButton* close = new QPushButton(tr("Close"), this);
     bottomLayout->addWidget(m_pStatus, 1);
+    bottomLayout->addWidget(m_pSelectionStatus);
+    bottomLayout->addWidget(m_pDeleteOlder);
     bottomLayout->addWidget(m_pDelete);
     bottomLayout->addWidget(m_pDeleteAll);
     bottomLayout->addWidget(openFolder);
-    bottomLayout->addWidget(configure);
     bottomLayout->addWidget(close);
     mainLayout->addLayout(bottomLayout);
 
@@ -1020,7 +1519,8 @@ CRegistryHistoryWindow::CRegistryHistoryWindow(const CSandBoxPtr& pBox,
     connect(m_pCompare, SIGNAL(clicked(bool)), this, SLOT(Compare()));
     connect(configure, SIGNAL(clicked(bool)), this, SLOT(Configure()));
     connect(openFolder, SIGNAL(clicked(bool)), this, SLOT(OpenHistoryFolder()));
-    connect(m_pDelete, SIGNAL(clicked(bool)), this, SLOT(DeleteGeneration()));
+    connect(m_pDeleteOlder, SIGNAL(clicked(bool)), this, SLOT(DeleteOlderGeneration()));
+    connect(m_pDelete, SIGNAL(clicked(bool)), this, SLOT(DeleteNewerGeneration()));
     connect(m_pDeleteAll, SIGNAL(clicked(bool)),
         this, SLOT(DeleteAllGenerations()));
     connect(close, SIGNAL(clicked(bool)), this, SLOT(close()));
@@ -1074,6 +1574,8 @@ CRegistryHistoryWindow::~CRegistryHistoryWindow()
         m_pShowColors->isChecked());
     theConf->SetValue("RegistryHistoryWindow/HideDateOnly",
         m_pHideDateOnly->isChecked());
+    theConf->SetValue("RegistryHistoryWindow/FilterUserAliases",
+        m_pFilterUserAliases->isChecked());
 }
 
 void CRegistryHistoryWindow::closeEvent(QCloseEvent* event)
@@ -1140,9 +1642,15 @@ void CRegistryHistoryWindow::Reload()
 
     bool autoCompare = m_pBox->GetBool(
         "RegistryHistoryAutoCompare", true);
+    bool compareHost = m_pBox->GetBool(
+        "RegistryHistoryCompareHost", false);
     int oldIndex = m_pOlder->findData(oldName);
     int newIndex = m_pNewer->findData(newName);
-    if (autoCompare && generations.size() >= 2) {
+    if (compareHost && generations.size() == 1) {
+        m_pOlder->setCurrentIndex(0);
+        m_pNewer->setCurrentIndex(0);
+    }
+    else if (autoCompare && generations.size() >= 2) {
         m_pOlder->setCurrentIndex(generations.size() - 2);
         m_pNewer->setCurrentIndex(generations.size() - 1);
     }
@@ -1166,10 +1674,11 @@ void CRegistryHistoryWindow::Reload()
         ? tr("unlimited") : FormatSize(quint64(sizeLimit) * 1024);
     m_pSummary->setText(tr("Usage / limits: %1 / %2 generation(s); %3 / %4. "
         "When a limit is exceeded, the oldest completed generations are removed "
-        "automatically and the newest generation is kept. Comparisons show only "
-        "the sandbox registry layer.%5")
+        "automatically and the newest generation is kept. Comparisons use %5.%6")
         .arg(generations.size()).arg(generationLimit)
         .arg(FormatSize(usedSize)).arg(byteLimit)
+        .arg(compareHost ? tr("the live host registry as a baseline")
+                         : tr("only the sandbox registry layer"))
         .arg(enabled ? QString() : tr(" Registry history capture is disabled.")));
     m_pStatus->setText(tr("Listed: 0 change(s); %1 generation(s)")
         .arg(generations.size()));
@@ -1178,16 +1687,22 @@ void CRegistryHistoryWindow::Reload()
     m_pRefreshButton->setEnabled(true);
     m_Loading = false;
     m_Loaded = true;
-    if (autoCompare && generations.size() >= 2)
+    if (autoCompare && (generations.size() >= 2 ||
+            (compareHost && generations.size() == 1)))
         QTimer::singleShot(0, this, SLOT(Compare()));
 }
 
 void CRegistryHistoryWindow::UpdateControls()
 {
+    bool compareHost = m_pBox->GetBool(
+        "RegistryHistoryCompareHost", false);
+    bool sameGeneration = m_pOlder->currentData() == m_pNewer->currentData();
     bool valid = m_pOlder->currentIndex() >= 0 &&
-        m_pNewer->currentIndex() >= 0 &&
-        m_pOlder->currentData() != m_pNewer->currentData();
+        m_pNewer->currentIndex() >= 0 && (!sameGeneration || compareHost);
+    m_pCompare->setText(compareHost && sameGeneration
+        ? tr("Compare with Host") : tr("Compare"));
     m_pCompare->setEnabled(valid);
+    m_pDeleteOlder->setEnabled(m_pOlder->currentIndex() >= 0);
     m_pDelete->setEnabled(m_pNewer->currentIndex() >= 0);
     m_pDeleteAll->setEnabled(IsSafeDirectory(
         m_pBox->GetFileRoot() + "\\RegistryHistory"));
@@ -1220,8 +1735,13 @@ void CRegistryHistoryWindow::ApplyFilter()
     bool hideDateOnly = m_pHideDateOnly->isChecked();
     int total = m_pTree->topLevelItemCount();
     if (total == 0 && m_ComparisonComplete) {
-        m_pStatus->setText(tr(
-            "No registry differences were found between the selected generations."));
+        bool hostBaseline = m_pBox->GetBool(
+            "RegistryHistoryCompareHost", false) &&
+            m_pOlder->currentData() == m_pNewer->currentData();
+        m_pStatus->setText(hostBaseline
+            ? tr("No registry differences were found against the live host registry.")
+            : tr("No registry differences were found between the selected generations."));
+        UpdateSelection();
         return;
     }
     int listed = 0;
@@ -1240,6 +1760,7 @@ void CRegistryHistoryWindow::ApplyFilter()
     if (m_ResultsTruncated)
         status += tr("; results were truncated");
     m_pStatus->setText(status);
+    UpdateSelection();
 }
 
 void CRegistryHistoryWindow::ApplyViewOptions()
@@ -1271,25 +1792,40 @@ void CRegistryHistoryWindow::ApplyViewOptions()
         for (int column = 0; column < m_pTree->columnCount(); ++column)
             item->setForeground(column, colors ? QBrush(color) : QBrush());
     }
-    UpdateSelection();
     ApplyFilter();
 }
 
 void CRegistryHistoryWindow::UpdateSelection()
 {
-    QString canonical;
-    QTreeWidgetItem* current = m_pTree->currentItem();
-    if (m_pHighlightSame->isChecked() && current && current->isSelected())
-        canonical = current->data(0, eCanonicalPath).toString();
+    QSet<QString> canonicalPaths;
+    if (m_pHighlightSame->isChecked()) {
+        for (QTreeWidgetItem* selected : m_pTree->selectedItems()) {
+            QString canonical = selected->data(0, eCanonicalPath).toString();
+            if (!canonical.isEmpty())
+                canonicalPaths.insert(canonical);
+        }
+    }
     QBrush matchBrush(theGUI->m_DarkTheme
         ? QColor(125, 105, 0) : QColor(255, 248, 190));
+    int selectedCount = 0;
+    int highlightedCount = 0;
     for (int index = 0; index < m_pTree->topLevelItemCount(); ++index) {
         QTreeWidgetItem* item = m_pTree->topLevelItem(index);
-        bool match = !canonical.isEmpty() && item != current &&
-            item->data(0, eCanonicalPath).toString() == canonical;
+        bool match = canonicalPaths.contains(
+            item->data(0, eCanonicalPath).toString());
         for (int column = 0; column < m_pTree->columnCount(); ++column)
             item->setBackground(column, match ? matchBrush : QBrush());
+        if (!item->isHidden()) {
+            if (item->isSelected())
+                ++selectedCount;
+            if (match)
+                ++highlightedCount;
+        }
     }
+    m_pSelectionStatus->setText(m_pHighlightSame->isChecked()
+        ? tr("Selected: %1; Highlighted: %2")
+            .arg(selectedCount).arg(highlightedCount)
+        : tr("Selected: %1").arg(selectedCount));
 }
 
 void CRegistryHistoryWindow::ShowContextMenu(const QPoint& pos)
@@ -1307,6 +1843,7 @@ void CRegistryHistoryWindow::ShowContextMenu(const QPoint& pos)
     m_pTree->setCurrentItem(item, column, QItemSelectionModel::NoUpdate);
 
     QMenu menu(this);
+    menu.setToolTipsVisible(true);
     bool canOpen = !ExpandRegistryRoot(item->text(1)).isEmpty();
     QMenu* openMenu = menu.addMenu(
         CSandMan::GetIcon("RegEdit"), tr("Open in Registry Editor"));
@@ -1315,7 +1852,8 @@ void CRegistryHistoryWindow::ShowContextMenu(const QPoint& pos)
         CSandMan::GetIcon("Run"), tr("Sandbox"));
     openHost->setEnabled(canOpen);
     openHost->setToolTip(tr("Open the selected key in the real host registry."));
-    openSandbox->setToolTip(tr("Run Registry Editor inside this sandbox."));
+    openSandbox->setToolTip(tr("Run Registry Editor inside this sandbox. "
+        "Closing it may create another registry history generation."));
     connect(openHost, SIGNAL(triggered(bool)), this, SLOT(OpenKeyInHost()));
     connect(openSandbox, SIGNAL(triggered(bool)), this, SLOT(OpenKeyInSandbox()));
 
@@ -1331,6 +1869,10 @@ void CRegistryHistoryWindow::ShowContextMenu(const QPoint& pos)
     }
     useFilter->setEnabled(hasFilterValue);
     excludeFilter->setEnabled(hasFilterValue);
+    useFilter->setToolTip(tr(
+        "Hold Shift or Ctrl to combine this with the current view filter."));
+    excludeFilter->setToolTip(tr(
+        "Hold Shift or Ctrl to combine this with the current view filter."));
     connect(useFilter, SIGNAL(triggered(bool)), this, SLOT(UseAsFilter()));
     connect(excludeFilter, SIGNAL(triggered(bool)),
         this, SLOT(ExcludeFromView()));
@@ -1359,33 +1901,38 @@ void CRegistryHistoryWindow::CopyRow()
     QList<QStringList> rows;
     for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
         if (!item->isHidden())
-            rows.append(VisibleRow(m_pTree, item));
+            rows.append(HistoryWindowUtils::VisibleRow(m_pTree, item));
     }
-    CPanelView::CopyToClipboard(VisibleHeaders(m_pTree), rows);
+    CPanelView::CopyToClipboard(
+        HistoryWindowUtils::VisibleHeaders(m_pTree), rows);
 }
 
 void CRegistryHistoryWindow::CopyPanel()
 {
     QList<QStringList> rows;
     for (int index = 0; index < m_pTree->topLevelItemCount(); ++index) {
-        QTreeWidgetItem* item = m_pTree->topLevelItem(index);
-        if (!item->isHidden())
-            rows.append(VisibleRow(m_pTree, item));
+        HistoryWindowUtils::AppendVisibleRows(
+            m_pTree, m_pTree->topLevelItem(index), rows);
     }
-    CPanelView::CopyToClipboard(VisibleHeaders(m_pTree), rows);
+    CPanelView::CopyToClipboard(
+        HistoryWindowUtils::VisibleHeaders(m_pTree), rows);
 }
 
 void CRegistryHistoryWindow::UseAsFilter()
 {
-    ApplySelectionFilter(false);
+    Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
+    ApplySelectionFilter(false, modifiers.testFlag(Qt::ShiftModifier) ||
+        modifiers.testFlag(Qt::ControlModifier));
 }
 
 void CRegistryHistoryWindow::ExcludeFromView()
 {
-    ApplySelectionFilter(true);
+    Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
+    ApplySelectionFilter(true, modifiers.testFlag(Qt::ShiftModifier) ||
+        modifiers.testFlag(Qt::ControlModifier));
 }
 
-void CRegistryHistoryWindow::ApplySelectionFilter(bool exclude)
+void CRegistryHistoryWindow::ApplySelectionFilter(bool exclude, bool combine)
 {
     int column = m_pTree->currentColumn();
     int scope = eAllFields;
@@ -1404,13 +1951,29 @@ void CRegistryHistoryWindow::ApplySelectionFilter(bool exclude)
     QStringList values;
     for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
         QString value = item->text(column);
-        if (!value.isEmpty())
+        if (!value.isEmpty()) {
             values.append(value);
+            if (column == 1 && m_pFilterUserAliases->isChecked()) {
+                QString alias = UserRegistryAlias(value);
+                if (!alias.isEmpty() &&
+                        !values.contains(alias, Qt::CaseInsensitive))
+                    values.append(alias);
+            }
+        }
     }
 
     QString expression;
     HistoryWindowUtils::EFilterBuildResult result =
         HistoryWindowUtils::BuildSelectionFilter(values, exclude, expression);
+    if (result == HistoryWindowUtils::eFilterReady && combine &&
+            !m_FilterExp.pattern().isEmpty()) {
+        QString combined;
+        result = HistoryWindowUtils::CombineSelectionFilter(
+            m_FilterExp.pattern(), expression, combined);
+        expression = combined;
+        if (m_pFilterScope->currentData().toInt() != scope)
+            scope = eAllFields;
+    }
     if (result == HistoryWindowUtils::eFilterTooLarge) {
         QMessageBox::warning(this, tr("Registry History"), tr(
             "The selected values are too large to create a safe "
@@ -1439,6 +2002,22 @@ void CRegistryHistoryWindow::OpenKeyInSandbox()
 void CRegistryHistoryWindow::OpenRegistryKey(bool sandbox)
 {
     if (sandbox) {
+        if (theConf->GetInt("Options/WarnOpenRegistrySandbox", -1) == -1) {
+            bool state = false;
+            if (CCheckableMessageBox::question(this, "Sandboxie-Plus", tr(
+                    "Opening Registry Editor inside this sandbox starts a "
+                    "sandboxed process. When the sandbox's last process exits, "
+                    "Registry History will save another generation. Refresh "
+                    "this window afterward to see it."),
+                    tr("Don't show this message in future"), &state,
+                    QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                    QDialogButtonBox::Ok, QMessageBox::Information) !=
+                    QDialogButtonBox::Ok)
+                return;
+            if (state)
+                theConf->SetValue("Options/WarnOpenRegistrySandbox", 1);
+        }
+
         QList<SB_STATUS> results;
         results.append(m_pBox->RunStart(QStringLiteral("regedit.exe")));
         theGUI->CheckResults(results, this);
@@ -1476,9 +2055,13 @@ void CRegistryHistoryWindow::Compare()
 {
     QString olderName = m_pOlder->currentData().toString();
     QString newerName = m_pNewer->currentData().toString();
-    if (olderName.isEmpty() || newerName.isEmpty() || olderName == newerName)
+    bool compareHost = m_pBox->GetBool(
+        "RegistryHistoryCompareHost", false);
+    if (olderName.isEmpty() || newerName.isEmpty() ||
+            (olderName == newerName && !compareHost))
         return;
-    if (olderName > newerName)
+    bool singleHostComparison = compareHost && olderName == newerName;
+    if (!singleHostComparison && olderName > newerName)
         qSwap(olderName, newerName);
 
     QString root = m_pBox->GetFileRoot() + "\\RegistryHistory\\";
@@ -1495,8 +2078,10 @@ void CRegistryHistoryWindow::Compare()
     m_pRefreshButton->setEnabled(false);
     m_pCompare->setEnabled(false);
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    bool ok = ReadRegistryState(root + olderName, older, error) &&
-        ReadRegistryState(root + newerName, newer, error);
+    bool ok = singleHostComparison
+        ? ReadRegistryState(root + newerName, newer, error)
+        : ReadRegistryState(root + olderName, older, error) &&
+            ReadRegistryState(root + newerName, newer, error);
     QApplication::restoreOverrideCursor();
     if (!ok) {
         m_pLoadIndicator->clear();
@@ -1509,6 +2094,30 @@ void CRegistryHistoryWindow::Compare()
     m_pTree->setSortingEnabled(false);
     m_pTree->clear();
     m_ResultsTruncated = false;
+    m_ComparisonComplete = false;
+    if (compareHost) {
+        bool truncated = false;
+        SRegistryState hostBaseline;
+        if (!CompareHostStates(m_pTree, singleHostComparison
+                ? hostBaseline : older, newer, error, truncated)) {
+            m_pTree->clear();
+            m_pTree->setSortingEnabled(true);
+            m_pLoadIndicator->clear();
+            m_pRefreshButton->setEnabled(true);
+            UpdateControls();
+            QMessageBox::critical(this, tr("Registry History"), error);
+            return;
+        }
+        m_ComparisonComplete = true;
+        m_ResultsTruncated = truncated;
+        m_pTree->setSortingEnabled(true);
+        m_pTree->sortItems(1, Qt::AscendingOrder);
+        ApplyViewOptions();
+        m_pLoadIndicator->clear();
+        m_pRefreshButton->setEnabled(true);
+        UpdateControls();
+        return;
+    }
     m_ComparisonComplete = true;
     QSet<QString> keyIds;
     for (auto it = older.Keys.cbegin(); it != older.Keys.cend(); ++it)
@@ -1625,6 +2234,14 @@ void CRegistryHistoryWindow::Configure()
     autoCompare->setChecked(m_pBox->GetBool(
         "RegistryHistoryAutoCompare", true));
     layout->addWidget(autoCompare);
+    QCheckBox* compareHost = new QCheckBox(
+        tr("Compare against the live host registry when comparing"), &dialog);
+    compareHost->setChecked(m_pBox->GetBool(
+        "RegistryHistoryCompareHost", false));
+    compareHost->setToolTip(tr(
+        "The host registry is read at comparison time and is never stored. "
+        "Results can change when the host registry changes."));
+    layout->addWidget(compareHost);
 
     QFormLayout* form = new QFormLayout();
     QSpinBox* limit = new QSpinBox(&dialog);
@@ -1679,6 +2296,7 @@ void CRegistryHistoryWindow::Configure()
     };
     saveBool("RegistryHistory", enabled->isChecked(), false);
     saveBool("RegistryHistoryAutoCompare", autoCompare->isChecked(), true);
+    saveBool("RegistryHistoryCompareHost", compareHost->isChecked(), false);
     saveNum("RegistryHistoryMaxGenerations", limit->value(), 20);
     saveNum("RegistryHistoryMaxSizeKB", sizeLimit->value(), 1024 * 1024);
     theGUI->CheckResults(results, this);
@@ -1712,12 +2330,23 @@ bool CRegistryHistoryWindow::CanDeleteHistory()
     return true;
 }
 
-void CRegistryHistoryWindow::DeleteGeneration()
+void CRegistryHistoryWindow::DeleteOlderGeneration()
+{
+    DeleteGeneration(true);
+}
+
+void CRegistryHistoryWindow::DeleteNewerGeneration()
+{
+    DeleteGeneration(false);
+}
+
+void CRegistryHistoryWindow::DeleteGeneration(bool older)
 {
     if (!CanDeleteHistory())
         return;
 
-    QString generation = m_pNewer->currentData().toString();
+    QComboBox* combo = older ? m_pOlder : m_pNewer;
+    QString generation = combo->currentData().toString();
     if (generation.isEmpty())
         return;
     if (QMessageBox::question(this, tr("Delete Registry Generation"),
