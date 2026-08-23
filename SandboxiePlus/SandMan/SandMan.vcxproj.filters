@@ -356,6 +356,9 @@
     <QtMoc Include="Windows\RegistryHistoryWindow.h">
       <Filter>Windows</Filter>
     </QtMoc>
+    <ClInclude Include="Windows\HistoryWindowUtils.h">
+      <Filter>Windows</Filter>
+    </ClInclude>
     <QtMoc Include="Models\TraceModel.h">
       <Filter>Models</Filter>
     </QtMoc>

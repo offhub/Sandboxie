@@ -9,6 +9,7 @@
 
 #include "stdafx.h"
 #include "RegistryHistoryWindow.h"
+#include "HistoryWindowUtils.h"
 #include "../SandMan.h"
 #include "../../MiscHelpers/Common/Finder.h"
 #include "../../MiscHelpers/Common/PanelView.h"
@@ -46,7 +47,6 @@ namespace
         ? 128ULL * 1024 * 1024 : 512ULL * 1024 * 1024;
     const int MaxCompareEntries = sizeof(void*) == 4 ? 250000 : 1000000;
     const int MaxDisplayedChanges = 50000;
-    const int MaxGeneratedFilterLength = 64 * 1024;
 
     enum ERegistryHistoryRole
     {
@@ -1339,36 +1339,28 @@ void CRegistryHistoryWindow::ApplySelectionFilter(bool exclude)
     case 8: scope = eDateField; break;
     }
 
-    QStringList alternatives;
-    int expressionLength = 0;
+    QStringList values;
     for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
         QString value = item->text(column);
-        if (!value.isEmpty()) {
-            QString escaped = QRegularExpression::escape(value);
-            if (!alternatives.contains(escaped)) {
-                expressionLength += escaped.length() + 1;
-                if (expressionLength > MaxGeneratedFilterLength) {
-                    QMessageBox::warning(this, tr("Registry History"), tr(
-                        "The selected values are too large to create a safe "
-                        "regular-expression filter."));
-                    return;
-                }
-                alternatives.append(escaped);
-            }
-        }
+        if (!value.isEmpty())
+            values.append(value);
     }
-    if (alternatives.isEmpty())
+
+    QString expression;
+    HistoryWindowUtils::EFilterBuildResult result =
+        HistoryWindowUtils::BuildSelectionFilter(values, exclude, expression);
+    if (result == HistoryWindowUtils::eFilterTooLarge) {
+        QMessageBox::warning(this, tr("Registry History"), tr(
+            "The selected values are too large to create a safe "
+            "regular-expression filter."));
+        return;
+    }
+    if (result != HistoryWindowUtils::eFilterReady)
         return;
 
     int scopeIndex = m_pFilterScope->findData(scope);
     if (scopeIndex >= 0)
         m_pFilterScope->setCurrentIndex(scopeIndex);
-    QString expression = QStringLiteral("(?:%1)")
-        .arg(alternatives.join(QLatin1Char('|')));
-    if (exclude) {
-        expression = QStringLiteral("^(?![\\s\\S]*%1)[\\s\\S]*$")
-            .arg(expression);
-    }
     m_pFinder->SetSearchText(expression, true);
 }
 

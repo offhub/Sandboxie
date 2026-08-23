@@ -547,6 +547,7 @@
     <QtMoc Include="Models\TraceModel.h" />
     <QtMoc Include="BoxJob.h" />
     <ClInclude Include="DeleteContentOptions.h" />
+    <ClInclude Include="Windows\HistoryWindowUtils.h" />
     <ClInclude Include="..\version.h" />
     <QtMoc Include="BoxMonitor.h" />
     <QtMoc Include="Engine\BoxEngine.h" />

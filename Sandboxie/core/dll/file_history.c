@@ -208,7 +208,8 @@ static _FX BOOLEAN File_HistoryInitCrypto(void)
     ULONG result_size;
     NTSTATUS status;
 
-    if (File_HistoryHashApi.Algorithm)
+    if (!SbieApi_QueryConfBool(NULL, L"FileHistory", TRUE) ||
+            File_HistoryHashApi.Algorithm)
         return TRUE;
     if (!NT_SUCCESS(SbieApi_QueryConf(
             NULL, L"KeepFileVersions", 0,

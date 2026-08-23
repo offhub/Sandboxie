@@ -42,6 +42,7 @@ private slots:
 	void CopyRow();
 	void CopyPanel();
 	void UseAsFilter();
+	void ExcludeFromView();
 	void DeleteEvidence();
 	void RemoveHistory();
 	void ConfigureLimits();
@@ -50,8 +51,9 @@ protected:
 	void closeEvent(QCloseEvent* e);
 
 private:
-	void AddExcludeRule(const QString& Rule);
+	void AddExcludeRules(const QStringList& Rules);
 	void ApplyFilter();
+	void ApplySelectionFilter(bool Exclude);
 	bool CanDeleteHistory();
 	void CompareEvidence(bool Sandboxed);
 	QStringList GetSelectedEvidencePaths(int* PendingCount = NULL) const;
@@ -74,6 +76,7 @@ private:
 	QAction* m_pCopyRow;
 	QAction* m_pCopyPanel;
 	QRegularExpression m_FilterExp;
+	QString m_SelectionExcludePattern;
 	bool m_Loading;
 	bool m_Loaded;
 };

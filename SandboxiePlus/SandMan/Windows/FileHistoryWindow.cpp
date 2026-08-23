@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "FileHistoryWindow.h"
+#include "HistoryWindowUtils.h"
 #include "SandMan.h"
 #include "../../MiscHelpers/Common/Finder.h"
 #include "../../MiscHelpers/Common/PanelView.h"
@@ -421,6 +422,12 @@ namespace
 		bool Queried = GetFileInformationByHandle(Handle, &Info) != FALSE;
 		CloseHandle(Handle);
 		return Queried ? (int)Info.nNumberOfLinks : -1;
+	}
+
+	void AppendUniqueCaseInsensitive(QStringList& Values, const QString& Value)
+	{
+		if (!Value.isEmpty() && !Values.contains(Value, Qt::CaseInsensitive))
+			Values.append(Value);
 	}
 
 	QStringList VisibleHeaders(QTreeWidget* Tree)
@@ -997,6 +1004,8 @@ void CFileHistoryWindow::ApplyFilter()
 	bool FilterEmpty = m_FilterExp.pattern().isEmpty();
 	bool HideEmpty = m_pHideEmpty->isChecked();
 	bool HideReused = m_pHideReused->isChecked();
+	bool SelectionExclude = !m_SelectionExcludePattern.isEmpty()
+		&& m_FilterExp.pattern() == m_SelectionExcludePattern;
 	int TotalFiles = m_pTree->topLevelItemCount();
 	int TotalEvidence = 0;
 	int ListedFiles = 0;
@@ -1022,8 +1031,11 @@ void CFileHistoryWindow::ApplyFilter()
 			bool Match = !HideEmpty
 				|| !IsEmpty;
 			Match = Match && (!HideReused || !IsReused);
-			Match = Match && (PathMatches || FilterEmpty
-				|| m_FilterExp.match(FilterValue(Child, Scope)).hasMatch());
+			bool ChildFilterMatches = FilterEmpty
+				|| m_FilterExp.match(FilterValue(Child, Scope)).hasMatch();
+			Match = Match && (SelectionExclude
+				? ChildFilterMatches
+				: (PathMatches || ChildFilterMatches));
 			Child->setHidden(!Match);
 			ChildMatches |= Match;
 			if (Match)
@@ -1152,33 +1164,58 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		}
 	}
 
-	QString LogicalPath = Item->data(0, eLogicalPath).toString();
-	QString ProcessName = Item->data(0, eProcessName).toString();
-	QString FileName = QFileInfo(LogicalPath).fileName();
+	QStringList FullPathRules;
+	QStringList FileNameRules;
+	QStringList ExtensionRules;
+	QStringList ProcessRules;
+	foreach(QTreeWidgetItem* Selected, m_pTree->selectedItems()) {
+		if (Selected->isHidden())
+			continue;
+		QString LogicalPath = Selected->data(0, eLogicalPath).toString();
+		bool HasLogicalPath = !LogicalPath.isEmpty()
+			&& !LogicalPath.startsWith(QLatin1Char('('));
+		if (HasLogicalPath) {
+			AppendUniqueCaseInsensitive(FullPathRules, LogicalPath);
+			QFileInfo FileInfo(LogicalPath);
+			QString FileName = FileInfo.fileName();
+			if (!FileName.isEmpty()) {
+				AppendUniqueCaseInsensitive(FileNameRules,
+					QStringLiteral("*\\") + FileName);
+			}
+			QString Extension = FileInfo.suffix();
+			if (!Extension.isEmpty()) {
+				AppendUniqueCaseInsensitive(ExtensionRules,
+					QStringLiteral("*.") + Extension);
+			}
+		}
+
+		QString ProcessName = Selected->data(0, eProcessName).toString();
+		if (!ProcessName.isEmpty()) {
+			QString ImageName = QFileInfo(ProcessName).fileName();
+			if (ImageName.isEmpty())
+				ImageName = ProcessName;
+			AppendUniqueCaseInsensitive(ProcessRules,
+				ImageName + QStringLiteral(",*"));
+		}
+	}
 	QMenu* ExcludeMenu = Menu.addMenu(
 		CSandMan::GetIcon("Close"), tr("Exclude for Next Run"));
 	QAction* ExcludeFullPath = ExcludeMenu->addAction(tr("Full Path"));
 	QAction* ExcludeFileName = ExcludeMenu->addAction(tr("File Name Only"));
+	QAction* ExcludeExtension = ExcludeMenu->addAction(tr("Extension"));
 	QAction* ExcludeProcess = ExcludeMenu->addAction(tr("Process"));
-	bool HasLogicalPath = !LogicalPath.isEmpty()
-		&& !LogicalPath.startsWith(QLatin1Char('('));
-	ExcludeFullPath->setEnabled(HasLogicalPath);
-	ExcludeFileName->setEnabled(
-		HasLogicalPath && !FileName.isEmpty());
-	ExcludeProcess->setEnabled(!ProcessName.isEmpty());
+	ExcludeFullPath->setEnabled(!FullPathRules.isEmpty());
+	ExcludeFileName->setEnabled(!FileNameRules.isEmpty());
+	ExcludeExtension->setEnabled(!ExtensionRules.isEmpty());
+	ExcludeProcess->setEnabled(!ProcessRules.isEmpty());
 	connect(ExcludeFullPath, &QAction::triggered, this,
-		[this, LogicalPath]() { AddExcludeRule(LogicalPath); });
+		[this, FullPathRules]() { AddExcludeRules(FullPathRules); });
 	connect(ExcludeFileName, &QAction::triggered, this,
-		[this, FileName]() {
-			AddExcludeRule(QStringLiteral("*\\") + FileName);
-		});
+		[this, FileNameRules]() { AddExcludeRules(FileNameRules); });
+	connect(ExcludeExtension, &QAction::triggered, this,
+		[this, ExtensionRules]() { AddExcludeRules(ExtensionRules); });
 	connect(ExcludeProcess, &QAction::triggered, this,
-		[this, ProcessName]() {
-			QString ImageName = QFileInfo(ProcessName).fileName();
-			if (ImageName.isEmpty())
-				ImageName = ProcessName;
-			AddExcludeRule(ImageName + QStringLiteral(",*"));
-		});
+		[this, ProcessRules]() { AddExcludeRules(ProcessRules); });
 
 	QAction* OpenFolder = Menu.addAction(
 		CSandMan::GetIcon("Folder"), tr("Open Evidence Folder"));
@@ -1187,10 +1224,18 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 
 	Menu.addSeparator();
 	QAction* UseFilter = Menu.addAction(tr("Use as Filter"));
-	UseFilter->setEnabled(
-		m_pTree->selectedItems().count() == 1
-		&& !Item->text(Column).isEmpty());
+	QAction* ExcludeFilter = Menu.addAction(tr("Exclude from View"));
+	bool HasFilterValue = false;
+	foreach(QTreeWidgetItem* Selected, m_pTree->selectedItems()) {
+		if (!Selected->text(Column).isEmpty()) {
+			HasFilterValue = true;
+			break;
+		}
+	}
+	UseFilter->setEnabled(HasFilterValue);
+	ExcludeFilter->setEnabled(HasFilterValue);
 	connect(UseFilter, SIGNAL(triggered(bool)), this, SLOT(UseAsFilter()));
+	connect(ExcludeFilter, SIGNAL(triggered(bool)), this, SLOT(ExcludeFromView()));
 	m_pCopyCell->setEnabled(!Item->text(Column).isEmpty());
 	m_pCopyRow->setEnabled(!m_pTree->selectedItems().isEmpty());
 	m_pCopyPanel->setEnabled(m_pTree->topLevelItemCount() != 0);
@@ -1212,31 +1257,36 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 }
 
 
-void CFileHistoryWindow::AddExcludeRule(const QString& Rule)
+void CFileHistoryWindow::AddExcludeRules(const QStringList& Rules)
 {
-	if (Rule.isEmpty())
+	if (Rules.isEmpty())
 		return;
 
-	foreach(const QString& Existing,
-			m_pBox->GetTextList(
-				"KeepFileVersionsExclude", true, false, true)) {
-		if (Existing.compare(Rule, Qt::CaseInsensitive) == 0) {
-			QMessageBox::information(this, "Sandboxie-Plus",
-				tr("This retained-file exclusion already exists:\n\n%1")
-					.arg(Rule));
-			return;
+	QStringList Existing = m_pBox->GetTextList(
+		"KeepFileVersionsExclude", true, false, true);
+	QList<SB_STATUS> Results;
+	QStringList Added;
+	foreach(const QString& Rule, Rules) {
+		if (Rule.isEmpty() || Existing.contains(Rule, Qt::CaseInsensitive))
+			continue;
+		SB_STATUS Status =
+			m_pBox->AppendText("KeepFileVersionsExclude", Rule);
+		Results.append(Status);
+		if (!Status.IsError()) {
+			Existing.append(Rule);
+			Added.append(Rule);
 		}
 	}
-
-	SB_STATUS Status =
-		m_pBox->AppendText("KeepFileVersionsExclude", Rule);
-	QList<SB_STATUS> Results;
-	Results.append(Status);
+	if (Results.isEmpty()) {
+		QMessageBox::information(this, "Sandboxie-Plus",
+			tr("The selected retained-file exclusions already exist."));
+		return;
+	}
 	theGUI->CheckResults(Results, this);
-	if (!Status.IsError()) {
+	if (!Added.isEmpty()) {
 		m_pStatus->setText(
-			tr("Added for the next sandbox run: KeepFileVersionsExclude=%1")
-				.arg(Rule));
+			tr("Added %1 exclusion rule(s) for the next sandbox run.")
+				.arg(Added.count()));
 	}
 }
 
@@ -1507,39 +1557,63 @@ void CFileHistoryWindow::CopyPanel()
 
 void CFileHistoryWindow::UseAsFilter()
 {
-	if (m_pTree->selectedItems().count() != 1)
-		return;
-	QTreeWidgetItem* Item = m_pTree->currentItem();
-	if (!Item)
-		return;
+	ApplySelectionFilter(false);
+}
+
+
+void CFileHistoryWindow::ExcludeFromView()
+{
+	ApplySelectionFilter(true);
+}
+
+
+void CFileHistoryWindow::ApplySelectionFilter(bool Exclude)
+{
 
 	int Column = m_pTree->currentColumn();
 	int Scope = eAllFields;
-	QString Value = Item->text(Column);
 	switch (Column) {
-	case 0:
-		Scope = ePathField;
-		Value = QFileInfo(
-			Item->data(0, eLogicalPath).toString()).fileName();
-		break;
+	case 0: Scope = ePathField; break;
 	case 1: Scope = eVersionField; break;
 	case 2: Scope = eDateField; break;
 	case 3: Scope = eOperationField; break;
 	case 4: Scope = eStateField; break;
 	case 5: Scope = eSizeField; break;
 	case 6: Scope = eProcessField; break;
-	case 7:
-		Scope = eHashField;
-		Value = Item->data(0, eHashValue).toString();
-		break;
+	case 7: Scope = eHashField; break;
 	}
-	if (Value.isEmpty())
+
+	QStringList Values;
+	foreach(QTreeWidgetItem* Item, m_pTree->selectedItems()) {
+		QString Value = Item->text(Column);
+		if (Column == 0) {
+			Value = QFileInfo(
+				Item->data(0, eLogicalPath).toString()).fileName();
+		}
+		else if (Column == 7)
+			Value = Item->data(0, eHashValue).toString();
+		if (!Value.isEmpty())
+			Values.append(Value);
+	}
+
+	QString Expression;
+	HistoryWindowUtils::EFilterBuildResult Result =
+		HistoryWindowUtils::BuildSelectionFilter(
+			Values, Exclude, Expression);
+	if (Result == HistoryWindowUtils::eFilterTooLarge) {
+		QMessageBox::warning(this, tr("Retained File Versions"), tr(
+			"The selected values are too large to create a safe "
+			"regular-expression filter."));
+		return;
+	}
+	if (Result != HistoryWindowUtils::eFilterReady)
 		return;
 
 	int ScopeIndex = m_pFilterScope->findData(Scope);
 	if (ScopeIndex >= 0)
 		m_pFilterScope->setCurrentIndex(ScopeIndex);
-	m_pFinder->SetSearchText(Value);
+	m_SelectionExcludePattern = Exclude ? Expression : QString();
+	m_pFinder->SetSearchText(Expression, true);
 }
 
 
@@ -1577,6 +1651,12 @@ void CFileHistoryWindow::ConfigureLimits()
 	MainLayout->addWidget(Info);
 
 	QGridLayout* FormLayout = new QGridLayout();
+	const bool InitialEnabled = m_pBox->GetBool(
+		"FileHistory", true, true, true);
+	QCheckBox* Enabled = new QCheckBox(
+		tr("Enable retained file version capture for matching tracked-file rules"),
+		&Dialog);
+	Enabled->setChecked(InitialEnabled);
 	QLineEdit* MaxVersions = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxVersionsTotal"), &Dialog);
 	QLineEdit* MaxVersionsPerFile = new QLineEdit(
@@ -1698,6 +1778,8 @@ void CFileHistoryWindow::ConfigureLimits()
 		FormLayout->addWidget(Widget, FormRow, 2, 1, 3);
 		++FormRow;
 	};
+	FormLayout->addWidget(Enabled, FormRow, 0, 1, 5);
+	++FormRow;
 	AddLimitRow(tr("Maximum total non-empty versions:"),
 		MaxVersions, TotalUsage);
 	AddLimitRow(tr("Maximum non-empty versions per file:"),
@@ -1907,6 +1989,10 @@ void CFileHistoryWindow::ConfigureLimits()
 		return;
 
 	QList<SB_STATUS> Results;
+	if (Enabled->isChecked() != InitialEnabled) {
+		Results.append(m_pBox->SetText("FileHistory",
+			Enabled->isChecked() ? QStringLiteral("y") : QStringLiteral("n")));
+	}
 	auto Save = [this, &Results](const QString& Setting, QLineEdit* Edit) {
 		QString NewValue = Edit->text().trimmed();
 		QString OldValue = m_pBox->GetText(Setting);
