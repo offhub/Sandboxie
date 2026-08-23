@@ -673,6 +673,13 @@ namespace
             QDateTime::fromString(name, "yyyyMMdd-HHmmss-zzz").isValid();
     }
 
+    bool IsPendingGenerationName(const QString& name)
+    {
+        static const QString prefix = QStringLiteral(".pending-");
+        return name.startsWith(prefix) &&
+            IsGenerationName(name.mid(prefix.size()));
+    }
+
     bool IsSafeDirectory(const QString& path)
     {
         DWORD attributes = GetFileAttributesW(
@@ -750,29 +757,82 @@ namespace
         return row;
     }
 
-    bool RemoveGenerationDirectory(const QString& path)
+    bool IsGenerationPayloadName(const QString& name)
     {
-        if (!IsSafeDirectory(path))
-            return false;
-
         static const char* files[] = {
             "RegPaths.dat", "RegPaths_v3.dat", "RegPaths_v3.sbie",
             "Generation.ini", "RegHive.hiv.LOG1", "RegHive.hiv.LOG2",
             "RegHive.hiv"
         };
         for (const char* file : files) {
-            QString filePath = QDir(path).filePath(QString::fromLatin1(file));
-            if (!QFile::exists(filePath))
-                continue;
-            if (!IsSafeFile(filePath) || !QFile::remove(filePath))
+            if (name.compare(QString::fromLatin1(file),
+                    Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    bool ValidateGenerationDirectory(const QString& path)
+    {
+        if (!IsSafeDirectory(path))
+            return false;
+
+        QDir directory(path);
+        const QStringList entries = directory.entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System |
+                QDir::NoDotAndDotDot,
+            QDir::Name);
+        for (const QString& name : entries) {
+            if (!IsGenerationPayloadName(name) ||
+                    !IsSafeFile(directory.filePath(name)))
+                return false;
+        }
+        return true;
+    }
+
+    bool RemoveGenerationDirectory(const QString& path)
+    {
+        QString name = QDir(path).dirName();
+        if ((!IsGenerationName(name) && !IsPendingGenerationName(name)) ||
+                !ValidateGenerationDirectory(path))
+            return false;
+
+        QDir directory(path);
+        const QStringList entries = directory.entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System |
+                QDir::NoDotAndDotDot,
+            QDir::Name);
+        for (const QString& entry : entries) {
+            QString filePath = directory.filePath(entry);
+            if (!IsGenerationPayloadName(entry) || !IsSafeFile(filePath) ||
+                    !QFile::remove(filePath))
                 return false;
         }
         return QDir().rmdir(path);
     }
 
-    bool RemoveHistoryDirectory(const QString& path)
+    bool ValidateHistoryDirectory(const QString& path)
     {
         if (!IsSafeDirectory(path))
+            return false;
+
+        QDir history(path);
+        const QStringList entries = history.entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System |
+                QDir::NoDotAndDotDot,
+            QDir::Name);
+        for (const QString& name : entries) {
+            QString generationPath = history.filePath(name);
+            if ((!IsGenerationName(name) && !IsPendingGenerationName(name)) ||
+                    !ValidateGenerationDirectory(generationPath))
+                return false;
+        }
+        return true;
+    }
+
+    bool RemoveHistoryDirectory(const QString& path)
+    {
+        if (!ValidateHistoryDirectory(path))
             return false;
 
         QDir history(path);
@@ -781,7 +841,9 @@ namespace
                 QDir::NoDotAndDotDot,
             QDir::Name);
         for (const QString& directory : directories) {
-            if (!RemoveGenerationDirectory(history.filePath(directory)))
+            if ((!IsGenerationName(directory) &&
+                    !IsPendingGenerationName(directory)) ||
+                    !RemoveGenerationDirectory(history.filePath(directory)))
                 return false;
         }
         if (!history.entryList(

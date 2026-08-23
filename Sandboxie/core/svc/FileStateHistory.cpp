@@ -114,7 +114,19 @@ namespace
             if (name[index] < L'0' || name[index] > L'9')
                 return false;
         }
-        return true;
+
+        SYSTEMTIME time = {};
+        time.wYear = (name[0] - L'0') * 1000 + (name[1] - L'0') * 100 +
+            (name[2] - L'0') * 10 + name[3] - L'0';
+        time.wMonth = (name[4] - L'0') * 10 + name[5] - L'0';
+        time.wDay = (name[6] - L'0') * 10 + name[7] - L'0';
+        time.wHour = (name[9] - L'0') * 10 + name[10] - L'0';
+        time.wMinute = (name[11] - L'0') * 10 + name[12] - L'0';
+        time.wSecond = (name[13] - L'0') * 10 + name[14] - L'0';
+        time.wMilliseconds = (name[16] - L'0') * 100 +
+            (name[17] - L'0') * 10 + name[18] - L'0';
+        FILETIME fileTime = {};
+        return SystemTimeToFileTime(&time, &fileTime) != FALSE;
     }
 
     bool CreateGenerationDirectory(const std::wstring& historyRoot,
@@ -538,6 +550,9 @@ namespace
     void EnforceGenerationLimit(const WCHAR* boxName,
         const std::wstring& historyRoot)
     {
+        if (!IsSafeDirectory(historyRoot))
+            return;
+
         ULONG maxGenerations = SbieApi_QueryConfNumber(boxName,
             L"FileStateHistoryMaxGenerations", 20);
         ULONG64 maxSize = (ULONG64)SbieApi_QueryConfNumber(boxName,
