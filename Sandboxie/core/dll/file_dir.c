@@ -3108,8 +3108,8 @@ _FX NTSTATUS File_NtQueryVolumeInformationFile(
     }
 
     //
-    // if caller is querying volume info for \Sandbox\...\drive\X,
-    // then open the real drive X to get the correct result
+    // if caller is querying volume info for a boxed file, then open
+    // its real drive to get the correct result
     //
 
     handle = FileHandle;
@@ -3122,55 +3122,50 @@ _FX NTSTATUS File_NtQueryVolumeInformationFile(
         status = SbieDll_GetHandlePath(FileHandle, path, NULL);
         if (NT_SUCCESS(status)) {
 
-            const FILE_DRIVE *drive =
-                File_GetDriveForPath(path, wcslen(path));
+            const FILE_DRIVE *drive = NULL;
+            ULONG box_prefix_len = File_FindBoxPrefix(path);
+            if (box_prefix_len) {
+
+                WCHAR *box_path = path + box_prefix_len;
+                if (box_path[0] == L'\\' &&
+                    _wcsnicmp(box_path + 1, File_Snapshot_Prefix,
+                        File_Snapshot_PrefixLen) == 0) {
+
+                    WCHAR *snapshot_path = wcschr(
+                        box_path + 1 + File_Snapshot_PrefixLen, L'\\');
+                    if (snapshot_path)
+                        box_path = snapshot_path;
+                }
+
+                if (_wcsnicmp(box_path, _Drive, _DriveLen - 1) == 0 &&
+                    box_path[_DriveLen - 1] == L'\\') {
+
+                    drive = File_GetDriveForLetter(box_path[_DriveLen]);
+                }
+            }
+
+            if (! drive)
+                drive = File_GetDriveForPath(path, wcslen(path));
             if (drive) {
 
                 //
                 // append a suffix backslash to open the drive root
                 //
 
-                UNICODE_STRING objname;
-                OBJECT_ATTRIBUTES objattrs;
+                WCHAR *volume_path =
+                    Dll_Alloc((drive->len + 2) * sizeof(WCHAR));
+                wmemcpy(volume_path, drive->path, drive->len);
+                volume_path[drive->len    ] = L'\\';
+                volume_path[drive->len + 1] = L'\0';
 
-                objname.Buffer = Dll_Alloc((drive->len + 4) * sizeof(WCHAR));
-                wmemcpy(objname.Buffer, drive->path, drive->len);
-                objname.Buffer[drive->len    ] = L'\\';
-                objname.Buffer[drive->len + 1] = L'\0';
+                //
+                // Open the true volume through the driver's internal API.
+                // The direct syscall is still subject to the VFS redirector.
+                //
 
-                objname.Length = (USHORT)(drive->len + 1) * sizeof(WCHAR);
-                objname.MaximumLength = objname.Length + sizeof(WCHAR);
+                status = SbieApi_OpenFile(&handle, volume_path);
 
-                InitializeObjectAttributes(
-                    &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-                if (FsInformationClass == FileFsSizeInformation ||
-                    FsInformationClass == FileFsFullSizeInformation) {
-
-                    //
-                    // for these info classes we can use a simpler
-                    // and faster open request, the same way the
-                    // GetDiskFreeSpace API does it
-                    //
-
-                    status = __sys_NtOpenFile(
-                        &handle, FILE_LIST_DIRECTORY | SYNCHRONIZE, &objattrs,
-                        IoStatusBlock, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            FILE_SYNCHRONOUS_IO_NONALERT |
-                            FILE_DIRECTORY_FILE |
-                            FILE_OPEN_FOR_FREE_SPACE_QUERY);
-
-                } else {
-
-                    status = __sys_NtCreateFile(
-                        &handle, GENERIC_READ | SYNCHRONIZE, &objattrs,
-                        IoStatusBlock, NULL, 0, FILE_SHARE_VALID_FLAGS,
-                        FILE_OPEN,
-                        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-                        NULL, 0);
-                }
-
-                Dll_Free(objname.Buffer);
+                Dll_Free(volume_path);
 
                 if (! NT_SUCCESS(status))
                     handle = FileHandle;

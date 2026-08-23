@@ -3,6 +3,7 @@
 #include "SbiePlusAPI.h"
 #include <QHash>
 #include <QRegularExpression>
+#include <QStringList>
 #include <QWidget>
 
 class CFinder;
@@ -11,6 +12,8 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
+class QStackedLayout;
+class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -23,6 +26,9 @@ public:
         QWidget* parent = Q_NULLPTR);
     ~CFileStateHistoryWidget();
 
+signals:
+    void TrackFiles(const QStringList& Hashes, const QStringList& FileNames);
+
 public slots:
     void ResizeColumns();
 
@@ -33,6 +39,7 @@ private slots:
     void UpdateFilterScope();
     void Compare();
     void ApplyFilter();
+    void ApplyViewOptions();
     void UpdateSelection();
     void ShowContextMenu(const QPoint& Pos);
     void CopyCell();
@@ -69,14 +76,18 @@ private:
     QString BoxRelativePath(const QString& TruePath) const;
     bool RemoveGeneration(const QString& generation);
     bool CanDeleteHistory();
+    QString FilterText(QTreeWidgetItem* Item, int Scope) const;
     void ApplySelectionFilter(bool Exclude, bool Combine);
     void AddExcludeRules(const QStringList& Rules);
     void RemoveExcludeRules(const QStringList& Rules);
     void OpenSelectedFolder(const QString& RawPath, bool Directory,
         bool Sandboxed);
+    bool IsActiveTab() const;
     QString DisplayPath(const QString& RawPath) const;
     void RebuildView();
+    void SetProgressVisible(bool Visible);
     CSandBoxPtr m_pBox;
+    QTabWidget* m_pTabs;
     CFinder* m_pFinder;
     QComboBox* m_pFilterScope;
     QComboBox* m_pOlder;
@@ -90,6 +101,9 @@ private:
     QCheckBox* m_pShowRemoved;
     QCheckBox* m_pShowModified;
     QCheckBox* m_pShowMetadata;
+    QCheckBox* m_pShowMarkers;
+    QCheckBox* m_pShowColors;
+    QCheckBox* m_pHighlightSame;
     QCheckBox* m_pShowFiles;
     QCheckBox* m_pShowFolders;
     QCheckBox* m_pHideEmpty;
@@ -99,11 +113,14 @@ private:
     QLabel* m_pStatus;
     QLabel* m_pSelectionStatus;
     QLabel* m_pLoadIndicator;
+    QCheckBox* m_pAutoCompare;
+    QStackedLayout* m_pLoadStack;
     QTreeWidget* m_pTree;
     QAction* m_pCopyCell;
     QAction* m_pCopyRow;
     QAction* m_pCopyPanel;
     QRegularExpression m_FilterExp;
     bool m_Loading;
+    bool m_AbortRequested;
     bool m_Loaded;
 };

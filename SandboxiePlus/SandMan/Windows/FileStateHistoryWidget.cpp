@@ -12,6 +12,7 @@
 #include "HistoryWindowUtils.h"
 #include "../SandMan.h"
 #include "../../MiscHelpers/Common/Common.h"
+#include "../../MiscHelpers/Common/CheckableMessageBox.h"
 #include "../../MiscHelpers/Common/Finder.h"
 #include "../../MiscHelpers/Common/PanelView.h"
 #include "../../MiscHelpers/Common/TreeWidgetEx.h"
@@ -25,13 +26,15 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
-#include <QFormLayout>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QItemSelectionModel>
+#include <QLineEdit>
 #include <QMap>
 #include <QMenu>
 #include <QMessageBox>
@@ -39,8 +42,9 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
-#include <QSpinBox>
+#include <QStackedLayout>
 #include <QTimer>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -66,7 +70,9 @@ namespace
         eSizeRole,
         eRawPathRole,
         eGroupRole,
-        eMarkerRole
+        eMarkerRole,
+        eOldHashRole,
+        eNewHashRole
     };
 
     enum EFilterScope
@@ -134,37 +140,81 @@ namespace
             IsGenerationName(name.mid(prefix.size()));
     }
 
-    bool RemoveStateGenerationDirectory(const QString& path)
+    bool IsStateGenerationPayloadName(const QString& name)
+    {
+        return name.compare(QStringLiteral("FileMap.dat"),
+            Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("Generation.ini"),
+            Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("FilePaths.dat"),
+            Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("FilePaths_v3.dat"),
+            Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("FilePaths_v3.sbie"),
+            Qt::CaseInsensitive) == 0;
+    }
+
+    bool ValidateStateGenerationDirectory(const QString& path)
     {
         if (!IsSafeDirectory(path))
             return false;
+
         QDir directory(path);
         const QStringList entries = directory.entryList(
             QDir::AllEntries | QDir::Hidden | QDir::System |
                 QDir::NoDotAndDotDot,
             QDir::Name);
         for (const QString& name : entries) {
-            if (name.compare(QStringLiteral("FileMap.dat"),
-                    Qt::CaseInsensitive) != 0 &&
-                    name.compare(QStringLiteral("Generation.ini"),
-                    Qt::CaseInsensitive) != 0 &&
-                    name.compare(QStringLiteral("FilePaths.dat"),
-                    Qt::CaseInsensitive) != 0 &&
-                    name.compare(QStringLiteral("FilePaths_v3.dat"),
-                    Qt::CaseInsensitive) != 0 &&
-                    name.compare(QStringLiteral("FilePaths_v3.sbie"),
-                    Qt::CaseInsensitive) != 0)
+            if (!IsStateGenerationPayloadName(name) ||
+                    !IsSafeFile(directory.filePath(name)))
                 return false;
+        }
+        return true;
+    }
+
+    bool RemoveStateGenerationDirectory(const QString& path)
+    {
+        QString name = QDir(path).dirName();
+        if ((!IsGenerationName(name) && !IsPendingGenerationName(name)) ||
+                !ValidateStateGenerationDirectory(path))
+            return false;
+
+        QDir directory(path);
+        const QStringList entries = directory.entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System |
+                QDir::NoDotAndDotDot,
+            QDir::Name);
+        for (const QString& name : entries) {
             QString filePath = directory.filePath(name);
-            if (!IsSafeFile(filePath) || !QFile::remove(filePath))
+            if (!IsStateGenerationPayloadName(name) ||
+                    !IsSafeFile(filePath) || !QFile::remove(filePath))
                 return false;
         }
         return QDir().rmdir(path);
     }
 
-    bool RemoveStateHistoryDirectory(const QString& path)
+    bool ValidateStateHistoryDirectory(const QString& path)
     {
         if (!IsSafeDirectory(path))
+            return false;
+
+        QDir history(path);
+        const QStringList entries = history.entryList(
+            QDir::AllEntries | QDir::Hidden | QDir::System |
+                QDir::NoDotAndDotDot,
+            QDir::Name);
+        for (const QString& name : entries) {
+            QString generationPath = history.filePath(name);
+            if ((!IsGenerationName(name) && !IsPendingGenerationName(name)) ||
+                    !ValidateStateGenerationDirectory(generationPath))
+                return false;
+        }
+        return true;
+    }
+
+    bool RemoveStateHistoryDirectory(const QString& path)
+    {
+        if (!ValidateStateHistoryDirectory(path))
             return false;
         QDir history(path);
         const QStringList directories = history.entryList(
@@ -293,11 +343,14 @@ namespace
         default: return QColor(255, 235, 200);
         }
     }
+
 }
 
 CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
     QWidget* parent)
-    : QWidget(parent), m_pBox(pBox), m_Loading(false), m_Loaded(false)
+    : QWidget(parent), m_pBox(pBox),
+      m_pTabs(qobject_cast<QTabWidget*>(parent)), m_Loading(false),
+      m_AbortRequested(false), m_Loaded(false)
 {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
 
@@ -316,24 +369,33 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
     m_pFinder->SetCloseButtonAtEnd(false);
     QAbstractButton* search = m_pFinder->GetToggleButton();
     search->setText(tr("Search"));
-    m_pLoadIndicator = new QLabel(this);
+    QWidget* loadControl = new QWidget(this);
+    m_pAutoCompare = new QCheckBox(tr("Auto Compare"), loadControl);
+    m_pAutoCompare->setChecked(theConf->GetBool(
+        "FileStateHistoryWindow/AutoCompare", true));
+    m_pAutoCompare->setToolTip(tr(
+        "Automatically compare the newest generations after loading."));
+    m_pLoadIndicator = new QLabel(loadControl);
     m_pLoadIndicator->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_pLoadIndicator->setMinimumWidth(fontMetrics().horizontalAdvance(
         tr("Refreshing... 000000 / 000000 generations")) + 8);
-    m_pLoadIndicator->setText(tr("Loading..."));
+    m_pLoadStack = new QStackedLayout(loadControl);
+    m_pLoadStack->setContentsMargins(0, 0, 0, 0);
+    m_pLoadStack->addWidget(m_pAutoCompare);
+    m_pLoadStack->addWidget(m_pLoadIndicator);
+    m_pLoadStack->setCurrentWidget(m_pAutoCompare);
     m_pRefresh = new QPushButton(CSandMan::GetIcon("Refresh"), tr("Refresh"), this);
     m_pRefresh->setEnabled(false);
     QToolButton* viewOptions = new QToolButton(this);
     viewOptions->setIcon(CSandMan::GetIcon("List"));
-    viewOptions->setText(tr("View Options"));
+    viewOptions->setText(tr("Options"));
     viewOptions->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     viewOptions->setCheckable(true);
     viewOptions->setAutoRaise(true);
     toolLayout->addWidget(search);
     toolLayout->addWidget(m_pFilterScope);
-    toolLayout->addWidget(m_pFinder);
-    toolLayout->addStretch();
-    toolLayout->addWidget(m_pLoadIndicator);
+    toolLayout->addWidget(m_pFinder, 1);
+    toolLayout->addWidget(loadControl);
     toolLayout->addWidget(m_pRefresh);
     toolLayout->addWidget(viewOptions);
     mainLayout->addLayout(toolLayout);
@@ -353,6 +415,9 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
     m_pShowRemoved = new QCheckBox(tr("Removed"), this);
     m_pShowModified = new QCheckBox(tr("Modified"), this);
     m_pShowMetadata = new QCheckBox(tr("Metadata modified"), this);
+    m_pShowMarkers = new QCheckBox(tr("Deletion markers"), this);
+    m_pShowColors = new QCheckBox(tr("Color change types"), this);
+    m_pHighlightSame = new QCheckBox(tr("Highlight same"), this);
     m_pShowFiles = new QCheckBox(tr("Files"), this);
     m_pShowFolders = new QCheckBox(tr("Folders"), this);
     m_pHideEmpty = new QCheckBox(tr("Hide 0-byte files"), this);
@@ -366,14 +431,23 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
         "FileStateHistoryWindow/ShowModified", true));
     m_pShowMetadata->setChecked(theConf->GetBool(
         "FileStateHistoryWindow/ShowMetadata", true));
+    m_pShowMarkers->setChecked(theConf->GetBool(
+        "FileStateHistoryWindow/ShowDeletionMarkers", true));
+    m_pShowColors->setChecked(theConf->GetBool(
+        "FileStateHistoryWindow/ShowChangeColors", true));
+    m_pHighlightSame->setChecked(theConf->GetBool(
+        "FileStateHistoryWindow/HighlightSameHash", true));
+    m_pHighlightSame->setToolTip(tr(
+        "Highlight file changes whose old or new SHA-256 matches any "
+        "selected file change."));
     m_pShowFiles->setChecked(theConf->GetBool(
         "FileStateHistoryWindow/ShowFiles", true));
     m_pShowFolders->setChecked(theConf->GetBool(
         "FileStateHistoryWindow/ShowFolders", true));
     m_pHideEmpty->setChecked(theConf->GetBool(
-        "FileStateHistoryWindow/HideEmptyFiles", true));
+        "FileStateHistoryWindow/HideEmptyFiles", false));
     m_pNormalizePaths->setChecked(theConf->GetBool(
-        "FileStateHistoryWindow/NormalizePaths", false));
+        "FileStateHistoryWindow/NormalizePaths", true));
     m_pNormalizePaths->setToolTip(tr(
         "Display logical Windows paths instead of box-relative storage paths. "
         "This changes only the view."));
@@ -381,25 +455,41 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
         "FileStateHistoryWindow/GroupByParentFolder", false));
     m_pGroupByParent->setToolTip(tr(
         "Place file changes under their immediate parent folder."));
-    QWidget* viewOptionsWidget = new QWidget(this);
-    QHBoxLayout* viewOptionsLayout = new QHBoxLayout(viewOptionsWidget);
+    QWidget* ViewOptionsWidget = new QWidget(this);
+    QVBoxLayout* viewOptionsLayout = new QVBoxLayout(ViewOptionsWidget);
     viewOptionsLayout->setContentsMargins(0, 0, 0, 0);
-    viewOptionsLayout->addWidget(m_pShowFiles);
-    viewOptionsLayout->addWidget(m_pShowFolders);
-    QFrame* separator = new QFrame(viewOptionsWidget);
+    QHBoxLayout* topOptionsLayout = new QHBoxLayout();
+    topOptionsLayout->addWidget(m_pShowFiles);
+    topOptionsLayout->addWidget(m_pShowFolders);
+    topOptionsLayout->addWidget(m_pShowMarkers);
+    QFrame* separator = new QFrame(ViewOptionsWidget);
     separator->setFrameShape(QFrame::VLine);
     separator->setFrameShadow(QFrame::Sunken);
-    viewOptionsLayout->addWidget(separator);
-    viewOptionsLayout->addWidget(m_pShowAdded);
-    viewOptionsLayout->addWidget(m_pShowRemoved);
-    viewOptionsLayout->addWidget(m_pShowModified);
-    viewOptionsLayout->addWidget(m_pShowMetadata);
-    viewOptionsLayout->addStretch();
-    viewOptionsLayout->addWidget(m_pNormalizePaths);
-    viewOptionsLayout->addWidget(m_pHideEmpty);
-    viewOptionsLayout->addWidget(m_pGroupByParent);
-    viewOptionsWidget->setVisible(false);
-    mainLayout->addWidget(viewOptionsWidget);
+    topOptionsLayout->addWidget(separator);
+    topOptionsLayout->addWidget(m_pShowAdded);
+    topOptionsLayout->addWidget(m_pShowRemoved);
+    topOptionsLayout->addWidget(m_pShowModified);
+    topOptionsLayout->addWidget(m_pShowMetadata);
+    topOptionsLayout->addStretch();
+    QHBoxLayout* bottomOptionsLayout = new QHBoxLayout();
+    bottomOptionsLayout->addStretch();
+    QFrame* separator2 = new QFrame(ViewOptionsWidget);
+    bottomOptionsLayout->addWidget(m_pShowColors);
+    bottomOptionsLayout->addWidget(m_pHighlightSame);
+    separator2->setFrameShape(QFrame::VLine);
+    separator2->setFrameShadow(QFrame::Sunken);
+    bottomOptionsLayout->addWidget(separator2);
+    bottomOptionsLayout->addWidget(m_pHideEmpty);
+    QFrame* separator3 = new QFrame(ViewOptionsWidget);
+    separator3->setFrameShape(QFrame::VLine);
+    separator3->setFrameShadow(QFrame::Sunken);
+    bottomOptionsLayout->addWidget(separator3);
+    bottomOptionsLayout->addWidget(m_pNormalizePaths);
+    bottomOptionsLayout->addWidget(m_pGroupByParent);
+    viewOptionsLayout->addLayout(topOptionsLayout);
+    viewOptionsLayout->addLayout(bottomOptionsLayout);
+    ViewOptionsWidget->setVisible(false);
+    mainLayout->addWidget(ViewOptionsWidget);
 
     m_pTree = new QTreeWidgetEx(this);
     m_pTree->setColumnCount(8);
@@ -426,7 +516,11 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
 
     QHBoxLayout* bottomLayout = new QHBoxLayout();
     m_pStatus = new QLabel(this);
-    m_pSelectionStatus = new QLabel(tr("Selected: 0"), this);
+    m_pSelectionStatus = new QLabel(m_pHighlightSame->isChecked()
+        ? tr("Selected: 0; Highlighted: 0") : tr("Selected: 0"), this);
+    m_pSelectionStatus->setToolTip(tr(
+        "Visible selected rows and total rows matching any selected SHA-256 "
+        "hash, including selected matches."));
     m_pDeleteOlder = new QPushButton(CSandMan::GetIcon("Erase"),
         tr("Delete Older Generation..."), this);
     m_pDeleteNewer = new QPushButton(CSandMan::GetIcon("Erase"),
@@ -447,8 +541,8 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
 
     connect(m_pRefresh, SIGNAL(clicked(bool)), this, SLOT(Reload()));
     connect(viewOptions, &QToolButton::toggled,
-        this, [viewOptionsWidget](bool expanded) {
-            viewOptionsWidget->setVisible(expanded);
+        this, [ViewOptionsWidget](bool expanded) {
+            ViewOptionsWidget->setVisible(expanded);
         });
     connect(search, SIGNAL(toggled(bool)),
         m_pFilterScope, SLOT(setVisible(bool)));
@@ -458,9 +552,13 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
     connect(m_pOlder, SIGNAL(currentIndexChanged(int)), this, SLOT(UpdateControls()));
     connect(m_pNewer, SIGNAL(currentIndexChanged(int)), this, SLOT(UpdateControls()));
     for (QCheckBox* check : { m_pShowAdded, m_pShowRemoved,
-            m_pShowModified, m_pShowMetadata, m_pShowFiles, m_pShowFolders,
-            m_pHideEmpty })
+            m_pShowModified, m_pShowMetadata, m_pShowMarkers, m_pShowFiles,
+            m_pShowFolders, m_pHideEmpty })
         connect(check, SIGNAL(toggled(bool)), this, SLOT(ApplyFilter()));
+    connect(m_pShowColors, &QCheckBox::toggled,
+        this, [this](bool) { ApplyViewOptions(); });
+    connect(m_pHighlightSame, &QCheckBox::toggled,
+        this, [this](bool) { UpdateSelection(); });
     connect(m_pNormalizePaths, &QCheckBox::toggled,
         this, [this](bool) { RebuildView(); });
     connect(m_pGroupByParent, &QCheckBox::toggled,
@@ -494,7 +592,19 @@ CFileStateHistoryWidget::CFileStateHistoryWidget(const CSandBoxPtr& pBox,
         m_pTree->setColumnWidth(1, 420);
     }
     m_pFinder->Open();
-    QTimer::singleShot(100, this, SLOT(Reload()));
+    if (m_pTabs)
+        connect(m_pTabs, &QTabWidget::currentChanged, this,
+            [this](int) {
+                if (!m_Loaded && !m_Loading && IsActiveTab())
+                    QTimer::singleShot(0, this, [this]() {
+                        if (!m_Loaded && !m_Loading && IsActiveTab())
+                            Reload();
+                    });
+            });
+    QTimer::singleShot(100, this, [this]() {
+        if (!m_Loaded && !m_Loading && IsActiveTab())
+            Reload();
+    });
 }
 
 CFileStateHistoryWidget::~CFileStateHistoryWidget()
@@ -509,6 +619,12 @@ CFileStateHistoryWidget::~CFileStateHistoryWidget()
         m_pShowModified->isChecked());
     theConf->SetValue("FileStateHistoryWindow/ShowMetadata",
         m_pShowMetadata->isChecked());
+    theConf->SetValue("FileStateHistoryWindow/ShowDeletionMarkers",
+        m_pShowMarkers->isChecked());
+    theConf->SetValue("FileStateHistoryWindow/ShowChangeColors",
+        m_pShowColors->isChecked());
+    theConf->SetValue("FileStateHistoryWindow/HighlightSameHash",
+        m_pHighlightSame->isChecked());
     theConf->SetValue("FileStateHistoryWindow/ShowFiles",
         m_pShowFiles->isChecked());
     theConf->SetValue("FileStateHistoryWindow/ShowFolders",
@@ -519,6 +635,16 @@ CFileStateHistoryWidget::~CFileStateHistoryWidget()
         m_pNormalizePaths->isChecked());
     theConf->SetValue("FileStateHistoryWindow/GroupByParentFolder",
         m_pGroupByParent->isChecked());
+    theConf->SetValue("FileStateHistoryWindow/AutoCompare",
+        m_pAutoCompare->isChecked());
+}
+
+void CFileStateHistoryWidget::SetProgressVisible(bool Visible)
+{
+    if (Visible)
+        m_pLoadStack->setCurrentWidget(m_pLoadIndicator);
+    else
+        m_pLoadStack->setCurrentWidget(m_pAutoCompare);
 }
 
 bool CFileStateHistoryWidget::ReadMap(const QString& generation,
@@ -816,14 +942,35 @@ bool CFileStateHistoryWidget::ReadDeleteMarkers(const QString& generationPath,
 
 void CFileStateHistoryWidget::Reload()
 {
-    if (m_Loading)
+    if (!m_Loaded && !IsActiveTab())
         return;
+    if (m_Loading) {
+        m_AbortRequested = true;
+        return;
+    }
+    m_AbortRequested = false;
     m_Loading = true;
-    m_pRefresh->setEnabled(false);
+    m_pRefresh->setIcon(CSandMan::GetIcon("Stop"));
+    m_pRefresh->setText(tr("Abort"));
+    m_pRefresh->setEnabled(true);
     QString loadPrefix = m_Loaded ? tr("Refreshing...") : tr("Loading...");
+    SetProgressVisible(true);
     m_pLoadIndicator->setText(loadPrefix);
     m_pLoadIndicator->repaint();
     m_pRefresh->repaint();
+    auto AbortReload = [this]() {
+        m_pOlder->clear();
+        m_pNewer->clear();
+        m_pTree->clear();
+        m_pLoadIndicator->clear();
+        SetProgressVisible(false);
+        m_pStatus->setText(tr("Refresh aborted."));
+        m_pRefresh->setIcon(CSandMan::GetIcon("Refresh"));
+        m_pRefresh->setText(tr("Refresh"));
+        m_pRefresh->setEnabled(true);
+        m_AbortRequested = false;
+        m_Loading = false;
+    };
     QString oldName = m_pOlder->currentData().toString();
     QString newName = m_pNewer->currentData().toString();
     m_pOlder->clear();
@@ -845,12 +992,22 @@ void CFileStateHistoryWidget::Reload()
                     !IsSafeFile(QDir(path).filePath("FileMap.dat")))
                 generations.removeAt(index);
         }
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+        if (m_AbortRequested) {
+            AbortReload();
+            return;
+        }
         for (int index = 0; index < generations.size(); ++index) {
             if (index == 0 || index + 1 == generations.size() ||
                     ((index + 1) % 16) == 0) {
                 m_pLoadIndicator->setText(tr("%1 %2 / %3 generations")
                     .arg(loadPrefix).arg(index + 1).arg(generations.size()));
                 m_pLoadIndicator->repaint();
+            }
+            QCoreApplication::processEvents(QEventLoop::AllEvents);
+            if (m_AbortRequested) {
+                AbortReload();
+                return;
             }
             QDir generation(history.filePath(generations.at(index)));
             const QFileInfoList files = generation.entryInfoList(
@@ -859,8 +1016,18 @@ void CFileStateHistoryWidget::Reload()
             for (const QFileInfo& file : files) {
                 if (IsSafeFile(file.absoluteFilePath()))
                     usedSize += quint64(file.size());
+                QCoreApplication::processEvents(QEventLoop::AllEvents);
+                if (m_AbortRequested) {
+                    AbortReload();
+                    return;
+                }
             }
         }
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    if (m_AbortRequested) {
+        AbortReload();
+        return;
     }
 
     if (generations.size() == 1)
@@ -869,8 +1036,7 @@ void CFileStateHistoryWidget::Reload()
         m_pOlder->addItem(generation, generation);
         m_pNewer->addItem(generation, generation);
     }
-    bool autoCompare = m_pBox->GetBool(
-        "FileStateHistoryAutoCompare", true);
+    bool autoCompare = m_pAutoCompare->isChecked();
     if (generations.size() == 1) {
         m_pOlder->setCurrentIndex(0);
         m_pNewer->setCurrentIndex(0);
@@ -885,9 +1051,9 @@ void CFileStateHistoryWidget::Reload()
     }
 
     int generationLimit = m_pBox->GetNum(
-        "FileStateHistoryMaxGenerations", 20);
+        "FileStateHistoryMaxGenerations", 20, true, true);
     int sizeLimit = m_pBox->GetNum(
-        "FileStateHistoryMaxSizeKB", 256 * 1024);
+        "FileStateHistoryMaxSizeKB", 256 * 1024, true, true);
     QString generationLimitText = generationLimit == 0
         ? tr("unlimited") : QString::number(generationLimit);
     QString sizeLimitText = sizeLimit == 0
@@ -898,11 +1064,11 @@ void CFileStateHistoryWidget::Reload()
             "close the sandbox again for a two-generation comparison.");
     }
     else if (generations.isEmpty()) {
-        note = m_pBox->GetBool("FileStateHistory", false)
+        note = m_pBox->GetBool("FileStateHistory", false, true, true)
             ? tr(" No captures exist yet; run and close the sandbox to create one.")
             : tr(" File-state capture is disabled.");
     }
-    else if (!m_pBox->GetBool("FileStateHistory", false))
+    else if (!m_pBox->GetBool("FileStateHistory", false, true, true))
         note = tr(" File-state capture is disabled.");
     m_pSummary->setText(tr("Usage / limits: %1 / %2 generation(s); %3 / %4.%5")
         .arg(generations.size()).arg(generationLimitText)
@@ -912,6 +1078,9 @@ void CFileStateHistoryWidget::Reload()
     UpdateControls();
     UpdateSelection();
     m_pLoadIndicator->clear();
+    SetProgressVisible(false);
+    m_pRefresh->setIcon(CSandMan::GetIcon("Refresh"));
+    m_pRefresh->setText(tr("Refresh"));
     m_pRefresh->setEnabled(true);
     m_Loading = false;
     m_Loaded = true;
@@ -950,8 +1119,15 @@ void CFileStateHistoryWidget::UpdateFilterScope()
     ApplyFilter();
 }
 
+bool CFileStateHistoryWidget::IsActiveTab() const
+{
+    return !m_pTabs || m_pTabs->currentWidget() == this;
+}
+
 void CFileStateHistoryWidget::Compare()
 {
+    if (m_Loading)
+        return;
     QString olderName = m_pOlder->currentData().toString();
     QString newerName = m_pNewer->currentData().toString();
     if (newerName.isEmpty() || olderName == newerName)
@@ -965,6 +1141,7 @@ void CFileStateHistoryWidget::Compare()
     QString olderSnapshot;
     QString newerSnapshot;
     QString error;
+    SetProgressVisible(true);
     m_pLoadIndicator->setText(tr("Comparing..."));
     m_pLoadIndicator->repaint();
     m_pRefresh->setEnabled(false);
@@ -974,19 +1151,25 @@ void CFileStateHistoryWidget::Compare()
             !ReadMap(newerName, newer, newerMarkers, newerSnapshot, error)) {
         QApplication::restoreOverrideCursor();
         m_pLoadIndicator->clear();
+        SetProgressVisible(false);
         m_pRefresh->setEnabled(true);
         UpdateControls();
-        QMessageBox::critical(this, tr("File Changes"), error);
+        if (IsActiveTab())
+            QMessageBox::critical(this, tr("File Changes"), error);
+        else
+            m_pStatus->setText(error);
         return;
     }
     QApplication::restoreOverrideCursor();
     if (!olderName.isEmpty() && olderSnapshot != newerSnapshot &&
-            QMessageBox::warning(this, tr("Sandbox Snapshot Base Changed"), tr(
-                "The selected captures use different Sandboxie snapshot bases. "
-                "A physical-layer comparison can contain many unrelated changes. "
-                "Continue with a best-effort comparison?"),
+            IsActiveTab() && QMessageBox::warning(this,
+                tr("Sandbox Snapshot Base Changed"), tr(
+                    "The selected captures use different Sandboxie snapshot bases. "
+                    "A physical-layer comparison can contain many unrelated changes. "
+                    "Continue with a best-effort comparison?"),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
         m_pLoadIndicator->clear();
+        SetProgressVisible(false);
         m_pRefresh->setEnabled(true);
         UpdateControls();
         return;
@@ -1064,6 +1247,10 @@ void CFileStateHistoryWidget::Compare()
         item->setData(0, eDirectoryRole, display.Directory);
         item->setData(0, eSizeRole, display.Size);
         item->setData(0, eRawPathRole, display.Path);
+        item->setData(0, eOldHashRole,
+            QString::fromLatin1(oldEntry.Hash.toHex()));
+        item->setData(0, eNewHashRole,
+            QString::fromLatin1(newEntry.Hash.toHex()));
         QStringList hashes;
         if (!oldEntry.Hash.isEmpty() && oldEntry.Hash == newEntry.Hash) {
             hashes.append(tr("SHA-256: %1").arg(
@@ -1078,9 +1265,6 @@ void CFileStateHistoryWidget::Compare()
                 QString::fromLatin1(newEntry.Hash.toHex())));
         if (!hashes.isEmpty())
             item->setToolTip(7, hashes.join(QLatin1Char('\n')));
-        QColor color = ChangeColor(change);
-        for (int column = 0; column < m_pTree->columnCount(); ++column)
-            item->setBackground(column, color);
         ++changes;
     }
 
@@ -1110,16 +1294,14 @@ void CFileStateHistoryWidget::Compare()
         item->setData(0, eSizeRole, 0);
         item->setData(0, eRawPathRole, rawPath);
         item->setData(0, eMarkerRole, true);
-        QColor color = ChangeColor(change);
-        for (int column = 0; column < m_pTree->columnCount(); ++column)
-            item->setBackground(column, color);
         ++changes;
     }
     RebuildView();
     m_pLoadIndicator->clear();
+    SetProgressVisible(false);
     m_pRefresh->setEnabled(true);
     UpdateControls();
-    if (changes == 0)
+    if (changes == 0 && IsActiveTab())
         QMessageBox::information(this, tr("File Changes"),
             tr("The selected file-state generations contain no differences."));
 }
@@ -1161,13 +1343,20 @@ void CFileStateHistoryWidget::RebuildView()
         QString path = DisplayPath(
             item->data(0, eRawPathRole).toString());
         item->setText(1, path);
+        item->setData(1, Qt::ToolTipRole, path);
         if (!m_pGroupByParent->isChecked()) {
             m_pTree->addTopLevelItem(item);
             continue;
         }
 
-        QString parentPath = QDir::toNativeSeparators(QFileInfo(path).path());
-        if (parentPath == QStringLiteral("."))
+        QString normalizedPath = QDir::toNativeSeparators(
+            QDir::cleanPath(path));
+        QString parentPath = QDir::toNativeSeparators(
+            QFileInfo(normalizedPath).path());
+        bool driveRoot = normalizedPath.size() == 2 &&
+            normalizedPath.at(1) == QLatin1Char(':');
+        if (parentPath == QStringLiteral(".") || driveRoot ||
+                parentPath.compare(normalizedPath, Qt::CaseInsensitive) == 0)
             parentPath = tr("(No parent folder)");
         QString parentKey = parentPath.toCaseFolded();
         QTreeWidgetItem* group = groups.value(parentKey);
@@ -1177,7 +1366,9 @@ void CFileStateHistoryWidget::RebuildView()
             group->setIcon(0, CSandMan::GetIcon("Folder"));
             group->setData(0, eGroupRole, true);
             group->setFlags(group->flags() & ~Qt::ItemIsSelectable);
-            group->setToolTip(1, tr("Contains file changes from this folder."));
+            group->setData(1, Qt::ToolTipRole,
+                tr("%1\nContains file changes from this folder.")
+                    .arg(parentPath));
             group->setExpanded(true);
             groups.insert(parentKey, group);
         }
@@ -1188,10 +1379,50 @@ void CFileStateHistoryWidget::RebuildView()
     if (sortColumn < 0 || sortColumn >= m_pTree->columnCount())
         sortColumn = 1;
     m_pTree->sortItems(sortColumn, sortOrder);
+    ApplyViewOptions();
     if (currentItem)
         m_pTree->setCurrentItem(currentItem, currentColumn,
             QItemSelectionModel::NoUpdate);
     ApplyFilter();
+}
+
+void CFileStateHistoryWidget::ApplyViewOptions()
+{
+    for (int index = 0; index < m_pTree->topLevelItemCount(); ++index) {
+        QTreeWidgetItem* item = m_pTree->topLevelItem(index);
+        QList<QTreeWidgetItem*> items;
+        if (item->data(0, eGroupRole).toBool()) {
+            for (int child = 0; child < item->childCount(); ++child)
+                items.append(item->child(child));
+        }
+        else
+            items.append(item);
+        for (QTreeWidgetItem* change : items) {
+            QBrush brush;
+            if (m_pShowColors->isChecked())
+                brush = QBrush(ChangeColor(
+                    change->data(0, eChangeRole).toInt()));
+            for (int column = 0; column < m_pTree->columnCount(); ++column)
+                change->setBackground(column, brush);
+        }
+    }
+    UpdateSelection();
+}
+
+QString CFileStateHistoryWidget::FilterText(QTreeWidgetItem* Item,
+    int Scope) const
+{
+    QStringList Values = Scope == eAllFields
+        ? HistoryWindowUtils::VisibleRow(m_pTree, Item)
+        : QStringList() << Item->text(Scope);
+    if (Scope == eAllFields || Scope == eHashField) {
+        for (int Role : { eOldHashRole, eNewHashRole }) {
+            QString Hash = Item->data(0, Role).toString();
+            if (Hash.size() == 64)
+                Values.append(Hash);
+        }
+    }
+    return Values.join(QLatin1Char('\n'));
 }
 
 void CFileStateHistoryWidget::ApplyFilter()
@@ -1204,15 +1435,14 @@ void CFileStateHistoryWidget::ApplyFilter()
         int change = item->data(0, eChangeRole).toInt();
         bool directory = item->data(0, eDirectoryRole).toBool();
         bool marker = item->data(0, eMarkerRole).toBool();
-        QString filterText = scope == eAllFields
-            ? HistoryWindowUtils::VisibleRow(
-                m_pTree, item).join(QLatin1Char('\n'))
-            : item->text(scope);
+        QString filterText = FilterText(item, scope);
         bool show = m_FilterExp.pattern().isEmpty() ||
             m_FilterExp.match(filterText).hasMatch();
         if (!marker)
             show = show && (directory ? m_pShowFolders->isChecked()
                 : m_pShowFiles->isChecked());
+        if (marker)
+            show = show && m_pShowMarkers->isChecked();
         if (!marker && !directory && m_pHideEmpty->isChecked() &&
                 item->data(0, eSizeRole).toULongLong() == 0)
             show = false;
@@ -1247,12 +1477,63 @@ void CFileStateHistoryWidget::ApplyFilter()
 
 void CFileStateHistoryWidget::UpdateSelection()
 {
-    int selected = 0;
-    for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
-        if (!item->isHidden() && !item->data(0, eGroupRole).toBool())
-            ++selected;
+    QSet<QString> selectedHashes;
+    if (m_pHighlightSame->isChecked()) {
+        for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
+            for (int role : { eOldHashRole, eNewHashRole }) {
+                QString hash = item->data(0, role).toString();
+                if (hash.size() == 64)
+                    selectedHashes.insert(hash.toLower());
+            }
+        }
     }
-    m_pSelectionStatus->setText(tr("Selected: %1").arg(selected));
+    QBrush matchBrush(theGUI->m_DarkTheme
+        ? QColor(125, 105, 0) : QColor(255, 248, 190));
+    int selected = 0;
+    int highlighted = 0;
+    for (int index = 0; index < m_pTree->topLevelItemCount(); ++index) {
+        QTreeWidgetItem* topLevel = m_pTree->topLevelItem(index);
+        QList<QTreeWidgetItem*> items;
+        if (topLevel->data(0, eGroupRole).toBool()) {
+            for (int child = 0; child < topLevel->childCount(); ++child)
+                items.append(topLevel->child(child));
+        }
+        else
+            items.append(topLevel);
+        for (QTreeWidgetItem* item : items) {
+            QBrush brush;
+            if (m_pShowColors->isChecked())
+                brush = QBrush(ChangeColor(
+                    item->data(0, eChangeRole).toInt()));
+            QStringList hashes;
+            for (int role : { eOldHashRole, eNewHashRole }) {
+                QString hash = item->data(0, role).toString();
+                if (hash.size() == 64)
+                    hashes.append(hash.toLower());
+            }
+            bool match = false;
+            for (const QString& hash : hashes) {
+                if (selectedHashes.contains(hash)) {
+                    match = true;
+                    break;
+                }
+            }
+            if (match)
+                brush = matchBrush;
+            for (int column = 0; column < m_pTree->columnCount(); ++column)
+                item->setBackground(column, brush);
+            if (!item->isHidden()) {
+                if (item->isSelected())
+                    ++selected;
+                if (match)
+                    ++highlighted;
+            }
+        }
+    }
+    m_pSelectionStatus->setText(m_pHighlightSame->isChecked()
+        ? tr("Selected: %1; Highlighted: %2")
+            .arg(selected).arg(highlighted)
+        : tr("Selected: %1").arg(selected));
 }
 
 void CFileStateHistoryWidget::ShowContextMenu(const QPoint& pos)
@@ -1312,6 +1593,8 @@ void CFileStateHistoryWidget::ShowContextMenu(const QPoint& pos)
     QStringList fullPathRules;
     QStringList fileNameRules;
     QStringList extensionRules;
+    bool hasFileNameSelection = false;
+    bool hasFolderNameSelection = false;
     for (QTreeWidgetItem* selected : m_pTree->selectedItems()) {
         if (selected->isHidden())
             continue;
@@ -1320,6 +1603,10 @@ void CFileStateHistoryWidget::ShowContextMenu(const QPoint& pos)
             continue;
         AppendUniqueCaseInsensitive(fullPathRules, path);
         QFileInfo info(path);
+        if (selected->data(0, eDirectoryRole).toBool())
+            hasFolderNameSelection = true;
+        else
+            hasFileNameSelection = true;
         if (!info.fileName().isEmpty())
             AppendUniqueCaseInsensitive(fileNameRules,
                 QStringLiteral("*\\") + info.fileName());
@@ -1327,11 +1614,23 @@ void CFileStateHistoryWidget::ShowContextMenu(const QPoint& pos)
             AppendUniqueCaseInsensitive(extensionRules,
                 QStringLiteral("*.") + info.suffix());
     }
-    QMenu* excludeNextRun = menu.addMenu(
-        CSandMan::GetIcon("Close"), tr("Exclude for Next Run"));
-    QAction* excludeFullPath = excludeNextRun->addAction(tr("Full Path"));
-    QAction* excludeFileName = excludeNextRun->addAction(tr("File Name Only"));
-    QAction* excludeExtension = excludeNextRun->addAction(tr("Extension"));
+    QString nameOnlyLabel = hasFolderNameSelection && !hasFileNameSelection
+        ? tr("Folder Name Only")
+        : hasFolderNameSelection
+            ? tr("File or Folder Name Only")
+            : tr("File Name Only");
+    QMenu* excludeCapture = menu.addMenu(
+        CSandMan::GetIcon("Close"), tr("Exclude from Capture"));
+    const QString excludeCaptureTip = tr(
+        "Exclude matching paths from the next File Changes capture, usually "
+        "when the sandbox closes. Existing history is not changed.");
+    excludeCapture->menuAction()->setToolTip(excludeCaptureTip);
+    QAction* excludeFullPath = excludeCapture->addAction(tr("Full Path"));
+    QAction* excludeFileName = excludeCapture->addAction(nameOnlyLabel);
+    QAction* excludeExtension = excludeCapture->addAction(tr("Extension"));
+    for (QAction* action : { excludeFullPath, excludeFileName,
+            excludeExtension })
+        action->setToolTip(excludeCaptureTip);
     excludeFullPath->setEnabled(!fullPathRules.isEmpty());
     excludeFileName->setEnabled(!fileNameRules.isEmpty());
     excludeExtension->setEnabled(!extensionRules.isEmpty());
@@ -1359,20 +1658,60 @@ void CFileStateHistoryWidget::ShowContextMenu(const QPoint& pos)
     QStringList localFullPathRules = localMatches(fullPathRules);
     QStringList localFileNameRules = localMatches(fileNameRules);
     QStringList localExtensionRules = localMatches(extensionRules);
-    QMenu* removeExclude = menu.addMenu(
-        CSandMan::GetIcon("Close"), tr("Remove Exclusion"));
-    QAction* removeFullPath = removeExclude->addAction(tr("Full Path"));
-    QAction* removeFileName = removeExclude->addAction(tr("File Name Only"));
-    QAction* removeExtension = removeExclude->addAction(tr("Extension"));
-    removeFullPath->setEnabled(!localFullPathRules.isEmpty());
-    removeFileName->setEnabled(!localFileNameRules.isEmpty());
-    removeExtension->setEnabled(!localExtensionRules.isEmpty());
-    connect(removeFullPath, &QAction::triggered, this,
-        [this, localFullPathRules]() { RemoveExcludeRules(localFullPathRules); });
-    connect(removeFileName, &QAction::triggered, this,
-        [this, localFileNameRules]() { RemoveExcludeRules(localFileNameRules); });
-    connect(removeExtension, &QAction::triggered, this,
-        [this, localExtensionRules]() { RemoveExcludeRules(localExtensionRules); });
+    if (!localFullPathRules.isEmpty() || !localFileNameRules.isEmpty() ||
+            !localExtensionRules.isEmpty()) {
+        QMenu* removeExclude = menu.addMenu(
+            CSandMan::GetIcon("Close"), tr("Remove Exclusion"));
+        QAction* removeFullPath = removeExclude->addAction(tr("Full Path"));
+        QAction* removeFileName = removeExclude->addAction(nameOnlyLabel);
+        QAction* removeExtension = removeExclude->addAction(tr("Extension"));
+        removeFullPath->setEnabled(!localFullPathRules.isEmpty());
+        removeFileName->setEnabled(!localFileNameRules.isEmpty());
+        removeExtension->setEnabled(!localExtensionRules.isEmpty());
+        connect(removeFullPath, &QAction::triggered, this,
+            [this, localFullPathRules]() { RemoveExcludeRules(localFullPathRules); });
+        connect(removeFileName, &QAction::triggered, this,
+            [this, localFileNameRules]() { RemoveExcludeRules(localFileNameRules); });
+        connect(removeExtension, &QAction::triggered, this,
+            [this, localExtensionRules]() { RemoveExcludeRules(localExtensionRules); });
+    }
+
+    QAction* trackFiles = menu.addAction(tr("Track Files"));
+    QStringList hashes;
+    QStringList fileNames;
+    for (QTreeWidgetItem* selected : m_pTree->selectedItems()) {
+        if (selected->isHidden() || selected->data(0, eMarkerRole).toBool())
+            continue;
+        QString oldHash = selected->data(0, eOldHashRole).toString();
+        QString newHash = selected->data(0, eNewHashRole).toString();
+        bool hasHash = false;
+        for (const QString& hash : { oldHash, newHash }) {
+            if (!hash.isEmpty() && hash.size() == 64) {
+                AppendUniqueCaseInsensitive(hashes, hash);
+                hasHash = true;
+            }
+        }
+        if (!hasHash && !selected->data(0, eDirectoryRole).toBool()) {
+            QString logicalPath = DisplayPath(
+                selected->data(0, eRawPathRole).toString());
+            QString fileName = QFileInfo(logicalPath).fileName();
+            if (!fileName.isEmpty())
+                AppendUniqueCaseInsensitive(fileNames, fileName);
+        }
+    }
+    QDir retainedArtifacts(QDir(m_pBox->GetFileRoot()).filePath(
+        "FileHistory\\Artifacts"));
+    bool retainedHistoryAvailable = m_pBox->GetBool(
+        "FileHistory", true, true, true) && retainedArtifacts.exists() &&
+        !retainedArtifacts.entryList(
+            QDir::Dirs | QDir::NoDotAndDotDot).isEmpty();
+    trackFiles->setEnabled(retainedHistoryAvailable &&
+        (!hashes.isEmpty() || !fileNames.isEmpty()));
+    trackFiles->setToolTip(tr(
+        "Switch to retained file history and match selected hashes, or file "
+        "names when no hash was captured."));
+    connect(trackFiles, &QAction::triggered, this,
+        [this, hashes, fileNames]() { emit TrackFiles(hashes, fileNames); });
 
     menu.addSeparator();
     m_pCopyCell->setEnabled(!item->text(column).isEmpty());
@@ -1437,8 +1776,20 @@ void CFileStateHistoryWidget::ApplySelectionFilter(bool exclude, bool combine)
     int scope = column;
     QStringList values;
     for (QTreeWidgetItem* item : m_pTree->selectedItems()) {
-        if (!item->text(column).isEmpty())
-            values.append(item->text(column));
+        if (column == eHashField) {
+            bool hasHash = false;
+            for (int role : { eOldHashRole, eNewHashRole }) {
+                QString hash = item->data(0, role).toString();
+                if (hash.size() == 64) {
+                    AppendUniqueCaseInsensitive(values, hash);
+                    hasHash = true;
+                }
+            }
+            if (!hasHash)
+                AppendUniqueCaseInsensitive(values, item->text(column));
+        }
+        else
+            AppendUniqueCaseInsensitive(values, item->text(column));
     }
     QString expression;
     HistoryWindowUtils::EFilterBuildResult result =
@@ -1531,6 +1882,21 @@ void CFileStateHistoryWidget::OpenSelectedFolder(const QString& rawPath,
                 tr("The selected path cannot be translated to a sandbox path."));
             return;
         }
+        if (theConf->GetInt("Options/WarnOpenFileStateSandbox", -1) == -1) {
+            bool state = false;
+            if (CCheckableMessageBox::question(this, "Sandboxie-Plus", tr(
+                    "Opening Windows Explorer inside this sandbox starts a "
+                    "sandboxed process. It can change sandbox contents and "
+                    "may create another file-state generation after Explorer "
+                    "exits. Refresh this history afterward to see it."),
+                    tr("Don't show this message in future"), &state,
+                    QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                    QDialogButtonBox::Ok, QMessageBox::Information) !=
+                    QDialogButtonBox::Ok)
+                return;
+            if (state)
+                theConf->SetValue("Options/WarnOpenFileStateSandbox", 1);
+        }
         QList<SB_STATUS> results;
         results.append(m_pBox->RunStart(
             QStringLiteral("explorer.exe \"%1\"").arg(logicalFolder)));
@@ -1556,41 +1922,162 @@ void CFileStateHistoryWidget::Configure()
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
     QCheckBox* enabled = new QCheckBox(tr(
         "Capture a file-state generation after each completed sandbox run"), &dialog);
-    enabled->setChecked(m_pBox->GetBool("FileStateHistory", false));
-    QCheckBox* autoCompare = new QCheckBox(tr(
-        "Automatically compare the newest generations after loading"), &dialog);
-    autoCompare->setChecked(m_pBox->GetBool("FileStateHistoryAutoCompare", true));
+    enabled->setChecked(m_pBox->GetBool("FileStateHistory", false,
+        true, true));
     QCheckBox* hashing = new QCheckBox(tr(
         "Use SHA-256 for files within the hashing limits"), &dialog);
-    hashing->setChecked(m_pBox->GetText("FileStateHistoryHashMode")
+    hashing->setChecked(m_pBox->GetText("FileStateHistoryHashMode", "Off",
+        true, true, true)
         .compare("Limited", Qt::CaseInsensitive) == 0);
+    QLabel* info = new QLabel(tr(
+        "Enter 0 for unlimited. Leave a field empty to inherit its global or "
+        "template value, or the built-in default. Changes apply to the next "
+        "file-state capture."), &dialog);
+    info->setWordWrap(true);
+    layout->addWidget(info);
     layout->addWidget(enabled);
-    layout->addWidget(autoCompare);
     layout->addWidget(hashing);
 
-    QFormLayout* form = new QFormLayout();
-    QSpinBox* generations = new QSpinBox(&dialog);
-    generations->setRange(0, 10000);
-    generations->setSpecialValueText(tr("Unlimited"));
-    generations->setValue(m_pBox->GetNum("FileStateHistoryMaxGenerations", 20));
-    QSpinBox* totalSize = new QSpinBox(&dialog);
-    totalSize->setRange(0, 2 * 1024 * 1024);
-    totalSize->setSpecialValueText(tr("Unlimited"));
-    totalSize->setSuffix(tr(" KB"));
-    totalSize->setValue(m_pBox->GetNum("FileStateHistoryMaxSizeKB", 256 * 1024));
-    QSpinBox* hashFile = new QSpinBox(&dialog);
-    hashFile->setRange(0, 2 * 1024 * 1024);
-    hashFile->setSuffix(tr(" KB"));
-    hashFile->setValue(m_pBox->GetNum("FileStateHistoryHashMaxFileSizeKB", 1024));
-    QSpinBox* hashTotal = new QSpinBox(&dialog);
-    hashTotal->setRange(0, 2 * 1024 * 1024);
-    hashTotal->setSuffix(tr(" KB"));
-    hashTotal->setValue(m_pBox->GetNum("FileStateHistoryHashMaxTotalKB", 64 * 1024));
-    form->addRow(tr("Maximum generations:"), generations);
-    form->addRow(tr("Maximum stored map size:"), totalSize);
-    form->addRow(tr("Maximum hashed file size:"), hashFile);
-    form->addRow(tr("Maximum hashed bytes per capture:"), hashTotal);
+    QGridLayout* form = new QGridLayout();
+    QLineEdit* generations = new QLineEdit(
+        m_pBox->GetText("FileStateHistoryMaxGenerations"), &dialog);
+    QLineEdit* totalSize = new QLineEdit(
+        m_pBox->GetText("FileStateHistoryMaxSizeKB"), &dialog);
+    QLineEdit* hashFile = new QLineEdit(
+        m_pBox->GetText("FileStateHistoryHashMaxFileSizeKB"), &dialog);
+    QLineEdit* hashTotal = new QLineEdit(
+        m_pBox->GetText("FileStateHistoryHashMaxTotalKB"), &dialog);
+    const quint64 inheritedGenerations = qMax(0,
+        m_pBox->GetNum("FileStateHistoryMaxGenerations", 20, true, true));
+    const quint64 inheritedTotalSize = qMax<qint64>(0,
+        m_pBox->GetNum64("FileStateHistoryMaxSizeKB", 256 * 1024,
+            true, true));
+    const quint64 inheritedHashFile = qMax<qint64>(0,
+        m_pBox->GetNum64("FileStateHistoryHashMaxFileSizeKB", 1024,
+            true, true));
+    const quint64 inheritedHashTotal = qMax<qint64>(0,
+        m_pBox->GetNum64("FileStateHistoryHashMaxTotalKB", 64 * 1024,
+            true, true));
+    generations->setPlaceholderText(tr("Inherited (currently %1)")
+        .arg(inheritedGenerations));
+    totalSize->setPlaceholderText(tr("Inherited (currently %1)")
+        .arg(inheritedTotalSize));
+    hashFile->setPlaceholderText(tr("Inherited (currently %1)")
+        .arg(inheritedHashFile));
+    hashTotal->setPlaceholderText(tr("Inherited (currently %1)")
+        .arg(inheritedHashTotal));
+    QLabel* generationsValue = new QLabel(&dialog);
+    QLabel* totalSizeValue = new QLabel(&dialog);
+    QLabel* hashFileValue = new QLabel(&dialog);
+    QLabel* hashTotalValue = new QLabel(&dialog);
+    int formRow = 0;
+    int labelWidth = 0;
+    auto addLabel = [&dialog, &form, &labelWidth](const QString& text,
+            int row) {
+        QLabel* label = new QLabel(text, &dialog);
+        label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        labelWidth = qMax(labelWidth,
+            label->fontMetrics().horizontalAdvance(text));
+        form->addWidget(label, row, 0, 1, 2);
+    };
+    auto addLimitRow = [&addLabel, &form, &formRow](const QString& label,
+            QLineEdit* edit, QLabel* value) {
+        addLabel(label, formRow);
+        form->addWidget(edit, formRow, 2, 1, 2);
+        form->addWidget(value, formRow, 4);
+        ++formRow;
+    };
+    addLimitRow(tr("Maximum generations:"), generations, generationsValue);
+    addLimitRow(tr("Maximum stored map size (KB):"), totalSize, totalSizeValue);
+    addLimitRow(tr("Maximum hashed file size (KB):"), hashFile, hashFileValue);
+    addLimitRow(tr("Maximum hashed bytes per capture (KB):"), hashTotal,
+        hashTotalValue);
+    QList<QLineEdit*> limitEdits;
+    limitEdits << generations << totalSize << hashFile << hashTotal;
+    auto formatLimit = [this](quint64 value) {
+        return value == 0 ? tr("unlimited") : FormatSize(value * 1024);
+    };
+    auto readLimit = [](QLineEdit* edit, quint64 fallback, bool* valid) {
+        QString text = edit->text().trimmed();
+        if (text.isEmpty()) {
+            *valid = true;
+            return fallback;
+        }
+        bool ok = false;
+        quint64 value = text.toULongLong(&ok);
+        *valid = ok;
+        return ok ? value : quint64(0);
+    };
+    auto updateLimitLabels = [=]() {
+        bool valid = true;
+        bool fieldValid = false;
+        quint64 generationLimit = readLimit(generations,
+            inheritedGenerations, &fieldValid);
+        valid = valid && fieldValid;
+        quint64 totalLimit = readLimit(totalSize,
+            inheritedTotalSize, &fieldValid);
+        valid = valid && fieldValid;
+        quint64 hashFileLimit = readLimit(hashFile,
+            inheritedHashFile, &fieldValid);
+        valid = valid && fieldValid;
+        quint64 hashTotalLimit = readLimit(hashTotal,
+            inheritedHashTotal, &fieldValid);
+        valid = valid && fieldValid;
+        if (!valid) {
+            generationsValue->setText(tr("invalid"));
+            totalSizeValue->setText(tr("invalid"));
+            hashFileValue->setText(tr("invalid"));
+            hashTotalValue->setText(tr("invalid"));
+            return;
+        }
+        generationsValue->setText(generationLimit == 0
+            ? tr("unlimited") : tr("%1 generation(s)").arg(generationLimit));
+        totalSizeValue->setText(formatLimit(totalLimit));
+        hashFileValue->setText(formatLimit(hashFileLimit));
+        hashTotalValue->setText(formatLimit(hashTotalLimit));
+    };
+    updateLimitLabels();
+    for (QLineEdit* edit : limitEdits)
+        connect(edit, &QLineEdit::textChanged, &dialog,
+            [updateLimitLabels](const QString&) { updateLimitLabels(); });
+    auto validate = [](QLineEdit* edit, quint64 maximum) {
+        QString text = edit->text().trimmed();
+        if (text.isEmpty())
+            return true;
+        bool ok = false;
+        quint64 value = text.toULongLong(&ok);
+        return ok && value <= maximum;
+    };
     layout->addLayout(form);
+
+    const qreal dpiScale = dialog.logicalDpiX() / 96.0;
+    const int textPadding = qRound(24 * dpiScale);
+    const int columnSpacing = form->horizontalSpacing();
+    int fieldWidth = 0;
+    for (QLineEdit* edit : limitEdits) {
+        QString shownText = edit->text().isEmpty()
+            ? edit->placeholderText() : edit->text();
+        fieldWidth = qMax(fieldWidth, edit->minimumSizeHint().width());
+        fieldWidth = qMax(fieldWidth,
+            edit->fontMetrics().horizontalAdvance(shownText) + textPadding);
+    }
+    for (QLineEdit* edit : limitEdits)
+        edit->setMinimumWidth(fieldWidth);
+    form->setColumnMinimumWidth(0,
+        (labelWidth + columnSpacing + 1) / 2);
+    form->setColumnMinimumWidth(1,
+        (labelWidth + columnSpacing) / 2);
+    form->setColumnMinimumWidth(2,
+        (fieldWidth + columnSpacing + 1) / 2);
+    form->setColumnMinimumWidth(3,
+        (fieldWidth + columnSpacing) / 2);
+    int valueWidth = 0;
+    for (QLabel* value : { generationsValue, totalSizeValue,
+            hashFileValue, hashTotalValue })
+        valueWidth = qMax(valueWidth,
+            value->fontMetrics().horizontalAdvance(value->text()));
+    form->setColumnMinimumWidth(4, valueWidth + textPadding);
+    form->setColumnStretch(4, 1);
 
     layout->addWidget(new QLabel(tr(
         "Capture exclusions, one box-relative wildcard per line:"), &dialog));
@@ -1601,7 +2088,20 @@ void CFileStateHistoryWidget::Configure()
     layout->addWidget(exclusions, 1);
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    connect(buttons, SIGNAL(accepted()), &dialog, SLOT(accept()));
+    connect(buttons, &QDialogButtonBox::accepted, &dialog,
+        [&dialog, generations, totalSize, hashFile, hashTotal, validate]() {
+        if (!validate(generations, 0x7FFFFFFFULL) ||
+                !validate(totalSize, 0x7FFFFFFFULL) ||
+                !validate(hashFile, 0x7FFFFFFFULL) ||
+                !validate(hashTotal, 0x7FFFFFFFULL)) {
+            QMessageBox::warning(&dialog, CFileStateHistoryWidget::tr(
+                "File Changes"), CFileStateHistoryWidget::tr(
+                "Enter empty or non-negative whole numbers within the "
+                "supported range for all file-state limits."));
+            return;
+        }
+        dialog.accept();
+    });
     connect(buttons, SIGNAL(rejected()), &dialog, SLOT(reject()));
     layout->addWidget(buttons);
     dialog.resize(650, 520);
@@ -1619,12 +2119,11 @@ void CFileStateHistoryWidget::Configure()
             : m_pBox->SetText(setting, normalized));
     };
     save("FileStateHistory", enabled->isChecked() ? "y" : "n", "n");
-    save("FileStateHistoryAutoCompare", autoCompare->isChecked() ? "y" : "n", "y");
     save("FileStateHistoryHashMode", hashing->isChecked() ? "Limited" : "Off", "Off");
-    save("FileStateHistoryMaxGenerations", QString::number(generations->value()), "20");
-    save("FileStateHistoryMaxSizeKB", QString::number(totalSize->value()), "262144");
-    save("FileStateHistoryHashMaxFileSizeKB", QString::number(hashFile->value()), "1024");
-    save("FileStateHistoryHashMaxTotalKB", QString::number(hashTotal->value()), "65536");
+    save("FileStateHistoryMaxGenerations", generations->text().trimmed(), "20");
+    save("FileStateHistoryMaxSizeKB", totalSize->text().trimmed(), "262144");
+    save("FileStateHistoryHashMaxFileSizeKB", hashFile->text().trimmed(), "1024");
+    save("FileStateHistoryHashMaxTotalKB", hashTotal->text().trimmed(), "65536");
     QStringList rules;
     for (const QString& line : exclusions->toPlainText().split('\n')) {
         QString rule = line.trimmed();
@@ -1633,7 +2132,6 @@ void CFileStateHistoryWidget::Configure()
     }
     results.append(m_pBox->UpdateTextList("FileStateHistoryExclude", rules, false));
     theGUI->CheckResults(results, this);
-    Reload();
 }
 
 bool CFileStateHistoryWidget::RemoveGeneration(const QString& generation)

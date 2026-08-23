@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <bcrypt.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 #include <wctype.h>
 
@@ -202,6 +203,24 @@ namespace
         return false;
     }
 
+    ULONG QueryConfNumberAllowZero(const WCHAR* boxName,
+        const WCHAR* setting, ULONG defaultValue)
+    {
+        WCHAR value[32] = {};
+        if (!NT_SUCCESS(SbieApi_QueryConfAsIs(boxName, setting, 0,
+                value, sizeof(value))) || !*value)
+            return defaultValue;
+        if (value[sizeof(value) / sizeof(value[0]) - 1] != L'\0')
+            return defaultValue;
+        WCHAR* end = NULL;
+        ULONG64 number = _wcstoui64(value, &end, 10);
+        while (end && (*end == L' ' || *end == L'\t'))
+            ++end;
+        if (end == value || *end != L'\0' || number > 0xFFFFFFFFULL)
+            return defaultValue;
+        return (ULONG)number;
+    }
+
     std::string Utf8(const std::wstring& value)
     {
         if (value.empty())
@@ -342,9 +361,13 @@ namespace
         ULONG64 size = directory ? 0 :
             ((ULONG64)data.nFileSizeHigh << 32) | data.nFileSizeLow;
         std::string hash = "-";
-        if (!directory && options.HashEnabled &&
-                size <= options.HashMaxFileSize &&
-                size <= options.HashMaxTotalSize - options.HashedSize) {
+        bool withinFileHashLimit = options.HashMaxFileSize == 0 ||
+            size <= options.HashMaxFileSize;
+        bool withinTotalHashLimit = options.HashMaxTotalSize == 0 ||
+            (options.HashedSize <= options.HashMaxTotalSize &&
+                size <= options.HashMaxTotalSize - options.HashedSize);
+        if (!directory && options.HashEnabled && withinFileHashLimit &&
+                withinTotalHashLimit) {
             if (HashFile(fullPath, size, hash)) {
                 options.HashedSize += size;
                 ++counts.Hashed;
@@ -440,10 +463,10 @@ namespace
                 L"FileStateHistoryHashMode", 0, mode, sizeof(mode))))
             options.HashEnabled = _wcsicmp(mode, L"Limited") == 0;
         options.HashMaxFileSize =
-            (ULONG64)SbieApi_QueryConfNumber(boxName,
+            (ULONG64)QueryConfNumberAllowZero(boxName,
                 L"FileStateHistoryHashMaxFileSizeKB", 1024) * 1024;
         options.HashMaxTotalSize =
-            (ULONG64)SbieApi_QueryConfNumber(boxName,
+            (ULONG64)QueryConfNumberAllowZero(boxName,
                 L"FileStateHistoryHashMaxTotalKB", 64 * 1024) * 1024;
         for (ULONG index = 0; index < 1000; ++index) {
             WCHAR value[2048] = {};
@@ -553,9 +576,9 @@ namespace
         if (!IsSafeDirectory(historyRoot))
             return;
 
-        ULONG maxGenerations = SbieApi_QueryConfNumber(boxName,
+        ULONG maxGenerations = QueryConfNumberAllowZero(boxName,
             L"FileStateHistoryMaxGenerations", 20);
-        ULONG64 maxSize = (ULONG64)SbieApi_QueryConfNumber(boxName,
+        ULONG64 maxSize = (ULONG64)QueryConfNumberAllowZero(boxName,
             L"FileStateHistoryMaxSizeKB", 256 * 1024) * 1024;
         struct GENERATION { std::wstring Name; ULONG64 Size; };
         std::vector<GENERATION> generations;

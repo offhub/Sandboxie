@@ -30,6 +30,58 @@
 #include "qwindowdefs_win.h"
 #include <shellapi.h>
 
+namespace
+{
+    QMap<void*, CFileHistoryWindow*> FileHistoryWindows;
+    QMap<void*, CRegistryHistoryWindow*> RegistryHistoryWindows;
+
+    void ActivateHistoryWindow(QWidget* window)
+    {
+        window->setWindowState(
+            (window->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+        SetForegroundWindow((HWND)window->winId());
+    }
+
+    void ShowRegistryHistoryWindow(const CSandBoxPtr& pBox);
+
+    void ShowFileHistoryWindow(const CSandBoxPtr& pBox, int tab = -1)
+    {
+        CFileHistoryWindow* window = FileHistoryWindows.value(pBox.data());
+        if (window == NULL) {
+            window = new CFileHistoryWindow(pBox);
+            QObject::connect(theGUI, SIGNAL(Closed()), window, SLOT(close()));
+            FileHistoryWindows.insert(pBox.data(), window);
+            QObject::connect(window, &CFileHistoryWindow::Closed, [pBox]() {
+                FileHistoryWindows.remove(pBox.data());
+            });
+            QObject::connect(window, &CFileHistoryWindow::OpenRegistryHistory,
+                [pBox]() { ShowRegistryHistoryWindow(pBox); });
+            CSandMan::SafeShow(window);
+        }
+        if (tab >= 0)
+            window->SetHistoryTab(tab);
+        ActivateHistoryWindow(window);
+    }
+
+    void ShowRegistryHistoryWindow(const CSandBoxPtr& pBox)
+    {
+        CRegistryHistoryWindow* window =
+            RegistryHistoryWindows.value(pBox.data());
+        if (window == NULL) {
+            window = new CRegistryHistoryWindow(pBox);
+            QObject::connect(theGUI, SIGNAL(Closed()), window, SLOT(close()));
+            RegistryHistoryWindows.insert(pBox.data(), window);
+            QObject::connect(window, &CRegistryHistoryWindow::Closed, [pBox]() {
+                RegistryHistoryWindows.remove(pBox.data());
+            });
+            QObject::connect(window, &CRegistryHistoryWindow::OpenFileHistory,
+                [pBox](int tab) { ShowFileHistoryWindow(pBox, tab); });
+            CSandMan::SafeShow(window);
+        }
+        ActivateHistoryWindow(window);
+    }
+}
+
 static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
 	bool HasSnapshots, bool HasFileHistory, bool HasRegistryHistory,
 	bool HasFileStateHistory,
@@ -1679,45 +1731,11 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 	}
 	else if (Action == m_pMenuHistory)
 	{
-		CSandBoxPtr pBox = SandBoxes.first();
-
-		static QMap<void*, CFileHistoryWindow*> HistoryWindows;
-		CFileHistoryWindow* pHistoryWindow = HistoryWindows.value(pBox.data());
-		if (pHistoryWindow == NULL) {
-			pHistoryWindow = new CFileHistoryWindow(pBox);
-			connect(theGUI, SIGNAL(Closed()), pHistoryWindow, SLOT(close()));
-			HistoryWindows.insert(pBox.data(), pHistoryWindow);
-			connect(pHistoryWindow, &CFileHistoryWindow::Closed, [pBox]() {
-				HistoryWindows.remove(pBox.data());
-			});
-			CSandMan::SafeShow(pHistoryWindow);
-		}
-		else {
-			pHistoryWindow->setWindowState(
-				(pHistoryWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
-			SetForegroundWindow((HWND)pHistoryWindow->winId());
-		}
+		ShowFileHistoryWindow(SandBoxes.first());
 	}
 	else if (Action == m_pMenuRegistryHistory)
 	{
-		CSandBoxPtr pBox = SandBoxes.first();
-
-		static QMap<void*, CRegistryHistoryWindow*> HistoryWindows;
-		CRegistryHistoryWindow* pHistoryWindow = HistoryWindows.value(pBox.data());
-		if (pHistoryWindow == NULL) {
-			pHistoryWindow = new CRegistryHistoryWindow(pBox);
-			connect(theGUI, SIGNAL(Closed()), pHistoryWindow, SLOT(close()));
-			HistoryWindows.insert(pBox.data(), pHistoryWindow);
-			connect(pHistoryWindow, &CRegistryHistoryWindow::Closed, [pBox]() {
-				HistoryWindows.remove(pBox.data());
-			});
-			CSandMan::SafeShow(pHistoryWindow);
-		}
-		else {
-			pHistoryWindow->setWindowState(
-				(pHistoryWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
-			SetForegroundWindow((HWND)pHistoryWindow->winId());
-		}
+		ShowRegistryHistoryWindow(SandBoxes.first());
 	}
 	else if (Action == m_pMenuCompactDeleteV3)
 		Results.append(theGUI->RunStart(SandBoxes.first()->GetName(), "compact_delete_v3"));

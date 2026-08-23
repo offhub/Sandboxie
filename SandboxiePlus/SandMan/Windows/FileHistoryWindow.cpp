@@ -7,7 +7,9 @@
 #include "../../MiscHelpers/Common/PanelView.h"
 #include "../../MiscHelpers/Common/TreeWidgetEx.h"
 #include <algorithm>
+#include <QEventLoop>
 #include <QItemSelectionModel>
+#include <QStackedLayout>
 #include <QTabWidget>
 #include <windows.h>
 
@@ -632,7 +634,13 @@ namespace
 
 
 CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
-	: QDialog(parent), m_pBox(pBox), m_Loading(false), m_Loaded(false)
+	: QDialog(parent), m_pBox(pBox), m_LastTab(0), m_Loading(false),
+	  m_AbortRequested(false), m_Loaded(false),
+	  m_TrackFileViewAdjusting(false),
+	  m_TrackFileHideEmptyOverride(false),
+	  m_TrackFileHideReusedOverride(false),
+	  m_TrackFileHideEmptyValue(false),
+	  m_TrackFileHideReusedValue(false)
 {
 	Qt::WindowFlags Flags = windowFlags();
 	Flags |= Qt::CustomizeWindowHint | Qt::WindowMinimizeButtonHint
@@ -644,13 +652,27 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 
 	QVBoxLayout* DialogLayout = new QVBoxLayout(this);
 	QTabWidget* Tabs = new QTabWidget(this);
+	m_pTabs = Tabs;
 	QWidget* RetainedVersions = new QWidget(Tabs);
 	QVBoxLayout* MainLayout = new QVBoxLayout(RetainedVersions);
 	CFileStateHistoryWidget* FileChanges =
 		new CFileStateHistoryWidget(pBox, Tabs);
 	Tabs->addTab(FileChanges, tr("File Changes"));
 	Tabs->addTab(RetainedVersions, tr("Retained Versions"));
-	Tabs->setCurrentIndex(0);
+	Tabs->addTab(new QWidget(Tabs), tr("Registry Changes"));
+	int LastTab = theConf->GetInt("FileHistoryWindow/LastTab", 0);
+	if (LastTab >= 0 && LastTab < 2)
+		m_LastTab = LastTab;
+	Tabs->setCurrentIndex(m_LastTab);
+	connect(Tabs, &QTabWidget::currentChanged, this,
+		[this, Tabs](int Index) {
+			if (Index == 2) {
+				emit OpenRegistryHistory();
+				Tabs->setCurrentIndex(m_LastTab);
+			}
+			else if (Index >= 0)
+				m_LastTab = Index;
+		});
 	DialogLayout->addWidget(Tabs);
 	QHBoxLayout* ToolLayout = new QHBoxLayout();
 
@@ -671,12 +693,12 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	SearchButton->setText(tr("Search"));
 	m_pViewOptionsButton = new QToolButton(this);
 	m_pViewOptionsButton->setIcon(CSandMan::GetIcon("List"));
-	m_pViewOptionsButton->setText(tr("View Options"));
+	m_pViewOptionsButton->setText(tr("Options"));
 	m_pViewOptionsButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 	m_pViewOptionsButton->setCheckable(true);
 	m_pViewOptionsButton->setAutoRaise(true);
 	m_pViewOptionsButton->setToolTip(
-		tr("Show or hide retained file history view options."));
+		tr("Show or hide retained file history options."));
 	m_pHighlightSame = new QCheckBox(tr("Highlight same"), this);
 	m_pHighlightSame->setChecked(
 		theConf->GetBool("FileHistoryWindow/HighlightSameHash", true));
@@ -703,30 +725,57 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pGroupByParent->setToolTip(
 		tr("Place retained file paths under their immediate parent folder."));
 	QWidget* ViewOptionsWidget = new QWidget(this);
-	QHBoxLayout* ViewOptionsLayout = new QHBoxLayout(ViewOptionsWidget);
+	QVBoxLayout* ViewOptionsLayout = new QVBoxLayout(ViewOptionsWidget);
 	ViewOptionsLayout->setContentsMargins(0, 0, 0, 0);
-	ViewOptionsLayout->addStretch();
-	ViewOptionsLayout->addWidget(m_pHighlightSame);
-	ViewOptionsLayout->addWidget(m_pHideEmpty);
-	ViewOptionsLayout->addWidget(m_pHideReused);
-	ViewOptionsLayout->addWidget(m_pMergeRenamed);
-	ViewOptionsLayout->addWidget(m_pGroupByParent);
+	QWidget* TopOptionsRow = new QWidget(ViewOptionsWidget);
+	TopOptionsRow->setMinimumHeight(m_pHighlightSame->sizeHint().height());
+	QHBoxLayout* TopOptionsLayout = new QHBoxLayout(TopOptionsRow);
+	TopOptionsLayout->setContentsMargins(0, 0, 0, 0);
+	TopOptionsLayout->addStretch();
+	QWidget* BottomOptionsRow = new QWidget(ViewOptionsWidget);
+	QHBoxLayout* BottomOptionsLayout = new QHBoxLayout(BottomOptionsRow);
+	BottomOptionsLayout->setContentsMargins(0, 0, 0, 0);
+	BottomOptionsLayout->addStretch();
+	BottomOptionsLayout->addWidget(m_pHighlightSame);
+    QFrame* separator = new QFrame(BottomOptionsRow);
+    separator->setFrameShape(QFrame::VLine);
+    separator->setFrameShadow(QFrame::Sunken);
+	BottomOptionsLayout->addWidget(separator);
+	BottomOptionsLayout->addWidget(m_pHideEmpty);
+	BottomOptionsLayout->addWidget(m_pHideReused);
+    QFrame* separator2 = new QFrame(BottomOptionsRow);
+    separator2->setFrameShape(QFrame::VLine);
+    separator2->setFrameShadow(QFrame::Sunken);
+	BottomOptionsLayout->addWidget(separator2);
+	BottomOptionsLayout->addWidget(m_pMergeRenamed);
+	BottomOptionsLayout->addWidget(m_pGroupByParent);
+	ViewOptionsLayout->addWidget(TopOptionsRow);
+	ViewOptionsLayout->addWidget(BottomOptionsRow);
 	ViewOptionsWidget->setVisible(false);
-	m_pLoadIndicator = new QLabel(this);
+	QWidget* LoadControl = new QWidget(this);
+	m_pAutoLoad = new QCheckBox(tr("Auto Load"), LoadControl);
+	m_pAutoLoad->setChecked(
+		theConf->GetBool("FileHistoryWindow/AutoLoad", true));
+	m_pAutoLoad->setToolTip(
+		tr("Automatically load retained versions when this window opens."));
+	m_pLoadIndicator = new QLabel(LoadControl);
 	m_pLoadIndicator->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	m_pLoadIndicator->setMinimumWidth(
 		fontMetrics().horizontalAdvance(
 			tr("Refreshing... 0000000000 / 0000000000 files")) + 8);
-	m_pLoadIndicator->setText(tr("Loading..."));
+	m_pLoadStack = new QStackedLayout(LoadControl);
+	m_pLoadStack->setContentsMargins(0, 0, 0, 0);
+	m_pLoadStack->addWidget(m_pAutoLoad);
+	m_pLoadStack->addWidget(m_pLoadIndicator);
+	m_pLoadStack->setCurrentWidget(m_pAutoLoad);
 	m_pRefreshButton = new QPushButton(
 		CSandMan::GetIcon("Refresh"), tr("Refresh"), this);
 	m_pRefreshButton->setEnabled(false);
 
 	ToolLayout->addWidget(SearchButton);
 	ToolLayout->addWidget(m_pFilterScope);
-	ToolLayout->addWidget(m_pFinder);
-	ToolLayout->addStretch();
-	ToolLayout->addWidget(m_pLoadIndicator);
+	ToolLayout->addWidget(m_pFinder, 1);
+	ToolLayout->addWidget(LoadControl);
 	ToolLayout->addWidget(m_pRefreshButton);
 	ToolLayout->addWidget(m_pViewOptionsButton);
 	MainLayout->addLayout(ToolLayout);
@@ -791,9 +840,17 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	connect(m_pHighlightSame, &QCheckBox::toggled,
 		this, [this](bool) { UpdateSelection(); });
 	connect(m_pHideEmpty, &QCheckBox::toggled,
-		this, [this](bool) { ApplyFilter(); });
+		this, [this](bool) {
+			if (!m_TrackFileViewAdjusting)
+				m_TrackFileHideEmptyOverride = false;
+			ApplyFilter();
+		});
 	connect(m_pHideReused, &QCheckBox::toggled,
-		this, [this](bool) { ApplyFilter(); });
+		this, [this](bool) {
+			if (!m_TrackFileViewAdjusting)
+				m_TrackFileHideReusedOverride = false;
+			ApplyFilter();
+		});
 	connect(m_pMergeRenamed, &QCheckBox::toggled,
 		this, [this](bool) { RebuildTree(true); });
 	connect(m_pGroupByParent, &QCheckBox::toggled,
@@ -851,8 +908,49 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 		m_pTree->setColumnWidth(7, 300);
 	}
 
+	connect(FileChanges, &CFileStateHistoryWidget::TrackFiles, this,
+		[this, Tabs, RetainedVersions](const QStringList& Hashes,
+			const QStringList& FileNames) {
+			QDir RetainedArtifacts(QDir(m_pBox->GetFileRoot()).filePath(
+				"FileHistory\\Artifacts"));
+			if (!m_pBox->GetBool("FileHistory", true, true, true) ||
+					!RetainedArtifacts.exists() ||
+					RetainedArtifacts.entryList(
+						QDir::Dirs | QDir::NoDotAndDotDot).isEmpty()) {
+				QMessageBox::information(this, tr("Retained File Versions"), tr(
+					"Retained file history is disabled or no retained evidence "
+					"exists for this sandbox."));
+				return;
+			}
+			QStringList Values = Hashes;
+			for (const QString& FileName : FileNames)
+				AppendUniqueCaseInsensitive(Values, FileName);
+			QString Expression;
+			HistoryWindowUtils::EFilterBuildResult Result =
+				HistoryWindowUtils::BuildSelectionFilter(
+					Values, false, Expression);
+			if (Result == HistoryWindowUtils::eFilterTooLarge) {
+				QMessageBox::warning(this, tr("Retained File Versions"), tr(
+					"The selected hashes and file names are too large to create "
+					"a safe regular-expression filter."));
+				return;
+			}
+			if (Result != HistoryWindowUtils::eFilterReady)
+				return;
+			Tabs->setCurrentWidget(RetainedVersions);
+			PrepareTrackFileView();
+			int Scope = Hashes.isEmpty() ? ePathField
+				: FileNames.isEmpty() ? eHashField : eAllFields;
+			int ScopeIndex = m_pFilterScope->findData(Scope);
+			if (ScopeIndex >= 0)
+				m_pFilterScope->setCurrentIndex(ScopeIndex);
+			m_SelectionExcludePattern.clear();
+			m_pFinder->SetSearchText(Expression, true);
+		});
+
 	m_pFinder->Open();
-	QTimer::singleShot(100, this, SLOT(Reload()));
+	if (m_pAutoLoad->isChecked())
+		QTimer::singleShot(100, this, SLOT(Reload()));
 }
 
 
@@ -860,16 +958,36 @@ CFileHistoryWindow::~CFileHistoryWindow()
 {
 	theConf->SetBlob("FileHistoryWindow/Window_Geometry", saveGeometry());
 	theConf->SetBlob("FileHistoryWindow/Tree_Columns", m_pTree->header()->saveState());
-	theConf->SetValue(
-		"FileHistoryWindow/HideEmptyFiles", m_pHideEmpty->isChecked());
-	theConf->SetValue(
-		"FileHistoryWindow/HideReusedFiles", m_pHideReused->isChecked());
+	theConf->SetValue("FileHistoryWindow/LastTab", m_LastTab);
+	theConf->SetValue("FileHistoryWindow/HideEmptyFiles",
+		m_TrackFileHideEmptyOverride ? m_TrackFileHideEmptyValue
+			: m_pHideEmpty->isChecked());
+	theConf->SetValue("FileHistoryWindow/HideReusedFiles",
+		m_TrackFileHideReusedOverride ? m_TrackFileHideReusedValue
+			: m_pHideReused->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/MergeRenamedPaths", m_pMergeRenamed->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/GroupByParentFolder", m_pGroupByParent->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/HighlightSameHash", m_pHighlightSame->isChecked());
+	theConf->SetValue("FileHistoryWindow/AutoLoad", m_pAutoLoad->isChecked());
+}
+
+void CFileHistoryWindow::SetProgressVisible(bool Visible)
+{
+	if (Visible)
+		m_pLoadStack->setCurrentWidget(m_pLoadIndicator);
+	else
+		m_pLoadStack->setCurrentWidget(m_pAutoLoad);
+}
+
+
+void CFileHistoryWindow::SetHistoryTab(int Index)
+{
+	if (Index < 0 || Index >= 2)
+		return;
+	m_pTabs->setCurrentIndex(Index);
 }
 
 
@@ -883,15 +1001,42 @@ void CFileHistoryWindow::closeEvent(QCloseEvent* e)
 
 void CFileHistoryWindow::Reload()
 {
-	if (m_Loading)
+	if (m_Loading) {
+		m_AbortRequested = true;
 		return;
+	}
 
+	m_AbortRequested = false;
 	m_Loading = true;
-	m_pRefreshButton->setEnabled(false);
+	m_pRefreshButton->setIcon(CSandMan::GetIcon("Stop"));
+	m_pRefreshButton->setText(tr("Abort"));
+	m_pRefreshButton->setEnabled(true);
+	m_pViewOptionsButton->setEnabled(false);
+	m_pMergeRenamed->setEnabled(false);
+	m_pGroupByParent->setEnabled(false);
+	SetProgressVisible(true);
 	m_pLoadIndicator->setText(
 		m_Loaded ? tr("Refreshing...") : tr("Loading..."));
 	m_pLoadIndicator->repaint();
 	m_pRefreshButton->repaint();
+	auto AbortReload = [this]() {
+		for (QTreeWidgetItem* Item : m_EvidenceItems)
+			delete Item;
+		m_EvidenceItems.clear();
+		m_PathLineages.clear();
+		m_pTree->setSortingEnabled(true);
+		m_pLoadIndicator->clear();
+		SetProgressVisible(false);
+		m_pStatus->setText(tr("Refresh aborted."));
+		m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+		m_pRefreshButton->setText(tr("Refresh"));
+		m_pRefreshButton->setEnabled(true);
+		m_pViewOptionsButton->setEnabled(true);
+		m_pMergeRenamed->setEnabled(true);
+		m_pGroupByParent->setEnabled(true);
+		m_AbortRequested = false;
+		m_Loading = false;
+	};
 
 	QSet<QString> CollapsedItems;
 	bool HadParents = m_pTree->topLevelItemCount() > 0;
@@ -920,8 +1065,18 @@ void CFileHistoryWindow::Reload()
 		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 10 * 1024, true, true));
 	QString HistoryPath = QDir::cleanPath(
 		m_pBox->GetFileRoot() + "\\FileHistory");
+	QCoreApplication::processEvents(QEventLoop::AllEvents);
+	if (m_AbortRequested) {
+		AbortReload();
+		return;
+	}
 	if (m_pBox->GetActiveProcessCount() == 0)
 		RemoveOrphanedBlobs(HistoryPath);
+	QCoreApplication::processEvents(QEventLoop::AllEvents);
+	if (m_AbortRequested) {
+		AbortReload();
+		return;
+	}
 	QString ArtifactsPath = QDir::cleanPath(HistoryPath + "\\Artifacts");
 	QDir Artifacts(ArtifactsPath);
 	QFileInfoList ArtifactList = Artifacts.entryInfoList(
@@ -938,7 +1093,17 @@ void CFileHistoryWindow::Reload()
 	m_pLoadIndicator->setText(
 		tr("%1 0 / %2 files").arg(LoadPrefix).arg(ArtifactCount));
 	m_pLoadIndicator->repaint();
+	QCoreApplication::processEvents(QEventLoop::AllEvents);
+	if (m_AbortRequested) {
+		AbortReload();
+		return;
+	}
 	m_PathLineages = ReadPathLineages(HistoryPath);
+	QCoreApplication::processEvents(QEventLoop::AllEvents);
+	if (m_AbortRequested) {
+		AbortReload();
+		return;
+	}
 	quint64 UsedVersions = 0;
 	quint64 AccountedSize = 0;
 	quint64 StoredSize = 0;
@@ -958,6 +1123,11 @@ void CFileHistoryWindow::Reload()
 					.arg(LoadPrefix).arg(ArtifactIndex).arg(ArtifactCount));
 			m_pLoadIndicator->repaint();
 		}
+		QCoreApplication::processEvents(QEventLoop::AllEvents);
+		if (m_AbortRequested) {
+			AbortReload();
+			return;
+		}
 
 		QDir ArtifactDir(ArtifactInfo.absoluteFilePath());
 		QMap<QString, SHistoryFilePair> Pairs;
@@ -976,6 +1146,11 @@ void CFileHistoryWindow::Reload()
 		}
 
 		for (auto PairIt = Pairs.constBegin(); PairIt != Pairs.constEnd(); ++PairIt) {
+			QCoreApplication::processEvents(QEventLoop::AllEvents);
+			if (m_AbortRequested) {
+				AbortReload();
+				return;
+			}
 			const SHistoryFilePair& Pair = PairIt.value();
 			QMap<QString, QString> Fields;
 			bool MetadataValid = !Pair.MetadataPath.isEmpty()
@@ -1116,7 +1291,13 @@ void CFileHistoryWindow::Reload()
 		.arg(FormatLimitKB(MaxFileSizeKB)));
 	m_pRemoveHistory->setEnabled(QDir(HistoryPath).exists());
 	m_pLoadIndicator->clear();
+	SetProgressVisible(false);
+	m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+	m_pRefreshButton->setText(tr("Refresh"));
 	m_pRefreshButton->setEnabled(true);
+	m_pViewOptionsButton->setEnabled(true);
+	m_pMergeRenamed->setEnabled(true);
+	m_pGroupByParent->setEnabled(true);
 	m_Loading = false;
 	m_Loaded = true;
 }
@@ -1220,6 +1401,7 @@ void CFileHistoryWindow::RebuildTree(bool PreserveState)
 		if (!PathItem) {
 			PathItem = new CHistoryTreeItem(m_pTree);
 			PathItem->setText(0, LogicalPath);
+			PathItem->setData(0, Qt::ToolTipRole, LogicalPath);
 			PathItem->setIcon(0, CSandMan::GetIcon("File"));
 			PathItem->setData(0, eFolderPath,
 				Item->data(0, eFolderPath));
@@ -1324,21 +1506,28 @@ void CFileHistoryWindow::RebuildTree(bool PreserveState)
 			if (TopIndex >= 0)
 				FolderItem->addChild(m_pTree->takeTopLevelItem(TopIndex));
 		}
-		for (auto FolderIt = FolderItems.constBegin();
-				FolderIt != FolderItems.constEnd(); ++FolderIt) {
-			QTreeWidgetItem* FolderItem = FolderIt.value();
-			int Versions = 0;
-			quint64 LatestDate = 0;
-			quint64 StoredFolderSize = 0;
-			for (int Index = 0; Index < FolderItem->childCount(); ++Index) {
-				QTreeWidgetItem* PathItem = FolderItem->child(Index);
-				Versions += PathItem->childCount();
-				LatestDate = qMax(LatestDate,
-					PathItem->data(2, eSortValue).toULongLong());
-				AddSize(StoredFolderSize,
-					PathItem->data(5, eSortValue).toULongLong());
-			}
-			FolderItem->setText(1, QString::number(Versions));
+        for (auto FolderIt = FolderItems.constBegin();
+                FolderIt != FolderItems.constEnd(); ++FolderIt) {
+            QTreeWidgetItem* FolderItem = FolderIt.value();
+            int Versions = 0;
+            quint64 LatestDate = 0;
+            quint64 StoredFolderSize = 0;
+            QString EvidenceFolder;
+            for (int Index = 0; Index < FolderItem->childCount(); ++Index) {
+                QTreeWidgetItem* PathItem = FolderItem->child(Index);
+                Versions += PathItem->childCount();
+                quint64 PathDate = PathItem->data(2,
+                    eSortValue).toULongLong();
+                if (PathDate >= LatestDate) {
+                    LatestDate = PathDate;
+                    EvidenceFolder = PathItem->data(
+                        0, eFolderPath).toString();
+                }
+                AddSize(StoredFolderSize,
+                    PathItem->data(5, eSortValue).toULongLong());
+            }
+            FolderItem->setData(0, eFolderPath, EvidenceFolder);
+            FolderItem->setText(1, QString::number(Versions));
 			FolderItem->setData(1, eSortValue, Versions);
 			FolderItem->setText(5, FormatSize(StoredFolderSize));
 			FolderItem->setData(5, eSortValue, StoredFolderSize);
@@ -1348,8 +1537,9 @@ void CFileHistoryWindow::RebuildTree(bool PreserveState)
 						QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")));
 				FolderItem->setData(2, eSortValue, LatestDate);
 			}
-			FolderItem->setToolTip(0,
-				tr("Contains %1 retained file path(s).")
+			FolderItem->setData(0, Qt::ToolTipRole,
+				tr("%1\nContains %2 retained file path(s).")
+					.arg(FolderItem->text(0))
 					.arg(FolderItem->childCount()));
 		}
 	}
@@ -1657,12 +1847,18 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 	QStringList FileNameRules;
 	QStringList ExtensionRules;
 	QStringList ProcessRules;
+	bool HasFileNameSelection = false;
+	bool HasFolderNameSelection = false;
 	foreach(QTreeWidgetItem* Selected, m_pTree->selectedItems()) {
 		if (Selected->isHidden())
 			continue;
 		QString LogicalPath = Selected->data(0, eLogicalPath).toString();
 		bool HasLogicalPath = !LogicalPath.isEmpty()
 			&& !LogicalPath.startsWith(QLatin1Char('('));
+		if (Selected->data(0, eIsGroup).toBool())
+			HasFolderNameSelection = true;
+		else if (HasLogicalPath)
+			HasFileNameSelection = true;
 		if (HasLogicalPath) {
 			AppendUniqueCaseInsensitive(FullPathRules, LogicalPath);
 			QFileInfo FileInfo(LogicalPath);
@@ -1687,25 +1883,11 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 				ImageName + QStringLiteral(",*"));
 		}
 	}
-	QMenu* ExcludeMenu = Menu.addMenu(
-		CSandMan::GetIcon("Close"), tr("Exclude for Next Run"));
-	QAction* ExcludeFullPath = ExcludeMenu->addAction(tr("Full Path"));
-	QAction* ExcludeFileName = ExcludeMenu->addAction(tr("File Name Only"));
-	QAction* ExcludeExtension = ExcludeMenu->addAction(tr("Extension"));
-	QAction* ExcludeProcess = ExcludeMenu->addAction(tr("Process"));
-	ExcludeFullPath->setEnabled(!FullPathRules.isEmpty());
-	ExcludeFileName->setEnabled(!FileNameRules.isEmpty());
-	ExcludeExtension->setEnabled(!ExtensionRules.isEmpty());
-	ExcludeProcess->setEnabled(!ProcessRules.isEmpty());
-	connect(ExcludeFullPath, &QAction::triggered, this,
-		[this, FullPathRules]() { AddExcludeRules(FullPathRules); });
-	connect(ExcludeFileName, &QAction::triggered, this,
-		[this, FileNameRules]() { AddExcludeRules(FileNameRules); });
-	connect(ExcludeExtension, &QAction::triggered, this,
-		[this, ExtensionRules]() { AddExcludeRules(ExtensionRules); });
-	connect(ExcludeProcess, &QAction::triggered, this,
-		[this, ProcessRules]() { AddExcludeRules(ProcessRules); });
-
+	QString NameOnlyLabel = HasFolderNameSelection && !HasFileNameSelection
+		? tr("Folder Name Only")
+		: HasFolderNameSelection
+			? tr("File or Folder Name Only")
+			: tr("File Name Only");
 	QStringList LocalExclusions = m_pBox->GetTextList(
 		"KeepFileVersionsExclude", false, false, false);
 	auto LocalMatches = [&LocalExclusions](const QStringList& Candidates) {
@@ -1720,28 +1902,31 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		}
 		return Matches;
 	};
-	QMenu* RemoveExcludeMenu = Menu.addMenu(
-		CSandMan::GetIcon("Close"), tr("Remove Exclusion"));
-	QAction* RemoveFullPath = RemoveExcludeMenu->addAction(tr("Full Path"));
-	QAction* RemoveFileName = RemoveExcludeMenu->addAction(tr("File Name Only"));
-	QAction* RemoveExtension = RemoveExcludeMenu->addAction(tr("Extension"));
-	QAction* RemoveProcess = RemoveExcludeMenu->addAction(tr("Process"));
 	QStringList LocalFullPathRules = LocalMatches(FullPathRules);
 	QStringList LocalFileNameRules = LocalMatches(FileNameRules);
 	QStringList LocalExtensionRules = LocalMatches(ExtensionRules);
 	QStringList LocalProcessRules = LocalMatches(ProcessRules);
-	RemoveFullPath->setEnabled(!LocalFullPathRules.isEmpty());
-	RemoveFileName->setEnabled(!LocalFileNameRules.isEmpty());
-	RemoveExtension->setEnabled(!LocalExtensionRules.isEmpty());
-	RemoveProcess->setEnabled(!LocalProcessRules.isEmpty());
-	connect(RemoveFullPath, &QAction::triggered, this,
-		[this, LocalFullPathRules]() { RemoveExcludeRules(LocalFullPathRules); });
-	connect(RemoveFileName, &QAction::triggered, this,
-		[this, LocalFileNameRules]() { RemoveExcludeRules(LocalFileNameRules); });
-	connect(RemoveExtension, &QAction::triggered, this,
-		[this, LocalExtensionRules]() { RemoveExcludeRules(LocalExtensionRules); });
-	connect(RemoveProcess, &QAction::triggered, this,
-		[this, LocalProcessRules]() { RemoveExcludeRules(LocalProcessRules); });
+	if (!LocalFullPathRules.isEmpty() || !LocalFileNameRules.isEmpty() ||
+			!LocalExtensionRules.isEmpty() || !LocalProcessRules.isEmpty()) {
+		QMenu* RemoveExcludeMenu = Menu.addMenu(
+			CSandMan::GetIcon("Close"), tr("Remove Exclusion"));
+		QAction* RemoveFullPath = RemoveExcludeMenu->addAction(tr("Full Path"));
+		QAction* RemoveFileName = RemoveExcludeMenu->addAction(NameOnlyLabel);
+		QAction* RemoveExtension = RemoveExcludeMenu->addAction(tr("Extension"));
+		QAction* RemoveProcess = RemoveExcludeMenu->addAction(tr("Process"));
+		RemoveFullPath->setEnabled(!LocalFullPathRules.isEmpty());
+		RemoveFileName->setEnabled(!LocalFileNameRules.isEmpty());
+		RemoveExtension->setEnabled(!LocalExtensionRules.isEmpty());
+		RemoveProcess->setEnabled(!LocalProcessRules.isEmpty());
+		connect(RemoveFullPath, &QAction::triggered, this,
+			[this, LocalFullPathRules]() { RemoveExcludeRules(LocalFullPathRules); });
+		connect(RemoveFileName, &QAction::triggered, this,
+			[this, LocalFileNameRules]() { RemoveExcludeRules(LocalFileNameRules); });
+		connect(RemoveExtension, &QAction::triggered, this,
+			[this, LocalExtensionRules]() { RemoveExcludeRules(LocalExtensionRules); });
+		connect(RemoveProcess, &QAction::triggered, this,
+			[this, LocalProcessRules]() { RemoveExcludeRules(LocalProcessRules); });
+	}
 
 	QAction* OpenFolder = Menu.addAction(
 		CSandMan::GetIcon("Folder"), tr("Open Evidence Folder"));
@@ -1751,6 +1936,31 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 	Menu.addSeparator();
 	QAction* UseFilter = Menu.addAction(tr("Use as Filter"));
 	QAction* ExcludeFilter = Menu.addAction(tr("Exclude from View"));
+	QMenu* ExcludeMenu = Menu.addMenu(
+		CSandMan::GetIcon("Close"), tr("Exclude from Capture"));
+	const QString ExcludeCaptureTip = tr(
+		"Exclude matching paths from future retained-version captures. "
+		"Existing retained versions are not removed.");
+	ExcludeMenu->menuAction()->setToolTip(ExcludeCaptureTip);
+	QAction* ExcludeFullPath = ExcludeMenu->addAction(tr("Full Path"));
+	QAction* ExcludeFileName = ExcludeMenu->addAction(NameOnlyLabel);
+	QAction* ExcludeExtension = ExcludeMenu->addAction(tr("Extension"));
+	QAction* ExcludeProcess = ExcludeMenu->addAction(tr("Process"));
+	for (QAction* Action : { ExcludeFullPath, ExcludeFileName,
+			ExcludeExtension, ExcludeProcess })
+		Action->setToolTip(ExcludeCaptureTip);
+	ExcludeFullPath->setEnabled(!FullPathRules.isEmpty());
+	ExcludeFileName->setEnabled(!FileNameRules.isEmpty());
+	ExcludeExtension->setEnabled(!ExtensionRules.isEmpty());
+	ExcludeProcess->setEnabled(!ProcessRules.isEmpty());
+	connect(ExcludeFullPath, &QAction::triggered, this,
+		[this, FullPathRules]() { AddExcludeRules(FullPathRules); });
+	connect(ExcludeFileName, &QAction::triggered, this,
+		[this, FileNameRules]() { AddExcludeRules(FileNameRules); });
+	connect(ExcludeExtension, &QAction::triggered, this,
+		[this, ExtensionRules]() { AddExcludeRules(ExtensionRules); });
+	connect(ExcludeProcess, &QAction::triggered, this,
+		[this, ProcessRules]() { AddExcludeRules(ProcessRules); });
 	QAction* TrackFile = Menu.addAction(tr("Track File"));
 	bool HasFilterValue = false;
 	foreach(QTreeWidgetItem* Selected, m_pTree->selectedItems()) {
@@ -1778,6 +1988,7 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 	connect(UseFilter, SIGNAL(triggered(bool)), this, SLOT(UseAsFilter()));
 	connect(ExcludeFilter, SIGNAL(triggered(bool)), this, SLOT(ExcludeFromView()));
 	connect(TrackFile, SIGNAL(triggered(bool)), this, SLOT(TrackFile()));
+	Menu.addSeparator();
 	m_pCopyCell->setEnabled(!Item->text(Column).isEmpty());
 	m_pCopyRow->setEnabled(!m_pTree->selectedItems().isEmpty());
 	m_pCopyPanel->setEnabled(m_pTree->topLevelItemCount() != 0);
@@ -2202,14 +2413,30 @@ void CFileHistoryWindow::TrackFile()
 			"0-byte files, not only the selected path."));
 	}
 
-	m_pViewOptionsButton->setChecked(true);
-	m_pHideEmpty->setChecked(false);
-	m_pHideReused->setChecked(false);
+	PrepareTrackFileView();
 	int ScopeIndex = m_pFilterScope->findData(eHashField);
 	if (ScopeIndex >= 0)
 		m_pFilterScope->setCurrentIndex(ScopeIndex);
 	m_SelectionExcludePattern.clear();
 	m_pFinder->SetSearchText(Expression, true);
+}
+
+
+void CFileHistoryWindow::PrepareTrackFileView()
+{
+	m_pViewOptionsButton->setChecked(true);
+	if (!m_TrackFileHideEmptyOverride) {
+		m_TrackFileHideEmptyValue = m_pHideEmpty->isChecked();
+		m_TrackFileHideEmptyOverride = true;
+	}
+	if (!m_TrackFileHideReusedOverride) {
+		m_TrackFileHideReusedValue = m_pHideReused->isChecked();
+		m_TrackFileHideReusedOverride = true;
+	}
+	m_TrackFileViewAdjusting = true;
+	m_pHideEmpty->setChecked(false);
+	m_pHideReused->setChecked(false);
+	m_TrackFileViewAdjusting = false;
 }
 
 
@@ -2738,7 +2965,6 @@ void CFileHistoryWindow::ConfigureLimits()
 				"FileHistoryLogWarnings", NewLogWarningsValue));
 	}
 	theGUI->CheckResults(Results, this);
-	Reload();
 }
 
 
