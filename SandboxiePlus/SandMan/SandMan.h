@@ -104,6 +104,7 @@ public:
 
 	void				EditIni(const QString& IniPath, bool bPlus = false);
 	bool				OpenFileInEditor(const QString& FilePath, quintptr* pProcessHandle = NULL, bool bElevated = false);
+	bool				OpenFileInEditor(const QString& FilePath, const QString& EditorPath, quintptr* pProcessHandle = NULL, bool bElevated = false);
 
 	void				UpdateDrives();
 	void				UpdateForceUSB();

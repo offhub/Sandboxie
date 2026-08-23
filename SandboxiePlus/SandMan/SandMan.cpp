@@ -4563,7 +4563,16 @@ void CSandMan::EditIni(const QString& IniPath, bool bPlus)
 bool CSandMan::OpenFileInEditor(
 	const QString& FilePath, quintptr* pProcessHandle, bool bElevated)
 {
-	std::wstring Editor = theConf->GetString("Options/Editor", "notepad.exe").toStdWString();
+	return OpenFileInEditor(FilePath,
+		theConf->GetString("Options/Editor", "notepad.exe"),
+		pProcessHandle, bElevated);
+}
+
+bool CSandMan::OpenFileInEditor(
+	const QString& FilePath, const QString& EditorPath,
+	quintptr* pProcessHandle, bool bElevated)
+{
+	std::wstring Editor = EditorPath.toStdWString();
 	std::wstring Parameters = L"\"" + FilePath.toStdWString() + L"\"";
 
 	SHELLEXECUTEINFOW si = { 0 };
