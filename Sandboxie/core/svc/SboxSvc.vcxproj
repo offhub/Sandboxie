@@ -541,6 +541,8 @@
     <ClCompile Include="pipeserver.cpp" />
     <ClCompile Include="ProcessServer.cpp" />
     <ClCompile Include="RegistryHistory.cpp" />
+    <ClCompile Include="HistoryPath.cpp" />
+    <ClCompile Include="FileStateHistory.cpp" />
     <ClCompile Include="proxyhandle.cpp" />
     <ClCompile Include="pstoreserver.cpp" />
     <ClCompile Include="queueserver.cpp" />
@@ -627,6 +629,8 @@
     <ClInclude Include="misc.h" />
     <ClInclude Include="MountManager.h" />
     <ClInclude Include="RegistryHistory.h" />
+    <ClInclude Include="HistoryPath.h" />
+    <ClInclude Include="FileStateHistory.h" />
     <ClInclude Include="MountManagerWire.h" />
     <ClInclude Include="msgids.h" />
     <ClInclude Include="namedpipeserver.h" />

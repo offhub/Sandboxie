@@ -17,10 +17,13 @@ SB_PROGRESS CCleanUpJob::Start()
 		QString Current;
 		QString Default = pBox->GetDefaultSnapshot(&Current);
 		Status = pBox->SelectSnapshotEx(m_UseCurrentSnapshot ? Current : Default,
-			m_Options.DeleteFileHistory(), m_Options.DeleteRegistryHistory());
+			m_Options.DeleteFileHistory(), m_Options.DeleteRegistryHistory(),
+			m_Options.DeleteFileStateHistory);
 	}
-	else if (!m_Options.DeleteFileHistory() || !m_Options.DeleteRegistryHistory())
-		Status = pBox->CleanBoxExceptHistory(!m_Options.DeleteFileHistory(), !m_Options.DeleteRegistryHistory());
+	else if (!m_Options.DeleteFileHistory() || !m_Options.DeleteRegistryHistory() ||
+			!m_Options.DeleteFileStateHistory)
+		Status = pBox->CleanBoxExceptHistory(!m_Options.DeleteFileHistory(),
+			!m_Options.DeleteRegistryHistory(), !m_Options.DeleteFileStateHistory);
 	else // if everything is selected, use the normal cleaning procedure
 		Status = pBox->CleanBox();
 

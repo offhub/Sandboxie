@@ -212,6 +212,16 @@
          </property>
         </widget>
        </item>
+       <item row="8" column="2" colspan="2">
+        <widget class="QCheckBox" name="chkDeleteFileStateHistory">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Delete file changes history</string>
+         </property>
+        </widget>
+       </item>
        </layout>
       </item>
      </layout>
@@ -230,6 +240,7 @@
   <tabstop>chkDeleteSnapshots</tabstop>
   <tabstop>chkDeleteFileHistory</tabstop>
   <tabstop>chkDeleteRegistryHistory</tabstop>
+  <tabstop>chkDeleteFileStateHistory</tabstop>
   <tabstop>btnDeleteAll</tabstop>
   <tabstop>btnClose</tabstop>
  </tabstops>

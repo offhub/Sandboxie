@@ -9,7 +9,8 @@ class CCompressDialog : public QDialog
 	Q_OBJECT
 
 public:
-	CCompressDialog(QWidget *parent = Q_NULLPTR, bool HasFileHistory = true, bool HasRegistryHistory = true);
+	CCompressDialog(QWidget *parent = Q_NULLPTR, bool HasFileHistory = true, bool HasRegistryHistory = true,
+		bool HasFileStateHistory = true);
 	~CCompressDialog();
 
 	QString GetFormat();
@@ -17,6 +18,7 @@ public:
 	bool MakeSolid();
 	bool IncludeFileHistory() const;
 	bool IncludeRegistryHistory() const;
+	bool IncludeFileStateHistory() const;
 
 	void SetMustEncrypt();
 	bool UseEncryption();

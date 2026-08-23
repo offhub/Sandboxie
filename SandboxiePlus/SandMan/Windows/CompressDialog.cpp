@@ -5,7 +5,8 @@
 #include "../MiscHelpers/Common/Common.h"
 
 
-CCompressDialog::CCompressDialog(QWidget *parent, bool HasFileHistory, bool HasRegistryHistory)
+CCompressDialog::CCompressDialog(QWidget *parent, bool HasFileHistory, bool HasRegistryHistory,
+	bool HasFileStateHistory)
 	: QDialog(parent)
 {
 	Qt::WindowFlags flags = windowFlags();
@@ -36,7 +37,8 @@ CCompressDialog::CCompressDialog(QWidget *parent, bool HasFileHistory, bool HasR
 	ui.cmbCompression->setCurrentIndex(ui.cmbCompression->findData(theConf->GetInt("Options/ExportCompression", 3)));
 	ui.chkFileHistory->setVisible(HasFileHistory);
 	ui.chkRegistryHistory->setVisible(HasRegistryHistory);
-	ui.grpHistory->setVisible(HasFileHistory || HasRegistryHistory);
+	ui.chkFileStateHistory->setVisible(HasFileStateHistory);
+	ui.grpHistory->setVisible(HasFileHistory || HasRegistryHistory || HasFileStateHistory);
 	QSizePolicy WarningPolicy = ui.lblHistoryWarning->sizePolicy();
 	WarningPolicy.setRetainSizeWhenHidden(HasFileHistory);
 	ui.lblHistoryWarning->setSizePolicy(WarningPolicy);
@@ -84,6 +86,11 @@ bool CCompressDialog::IncludeFileHistory() const
 bool CCompressDialog::IncludeRegistryHistory() const
 {
 	return ui.chkRegistryHistory->isChecked();
+}
+
+bool CCompressDialog::IncludeFileStateHistory() const
+{
+	return ui.chkFileStateHistory->isChecked();
 }
 
 void CCompressDialog::SetMustEncrypt()

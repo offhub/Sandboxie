@@ -32,6 +32,7 @@
 
 static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
 	bool HasSnapshots, bool HasFileHistory, bool HasRegistryHistory,
+	bool HasFileStateHistory,
 	SDeleteContentOptions& Options)
 {
 	QDialog Dialog(Parent);
@@ -50,6 +51,10 @@ static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
 	DeleteFileHistory->setChecked(Options.DeleteFileHistory() && HasFileHistory);
 	DeleteFileHistory->setVisible(HasFileHistory);
 	Layout->addWidget(DeleteFileHistory);
+	QCheckBox* DeleteFileStateHistory = new QCheckBox(CSbieView::tr("Delete file changes history"), &Dialog);
+	DeleteFileStateHistory->setChecked(Options.DeleteFileStateHistory && HasFileStateHistory);
+	DeleteFileStateHistory->setVisible(HasFileStateHistory);
+	Layout->addWidget(DeleteFileStateHistory);
 	QCheckBox* DeleteRegistryHistory = new QCheckBox(CSbieView::tr("Delete registry history"), &Dialog);
 	DeleteRegistryHistory->setChecked(Options.DeleteRegistryHistory() && HasRegistryHistory);
 	DeleteRegistryHistory->setVisible(HasRegistryHistory);
@@ -74,20 +79,21 @@ static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
 
 	EDeleteHistoryMode HistoryMode = eDeleteHistoryNone;
 	if (DeleteFileHistory->isChecked() && DeleteRegistryHistory->isChecked())
-		HistoryMode = eDeleteHistoryBoth;
+		HistoryMode = eDeleteHistoryAll;
 	else if (DeleteFileHistory->isChecked())
-		HistoryMode = eDeleteHistoryFile;
+		HistoryMode = eDeleteHistoryRetainedFiles;
 	else if (DeleteRegistryHistory->isChecked())
 		HistoryMode = eDeleteHistoryRegistry;
-	Options = SDeleteContentOptions(DeleteSnapshots->isChecked(), HistoryMode);
+	Options = SDeleteContentOptions(DeleteSnapshots->isChecked(), HistoryMode,
+		DeleteFileStateHistory->isChecked());
 	return true;
 }
 
 static bool SelectHistoryTransferOptions(QWidget* Parent, const QString& Title,
-	bool HasFileHistory, bool HasRegistryHistory,
-	bool& IncludeFileHistory, bool& IncludeRegistryHistory)
+	bool HasFileHistory, bool HasRegistryHistory, bool HasFileStateHistory,
+	bool& IncludeFileHistory, bool& IncludeRegistryHistory, bool& IncludeFileStateHistory)
 {
-	if (!HasFileHistory && !HasRegistryHistory)
+	if (!HasFileHistory && !HasRegistryHistory && !HasFileStateHistory)
 		return true;
 
 	QDialog Dialog(Parent);
@@ -95,10 +101,13 @@ static bool SelectHistoryTransferOptions(QWidget* Parent, const QString& Title,
 	QGridLayout* Layout = new QGridLayout(&Dialog);
 	QCheckBox* FileHistory = new QCheckBox(CSbieView::tr("Include retained file versions"), &Dialog);
 	QCheckBox* RegistryHistory = new QCheckBox(CSbieView::tr("Include registry history"), &Dialog);
+	QCheckBox* FileStateHistory = new QCheckBox(CSbieView::tr("Include file changes history"), &Dialog);
 	FileHistory->setVisible(HasFileHistory);
 	RegistryHistory->setVisible(HasRegistryHistory);
+	FileStateHistory->setVisible(HasFileStateHistory);
 	Layout->addWidget(FileHistory, 0, 0);
 	Layout->addWidget(RegistryHistory, 1, 0);
+	Layout->addWidget(FileStateHistory, 2, 0);
 	QLabel* Warning = new QLabel(CSbieView::tr(
 		"File History may use hard links to share data in the source sandbox. "
 		"Duplication copies each history path as an individual file, so the destination may require substantially more storage."), &Dialog);
@@ -108,18 +117,19 @@ static bool SelectHistoryTransferOptions(QWidget* Parent, const QString& Title,
 	QSizePolicy WarningPolicy = Warning->sizePolicy();
 	WarningPolicy.setRetainSizeWhenHidden(HasFileHistory);
 	Warning->setSizePolicy(WarningPolicy);
-	Layout->addWidget(Warning, 2, 0);
+	Layout->addWidget(Warning, 3, 0);
 	QObject::connect(FileHistory, &QCheckBox::toggled, Warning, &QWidget::setVisible);
 
 	QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &Dialog);
 	QObject::connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
 	QObject::connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
-	Layout->addWidget(Buttons, 3, 0);
+	Layout->addWidget(Buttons, 4, 0);
 	Dialog.adjustSize();
 	if (theGUI->SafeExec(&Dialog) != QDialog::Accepted)
 		return false;
 	IncludeFileHistory = FileHistory->isChecked();
 	IncludeRegistryHistory = RegistryHistory->isChecked();
+	IncludeFileStateHistory = FileStateHistory->isChecked();
 	return true;
 }
 
@@ -359,7 +369,7 @@ void CSbieView::CreateMenu()
 		m_pMenuPresetsForce->setCheckable(true);
 	
 	m_pMenuTools = m_pMenuBox->addMenu(CSandMan::GetIcon("Maintenance"), tr("Sandbox Tools"));
-		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
+		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("File History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuRegistryHistory = m_pMenuTools->addAction(CSandMan::GetIcon("RegEdit"), tr("Registry History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
@@ -499,7 +509,7 @@ void CSbieView::CreateOldMenu()
 		m_pMenuBrowse = m_pMenuTools->addAction(CSandMan::GetIcon("Tree"), tr("Browse Content"), this, SLOT(OnSandBoxAction()));
 		m_pMenuSnapshots = m_pMenuTools->addAction(CSandMan::GetIcon("Snapshots"), tr("Snapshots Manager"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
-		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
+		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("File History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuRegistryHistory = m_pMenuTools->addAction(CSandMan::GetIcon("RegEdit"), tr("Registry History"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
@@ -1804,9 +1814,11 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 		QString Name = Value.replace(" ", "_");
 		bool IncludeFileHistory = false;
 		bool IncludeRegistryHistory = false;
+		bool IncludeFileStateHistory = false;
 		if (Action == m_pMenuDuplicateEx && !SelectHistoryTransferOptions(this,
 			tr("Duplicate Sandbox with Content"), pSrcBox->HasFileHistory(), pSrcBox->HasRegistryHistory(),
-			IncludeFileHistory, IncludeRegistryHistory))
+			pSrcBox->HasFileStateHistory(), IncludeFileHistory, IncludeRegistryHistory,
+			IncludeFileStateHistory))
 			return;
 		SB_STATUS Status = theAPI->CreateBox(Name, false);
 		
@@ -1841,7 +1853,7 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			if (!pSrcBoxEx)
 				Status = SB_ERR(SB_FailedCopyConf, QVariantList() << SandBoxes.first()->GetName() << tr("Not Created"));
 			SB_PROGRESS Progress = pSrcBoxEx ? pSrcBoxEx->CopyBoxEx(pDestBox->GetFileRoot(),
-				IncludeFileHistory, IncludeRegistryHistory) : SB_PROGRESS(Status);
+				IncludeFileHistory, IncludeRegistryHistory, IncludeFileStateHistory) : SB_PROGRESS(Status);
 
 			if (Progress.GetStatus() == OP_ASYNC)
 				Status = theGUI->AddAsyncOp(Progress.GetValue(), false, tr("Copying: %1").arg(Value));
@@ -2016,7 +2028,8 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 				
 				if (!ConfirmDeleteContent(this, message,
 					SandBoxes.first()->HasSnapshots(), SandBoxes.first()->HasFileHistory(),
-					SandBoxes.first()->HasRegistryHistory(), Options))
+					SandBoxes.first()->HasRegistryHistory(),
+					SandBoxes.first()->HasFileStateHistory(), Options))
 					return;
 			}
 		}
@@ -2028,14 +2041,16 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 			bool HasSnapshots = false;
 			bool HasFileHistory = false;
 			bool HasRegistryHistory = false;
+			bool HasFileStateHistory = false;
 			foreach(const CSandBoxPtr& pBox, SandBoxes) {
 				HasSnapshots |= pBox->HasSnapshots();
 				HasFileHistory |= pBox->HasFileHistory();
 				HasRegistryHistory |= pBox->HasRegistryHistory();
+				HasFileStateHistory |= pBox->HasFileStateHistory();
 			}
 
 			if (!ConfirmDeleteContent(this, message, HasSnapshots,
-				HasFileHistory, HasRegistryHistory, Options))
+				HasFileHistory, HasRegistryHistory, HasFileStateHistory, Options))
 				return;
 		}
 

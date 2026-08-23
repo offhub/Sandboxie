@@ -504,6 +504,7 @@
     <ClCompile Include="Windows\PopUpWindow.cpp" />
     <ClCompile Include="Windows\RecoveryWindow.cpp" />
     <ClCompile Include="Windows\FileHistoryWindow.cpp" />
+    <ClCompile Include="Windows\FileStateHistoryWidget.cpp" />
     <ClCompile Include="Windows\RegistryHistoryWindow.cpp" />
     <ClCompile Include="Windows\SelectBoxWindow.cpp" />
     <ClCompile Include="Windows\SettingsWindow.cpp" />
@@ -535,6 +536,7 @@
 
     <QtMoc Include="Windows\RecoveryWindow.h" />
     <QtMoc Include="Windows\FileHistoryWindow.h" />
+    <QtMoc Include="Windows\FileStateHistoryWidget.h" />
     <QtMoc Include="Windows\RegistryHistoryWindow.h" />
     <QtMoc Include="Windows\PopUpWindow.h" />
     <QtMoc Include="Windows\SnapshotsWindow.h" />

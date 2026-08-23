@@ -31,6 +31,7 @@ HEADERS += ./stdafx.h \
     ./Helpers/MiniDumpFilter.h \
     ./Windows/RecoveryWindow.h \
     ./Windows/FileHistoryWindow.h \
+    ./Windows/FileStateHistoryWidget.h \
     ./Windows/HistoryWindowUtils.h \
     ./Windows/RegistryHistoryWindow.h \
     ./Windows/PopUpWindow.h \
@@ -97,6 +98,7 @@ SOURCES += ./main.cpp \
     ./Windows/PopUpWindow.cpp \
     ./Windows/RecoveryWindow.cpp \
     ./Windows/FileHistoryWindow.cpp \
+    ./Windows/FileStateHistoryWidget.cpp \
     ./Windows/RegistryHistoryWindow.cpp \
     ./Windows/SettingsWindow.cpp \
     ./Windows/SnapshotsWindow.cpp \

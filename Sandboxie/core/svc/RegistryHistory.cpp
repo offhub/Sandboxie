@@ -10,12 +10,11 @@
 #include "stdafx.h"
 
 #include "RegistryHistory.h"
+#include "HistoryPath.h"
 #include "common/defines.h"
 #include "common/win32_ntddk.h"
-#include "core/dll/sbiedll.h"
 
 #include <algorithm>
-#include <map>
 #include <stdio.h>
 #include <vector>
 
@@ -23,19 +22,6 @@ namespace
 {
     const WCHAR* RegistryHistoryDirectory = L"RegistryHistory";
     const WCHAR* RegistryHistoryHive = L"RegHive.hiv";
-
-    struct CASE_INSENSITIVE_LESS
-    {
-        bool operator()(const std::wstring& left,
-            const std::wstring& right) const
-        {
-            return _wcsicmp(left.c_str(), right.c_str()) < 0;
-        }
-    };
-
-    CRITICAL_SECTION RegistryPathLock;
-    std::map<std::wstring, std::wstring, CASE_INSENSITIVE_LESS>
-        RegistryPaths;
 
     class BACKUP_PRIVILEGE
     {
@@ -84,22 +70,6 @@ namespace
         TOKEN_PRIVILEGES m_Previous;
         bool m_Enabled;
     };
-
-    bool GetRememberedPath(const WCHAR* rootPath, std::wstring& fileRoot)
-    {
-        for (ULONG attempt = 0; attempt < 20; ++attempt) {
-            EnterCriticalSection(&RegistryPathLock);
-            auto found = RegistryPaths.find(rootPath);
-            if (found != RegistryPaths.end())
-                fileRoot = found->second;
-            LeaveCriticalSection(&RegistryPathLock);
-
-            if (!fileRoot.empty())
-                return true;
-            Sleep(50);
-        }
-        return false;
-    }
 
     std::wstring JoinPath(const std::wstring& left, const WCHAR* right)
     {
@@ -303,7 +273,7 @@ namespace
         if (!NT_SUCCESS(SbieApi_QueryConf(boxName,
                 L"AutoDeleteHistoryMode", 0, mode, sizeof(mode))))
             return false;
-        return _wcsicmp(mode, L"Both") == 0 ||
+        return _wcsicmp(mode, L"All") == 0 ||
             _wcsicmp(mode, L"Registry") == 0;
     }
 
@@ -376,52 +346,6 @@ namespace
     }
 }
 
-void RegistryHistory_Initialize()
-{
-    InitializeCriticalSection(&RegistryPathLock);
-}
-
-void RegistryHistory_Shutdown()
-{
-    EnterCriticalSection(&RegistryPathLock);
-    RegistryPaths.clear();
-    LeaveCriticalSection(&RegistryPathLock);
-    DeleteCriticalSection(&RegistryPathLock);
-}
-
-void RegistryHistory_RememberPath(const WCHAR* fileRoot,
-    const WCHAR* rootPath)
-{
-    if (!fileRoot || !*fileRoot || !rootPath || !*rootPath)
-        return;
-
-    std::vector<WCHAR> fileBuffer(wcslen(fileRoot) + 16);
-    wcscpy(fileBuffer.data(), fileRoot);
-    if (!SbieDll_TranslateNtToDosPath(fileBuffer.data()))
-        return;
-
-    std::wstring path(fileBuffer.data());
-    while (!path.empty() &&
-            (path.back() == L'\\' || path.back() == L'/'))
-        path.pop_back();
-    if (path.empty())
-        return;
-
-    EnterCriticalSection(&RegistryPathLock);
-    RegistryPaths[rootPath] = path;
-    LeaveCriticalSection(&RegistryPathLock);
-}
-
-void RegistryHistory_ForgetPath(const WCHAR* rootPath)
-{
-    if (!rootPath || !*rootPath)
-        return;
-
-    EnterCriticalSection(&RegistryPathLock);
-    RegistryPaths.erase(rootPath);
-    LeaveCriticalSection(&RegistryPathLock);
-}
-
 bool RegistryHistory_Prepare(const WCHAR* boxName, const WCHAR* rootPath,
     REGISTRY_HISTORY_CAPTURE& capture)
 {
@@ -432,7 +356,7 @@ bool RegistryHistory_Prepare(const WCHAR* boxName, const WCHAR* rootPath,
         return false;
 
     std::wstring fileRoot;
-    if (!GetRememberedPath(rootPath, fileRoot))
+    if (!HistoryPath_Get(rootPath, fileRoot))
         return false;
 
     std::wstring historyRoot = JoinPath(fileRoot, RegistryHistoryDirectory);

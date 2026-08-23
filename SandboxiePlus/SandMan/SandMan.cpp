@@ -2480,17 +2480,21 @@ void CSandMan::OnBoxSelected()
 	}
 }
 
-static EDeleteHistoryMode ParseDeleteHistoryMode(const QString& Value)
+static SDeleteContentOptions ParseAutoDeleteHistoryMode(const QString& Value)
 {
 	if (Value.compare("None", Qt::CaseInsensitive) == 0)
-		return eDeleteHistoryNone;
-	if (Value.compare("Both", Qt::CaseInsensitive) == 0)
-		return eDeleteHistoryBoth;
+		return SDeleteContentOptions(false, eDeleteHistoryNone, false);
+	if (Value.compare("RetainedFiles", Qt::CaseInsensitive) == 0)
+		return SDeleteContentOptions(false, eDeleteHistoryRetainedFiles, false);
+	if (Value.compare("FileStates", Qt::CaseInsensitive) == 0)
+		return SDeleteContentOptions(false, eDeleteHistoryNone, true);
 	if (Value.compare("File", Qt::CaseInsensitive) == 0)
-		return eDeleteHistoryFile;
+		return SDeleteContentOptions(false, eDeleteHistoryRetainedFiles, true);
 	if (Value.compare("Registry", Qt::CaseInsensitive) == 0)
-		return eDeleteHistoryRegistry;
-	return eDeleteHistoryLegacy;
+		return SDeleteContentOptions(false, eDeleteHistoryRegistry, false);
+	if (Value.compare("All", Qt::CaseInsensitive) == 0)
+		return SDeleteContentOptions(false, eDeleteHistoryAll, true);
+	return SDeleteContentOptions(false, eDeleteHistoryLegacy, false);
 }
 
 SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, const SDeleteContentOptions& Options)
@@ -2500,16 +2504,21 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, con
 	SDeleteContentOptions EffectiveOptions = Options;
 	if (Mode == eForDelete) {
 		EffectiveOptions.DeleteSnapshots = true;
-		EffectiveOptions.HistoryMode = eDeleteHistoryBoth;
+		EffectiveOptions.HistoryMode = eDeleteHistoryAll;
+		EffectiveOptions.DeleteFileStateHistory = true;
 	}
 	else if (EffectiveOptions.HistoryMode == eDeleteHistoryLegacy) {
 		EffectiveOptions.HistoryMode = !EffectiveOptions.DeleteSnapshots && pBox->HasSnapshots()
-			? eDeleteHistoryNone : eDeleteHistoryBoth;
+			? eDeleteHistoryNone : eDeleteHistoryAll;
+		EffectiveOptions.DeleteFileStateHistory =
+			EffectiveOptions.HistoryMode == eDeleteHistoryAll;
 	}
 	const bool DeleteFileHistory = EffectiveOptions.DeleteFileHistory() || !pBox->HasFileHistory();
 	const bool DeleteRegistryHistory = EffectiveOptions.DeleteRegistryHistory() || !pBox->HasRegistryHistory();
+	const bool DeleteFileStateHistory = EffectiveOptions.DeleteFileStateHistory || !pBox->HasFileStateHistory();
+	EffectiveOptions.DeleteFileStateHistory = DeleteFileStateHistory;
 	EffectiveOptions.HistoryMode = DeleteFileHistory
-		? (DeleteRegistryHistory ? eDeleteHistoryBoth : eDeleteHistoryFile)
+		? (DeleteRegistryHistory ? eDeleteHistoryAll : eDeleteHistoryRetainedFiles)
 		: (DeleteRegistryHistory ? eDeleteHistoryRegistry : eDeleteHistoryNone);
 	m_DeletingBoxes.insert(pBox->GetName());
 	const bool UseAsyncDelete = theConf->GetBool("Options/UseAsyncBoxOps", false) || theGUI->IsSilentMode();
@@ -2601,10 +2610,13 @@ SB_STATUS CSandMan::DeleteBoxContent(const CSandBoxPtr& pBox, EDelMode Mode, con
 			QString Current;
 			QString Default = pBox->GetDefaultSnapshot(&Current);
 			Status = pBoxEx->SelectSnapshotEx(UseCurrentSnapshot ? Current : Default,
-				EffectiveOptions.DeleteFileHistory(), EffectiveOptions.DeleteRegistryHistory());
+				EffectiveOptions.DeleteFileHistory(), EffectiveOptions.DeleteRegistryHistory(),
+				EffectiveOptions.DeleteFileStateHistory);
 		}
-		else if (!EffectiveOptions.DeleteFileHistory() || !EffectiveOptions.DeleteRegistryHistory())
-			Status = pBoxEx->CleanBoxExceptHistory(!EffectiveOptions.DeleteFileHistory(), !EffectiveOptions.DeleteRegistryHistory());
+		else if (!EffectiveOptions.DeleteFileHistory() || !EffectiveOptions.DeleteRegistryHistory() ||
+				!EffectiveOptions.DeleteFileStateHistory)
+			Status = pBoxEx->CleanBoxExceptHistory(!EffectiveOptions.DeleteFileHistory(),
+				!EffectiveOptions.DeleteRegistryHistory(), !EffectiveOptions.DeleteFileStateHistory);
 		else // if everything is selected, use the normal cleaning procedure
 			Status = pBox->CleanBox();
 
@@ -2845,10 +2857,13 @@ void CSandMan::OnBoxClosed(const CSandBoxPtr& pBox)
 	{
 		if (pBox->GetBool("AutoDelete", false))
 		{
-			SDeleteContentOptions Options(false,
-				ParseDeleteHistoryMode(pBox->GetText("AutoDeleteHistoryMode", QString(), true, true, true)));
-			if (Options.HistoryMode == eDeleteHistoryLegacy)
-				Options.HistoryMode = pBox->HasSnapshots() ? eDeleteHistoryNone : eDeleteHistoryBoth;
+			SDeleteContentOptions Options = ParseAutoDeleteHistoryMode(
+				pBox->GetText("AutoDeleteHistoryMode", QString(), true, true, true));
+			if (Options.HistoryMode == eDeleteHistoryLegacy) {
+				Options.HistoryMode = pBox->HasSnapshots()
+					? eDeleteHistoryNone : eDeleteHistoryAll;
+				Options.DeleteFileStateHistory = !pBox->HasSnapshots();
+			}
 			// if this box auto deletes first show the recovry dialog with the option to abort deletion
 			if (!theGUI->OpenRecovery(pBox, Options, true)) // unless no files are found than continue silently
 				return;

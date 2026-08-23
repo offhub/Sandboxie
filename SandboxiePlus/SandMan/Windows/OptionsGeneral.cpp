@@ -73,11 +73,13 @@ void COptionsWindow::CreateGeneral()
 	ui.cmbAutoDeleteSnapshot->addItem(tr("Default snapshot"), "Default");
 	ui.cmbAutoDeleteSnapshot->setToolTip(tr("Selects the snapshot restored by SandMan after automatic deletion. The active state may be the empty sandbox rather than a saved snapshot."));
 	ui.cmbAutoDeleteHistory->addItem(tr("Inherited or legacy behavior"), QString());
-	ui.cmbAutoDeleteHistory->addItem(tr("Preserve file and registry history"), "None");
-	ui.cmbAutoDeleteHistory->addItem(tr("Delete file and registry history"), "Both");
-	ui.cmbAutoDeleteHistory->addItem(tr("Delete retained file versions only"), "File");
+	ui.cmbAutoDeleteHistory->addItem(tr("Preserve all history"), "None");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete retained file versions only"), "RetainedFiles");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete file-state history only"), "FileStates");
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete both file histories"), "File");
 	ui.cmbAutoDeleteHistory->addItem(tr("Delete registry history only"), "Registry");
-	ui.cmbAutoDeleteHistory->setToolTip(tr("Selects which retained histories SandMan deletes during automatic deletion. Legacy behavior preserves histories when snapshots are retained and deletes them otherwise."));
+	ui.cmbAutoDeleteHistory->addItem(tr("Delete all history"), "All");
+	ui.cmbAutoDeleteHistory->setToolTip(tr("Selects which histories SandMan deletes during automatic deletion. Legacy behavior preserves histories when snapshots are retained and deletes them otherwise."));
 	ui.btnAutoDeleteSnapshots->setIcon(CSandMan::GetIcon("Snapshots"));
 	connect(ui.btnAutoDeleteSnapshots, &QToolButton::clicked, this, [this]() {
 		auto pBox = m_pBox.objectCast<CSandBox>();
@@ -491,12 +493,16 @@ void COptionsWindow::LoadGeneral()
 	QString AutoDeleteHistoryMode = m_pBox->GetText("AutoDeleteHistoryMode", QString(), true, true, true);
 	if (AutoDeleteHistoryMode.compare("None", Qt::CaseInsensitive) == 0)
 		AutoDeleteHistoryMode = "None";
-	else if (AutoDeleteHistoryMode.compare("Both", Qt::CaseInsensitive) == 0)
-		AutoDeleteHistoryMode = "Both";
+	else if (AutoDeleteHistoryMode.compare("RetainedFiles", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "RetainedFiles";
+	else if (AutoDeleteHistoryMode.compare("FileStates", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "FileStates";
 	else if (AutoDeleteHistoryMode.compare("File", Qt::CaseInsensitive) == 0)
 		AutoDeleteHistoryMode = "File";
 	else if (AutoDeleteHistoryMode.compare("Registry", Qt::CaseInsensitive) == 0)
 		AutoDeleteHistoryMode = "Registry";
+	else if (AutoDeleteHistoryMode.compare("All", Qt::CaseInsensitive) == 0)
+		AutoDeleteHistoryMode = "All";
 	else
 		AutoDeleteHistoryMode.clear();
 	ui.cmbAutoDeleteHistory->setCurrentIndex(ui.cmbAutoDeleteHistory->findData(AutoDeleteHistoryMode));

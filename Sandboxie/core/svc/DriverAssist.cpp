@@ -37,6 +37,8 @@
 #include "sbieiniserver.h"
 #include "MountManager.h"
 #include "RegistryHistory.h"
+#include "HistoryPath.h"
+#include "FileStateHistory.h"
 #include "GuiWire.h"
 #include "GuiServer.h"
 
@@ -71,12 +73,12 @@ DriverAssist::DriverAssist()
 
     InitializeCriticalSection(&m_LogMessage_CritSec);
     InitializeCriticalSection(&m_critSecHostInjectedSvcs);
-    RegistryHistory_Initialize();
+    HistoryPath_Initialize();
 }
 
 DriverAssist::~DriverAssist()
 {
-	RegistryHistory_Shutdown();
+	HistoryPath_Shutdown();
 	DeleteCriticalSection(&m_LogMessage_CritSec);
 	DeleteCriticalSection(&m_critSecHostInjectedSvcs);
 }
@@ -695,7 +697,7 @@ void DriverAssist::HiveMounted(void *_msg)
         goto finish;
     }
 
-    RegistryHistory_RememberPath(file_root_path, reg_root_path);
+    HistoryPath_Remember(file_root_path, reg_root_path);
 
     //
     // lock box root if present
@@ -843,13 +845,14 @@ void DriverAssist::UnmountHive(void *_msg)
         if (rc == 0) {
 
             RegistryHistory_Commit(msg->boxname, historyCapture);
+            FileStateHistory_Capture(msg->boxname, root_path);
 
             //
             // unmount box container if present
             //
 
             MountManager::GetInstance()->ReleaseBoxRoot(root_path, false, msg->session_id);
-            RegistryHistory_ForgetPath(root_path);
+            HistoryPath_Forget(root_path);
         }
         else {
             RegistryHistory_Discard(historyCapture);

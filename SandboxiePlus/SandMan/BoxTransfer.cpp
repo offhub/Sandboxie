@@ -395,7 +395,8 @@ void CBoxTransferDialog::SetFilter(const QRegularExpression& Exp, int iOptions, 
 // Export
 //
 
-static QStringList ListBoxContent(const QString& rootPath, bool includeFileHistory, bool includeRegistryHistory)
+static QStringList ListBoxContent(const QString& rootPath, bool includeFileHistory,
+	bool includeRegistryHistory, bool includeFileStateHistory)
 {
 	QStringList fileList;
 	QDir root(rootPath);
@@ -410,7 +411,8 @@ static QStringList ListBoxContent(const QString& rootPath, bool includeFileHisto
 	foreach(const QString& dirName,
 			root.entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)) {
 		if ((!includeFileHistory && dirName.compare("FileHistory", Qt::CaseInsensitive) == 0) ||
-			(!includeRegistryHistory && dirName.compare("RegistryHistory", Qt::CaseInsensitive) == 0))
+			(!includeRegistryHistory && dirName.compare("RegistryHistory", Qt::CaseInsensitive) == 0) ||
+			(!includeFileStateHistory && dirName.compare("FileStateHistory", Qt::CaseInsensitive) == 0))
 			continue;
 
 		foreach(const QString& fileName,
@@ -468,7 +470,8 @@ static void ExportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 
 		// Add all box files
 		QStringList FileList = ListBoxContent(rootPath,
-			params["includeFileHistory"].toBool(), params["includeRegistryHistory"].toBool());
+			params["includeFileHistory"].toBool(), params["includeRegistryHistory"].toBool(),
+			params["includeFileStateHistory"].toBool());
 		for (const QString& File : FileList) {
 			if (pProgress->IsCanceled()) break;
 
@@ -580,16 +583,18 @@ void ExportMultiBoxes(QWidget* parent, const QList<CSandBoxPtr>& SandBoxes)
 
 	bool hasFileHistory = false;
 	bool hasRegistryHistory = false;
+	bool hasFileStateHistory = false;
 	for (const QString& boxName : selectedBoxes) {
 		CSandBoxPtr pBox = theAPI->GetBoxByName(boxName);
 		if (!pBox)
 			continue;
 		hasFileHistory |= pBox->HasFileHistory();
 		hasRegistryHistory |= pBox->HasRegistryHistory();
+		hasFileStateHistory |= pBox->HasFileStateHistory();
 	}
 
 	// 2. Compression options
-	CCompressDialog compDlg(parent, hasFileHistory, hasRegistryHistory);
+	CCompressDialog compDlg(parent, hasFileHistory, hasRegistryHistory, hasFileStateHistory);
 	if (mustEncrypt)
 		compDlg.SetMustEncrypt();
 	if (theGUI->SafeExec(&compDlg) != QDialog::Accepted)
@@ -691,6 +696,7 @@ void ExportMultiBoxes(QWidget* parent, const QList<CSandBoxPtr>& SandBoxes)
 	vParams["solid"] = compDlg.MakeSolid();
 	vParams["includeFileHistory"] = compDlg.IncludeFileHistory();
 	vParams["includeRegistryHistory"] = compDlg.IncludeRegistryHistory();
+	vParams["includeFileStateHistory"] = compDlg.IncludeFileStateHistory();
 
 	if (exportSeparateFiles) {
 		// Folder picker for separate files export

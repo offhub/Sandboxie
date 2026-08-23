@@ -232,7 +232,7 @@ SB_PROGRESS CSandBox::CleanFileHistory()
 	return CleanBoxFolders(QStringList(m_FilePath + "\\FileHistory"));
 }
 
-SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory)
+SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory, bool PreserveFileStateHistory)
 {
 	if (m_FilePath.isEmpty())
 		return SB_ERR(SB_PathFail);
@@ -253,6 +253,10 @@ SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool Prese
 			continue;
 		}
 		if (PreserveRegistryHistory && Entry.isDir() && Name.compare("RegistryHistory", Qt::CaseInsensitive) == 0) {
+			KeepRoot = true;
+			continue;
+		}
+		if (PreserveFileStateHistory && Entry.isDir() && Name.compare("FileStateHistory", Qt::CaseInsensitive) == 0) {
 			KeepRoot = true;
 			continue;
 		}
@@ -508,6 +512,11 @@ bool CSandBox::HasFileHistory() const
 bool CSandBox::HasRegistryHistory() const
 {
 	return !m_FilePath.isEmpty() && QFileInfo(QDir(m_FilePath).filePath("RegistryHistory")).isDir();
+}
+
+bool CSandBox::HasFileStateHistory() const
+{
+	return !m_FilePath.isEmpty() && QFileInfo(QDir(m_FilePath).filePath("FileStateHistory")).isDir();
 }
 
 SB_STATUS CSandBox__MoveFolder(const QString& SourcePath, const QString& ParentFolder, const QString& TargetName)
@@ -1223,7 +1232,7 @@ SB_PROGRESS CSandBox::SelectSnapshot(const QString& ID)
 	return SelectSnapshotEx(ID, false, false);
 }
 
-SB_PROGRESS CSandBox::SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory)
+SB_PROGRESS CSandBox::SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory, bool DeleteFileStateHistory)
 {
 	if (m_FilePath.isEmpty())
 		return SB_ERR(SB_PathFail);
@@ -1262,6 +1271,8 @@ SB_PROGRESS CSandBox::SelectSnapshotEx(const QString& ID, bool DeleteFileHistory
 		BoxFolders.append(m_FilePath + "\\FileHistory");
 	if (DeleteRegistryHistory)
 		BoxFolders.append(m_FilePath + "\\RegistryHistory");
+	if (DeleteFileStateHistory)
+		BoxFolders.append(m_FilePath + "\\FileStateHistory");
 	return CleanBoxFolders(BoxFolders);
 }
 

@@ -135,12 +135,13 @@ struct SCopyHistoryOptions
 {
 	bool IncludeFileHistory;
 	bool IncludeRegistryHistory;
+	bool IncludeFileStateHistory;
 };
 
 SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QString& SourcePath, const QString& DestinationPath,
-	bool IncludeFileHistory, bool IncludeRegistryHistory)
+	bool IncludeFileHistory, bool IncludeRegistryHistory, bool IncludeFileStateHistory)
 {
-	SCopyHistoryOptions Options = { IncludeFileHistory, IncludeRegistryHistory };
+	SCopyHistoryOptions Options = { IncludeFileHistory, IncludeRegistryHistory, IncludeFileStateHistory };
 	const QString NativeSourcePath = QDir::toNativeSeparators(SourcePath);
 	const QString NativeDestinationPath = QDir::toNativeSeparators(DestinationPath);
 	SNtObject src_dir(L"\\??\\" + NativeSourcePath.toStdWString());
@@ -154,7 +155,8 @@ SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QStri
 		SCopyHistoryOptions* Options = (SCopyHistoryOptions*)param;
 		return depth != 0 ||
 			((Options->IncludeFileHistory || _wcsicmp(name, L"FileHistory") != 0) &&
-			(Options->IncludeRegistryHistory || _wcsicmp(name, L"RegistryHistory") != 0));
+			(Options->IncludeRegistryHistory || _wcsicmp(name, L"RegistryHistory") != 0) &&
+			(Options->IncludeFileStateHistory || _wcsicmp(name, L"FileStateHistory") != 0));
 	}, &Options);
 	if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_NOT_FOUND && status != STATUS_OBJECT_PATH_NOT_FOUND)
 		return SB_ERR((ESbieMsgCodes)SBX_FailedCopyDir, QVariantList() << SourcePath << DestinationPath, status);
@@ -162,16 +164,17 @@ SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QStri
 }
 
 void CSandBoxPlus::CopyBoxAsync(const CSbieProgressPtr& pProgress, const QString& SrcDir, const QString& DestDir,
-	bool IncludeFileHistory, bool IncludeRegistryHistory)
+	bool IncludeFileHistory, bool IncludeRegistryHistory, bool IncludeFileStateHistory)
 {
-	SB_STATUS Status = CSandBoxPlus_CopyFolder(pProgress, SrcDir, DestDir, IncludeFileHistory, IncludeRegistryHistory);
+	SB_STATUS Status = CSandBoxPlus_CopyFolder(pProgress, SrcDir, DestDir, IncludeFileHistory,
+		IncludeRegistryHistory, IncludeFileStateHistory);
 
 	pProgress->Finish(Status);
 }
 
 SB_PROGRESS CSandBoxPlus::CopyBox(const QString& DestDir)
 {
-	return CopyBoxEx(DestDir, false, false);
+	return CopyBoxEx(DestDir, false, false, false);
 }
 
 static bool CSandBoxPlus_PathsOverlap(const QString& FirstPath, const QString& SecondPath)
@@ -193,7 +196,8 @@ static bool CSandBoxPlus_PathsOverlap(const QString& FirstPath, const QString& S
 	return IsSameOrChild(First, Second) || IsSameOrChild(Second, First);
 }
 
-SB_PROGRESS CSandBoxPlus::CopyBoxEx(const QString& DestDir, bool IncludeFileHistory, bool IncludeRegistryHistory)
+SB_PROGRESS CSandBoxPlus::CopyBoxEx(const QString& DestDir, bool IncludeFileHistory,
+	bool IncludeRegistryHistory, bool IncludeFileStateHistory)
 {
 	if (theAPI->HasProcesses(m_Name))
 		return SB_ERR(SB_SnapIsRunning); // todo
@@ -204,13 +208,14 @@ SB_PROGRESS CSandBoxPlus::CopyBoxEx(const QString& DestDir, bool IncludeFileHist
 
 	const bool HasSelectedHistory =
 		(IncludeFileHistory && HasFileHistory()) ||
-		(IncludeRegistryHistory && HasRegistryHistory());
+		(IncludeRegistryHistory && HasRegistryHistory()) ||
+		(IncludeFileStateHistory && HasFileStateHistory());
 	if (!IsInitialized() && !HasSelectedHistory)
 		return SB_OK; // nothing to do
 
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());
 	QtConcurrent::run(CSandBoxPlus::CopyBoxAsync, pProgress, GetFileRoot(), DestDir,
-		IncludeFileHistory, IncludeRegistryHistory);
+		IncludeFileHistory, IncludeRegistryHistory, IncludeFileStateHistory);
 	return SB_PROGRESS(OP_ASYNC, pProgress);
 }
 

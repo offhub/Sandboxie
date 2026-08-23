@@ -579,12 +579,13 @@ SDeleteContentOptions CRecoveryWindow::GetDeleteOptions() const
 {
 	EDeleteHistoryMode HistoryMode = eDeleteHistoryNone;
 	if (ui.chkDeleteFileHistory->isChecked() && ui.chkDeleteRegistryHistory->isChecked())
-		HistoryMode = eDeleteHistoryBoth;
+		HistoryMode = eDeleteHistoryAll;
 	else if (ui.chkDeleteFileHistory->isChecked())
-		HistoryMode = eDeleteHistoryFile;
+		HistoryMode = eDeleteHistoryRetainedFiles;
 	else if (ui.chkDeleteRegistryHistory->isChecked())
 		HistoryMode = eDeleteHistoryRegistry;
-	return SDeleteContentOptions(ui.chkDeleteSnapshots->isChecked(), HistoryMode);
+	return SDeleteContentOptions(ui.chkDeleteSnapshots->isChecked(), HistoryMode,
+		ui.chkDeleteFileStateHistory->isChecked());
 }
 
 void CRecoveryWindow::SetDeleteOptions(const SDeleteContentOptions& Options)
@@ -592,12 +593,16 @@ void CRecoveryWindow::SetDeleteOptions(const SDeleteContentOptions& Options)
 	const bool HasSnapshots = m_pBox->HasSnapshots();
 	const bool HasFileHistory = m_pBox->HasFileHistory();
 	const bool HasRegistryHistory = m_pBox->HasRegistryHistory();
+	const bool HasFileStateHistory = m_pBox->HasFileStateHistory();
 	ui.chkDeleteSnapshots->setChecked(Options.DeleteSnapshots && HasSnapshots);
 	ui.chkDeleteSnapshots->setVisible(HasSnapshots);
 	ui.chkDeleteFileHistory->setChecked(Options.DeleteFileHistory() && HasFileHistory);
 	ui.chkDeleteFileHistory->setVisible(HasFileHistory);
 	ui.chkDeleteRegistryHistory->setChecked(Options.DeleteRegistryHistory() && HasRegistryHistory);
 	ui.chkDeleteRegistryHistory->setVisible(HasRegistryHistory);
+	ui.chkDeleteFileStateHistory->setChecked(
+		Options.DeleteFileStateHistory && HasFileStateHistory);
+	ui.chkDeleteFileStateHistory->setVisible(HasFileStateHistory);
 }
 
 bool CRecoveryWindow::IsDeleteDialog() const

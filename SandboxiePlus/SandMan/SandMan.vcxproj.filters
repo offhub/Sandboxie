@@ -90,6 +90,9 @@
     <ClCompile Include="Windows\FileHistoryWindow.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\FileStateHistoryWidget.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Windows\RegistryHistoryWindow.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
@@ -351,6 +354,9 @@
       <Filter>Windows</Filter>
     </QtMoc>
     <QtMoc Include="Windows\FileHistoryWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\FileStateHistoryWidget.h">
       <Filter>Windows</Filter>
     </QtMoc>
     <QtMoc Include="Windows\RegistryHistoryWindow.h">

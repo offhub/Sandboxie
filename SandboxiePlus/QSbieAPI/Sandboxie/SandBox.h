@@ -68,9 +68,10 @@ public:
 	virtual bool					HasSnapshots() const;
 	bool						HasFileHistory() const;
 	bool						HasRegistryHistory() const;
+	bool						HasFileStateHistory() const;
 	virtual SB_PROGRESS				CleanBox();
 	SB_PROGRESS						CleanFileHistory();
-	SB_PROGRESS						CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory);
+	SB_PROGRESS						CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory, bool PreserveFileStateHistory);
 	virtual SB_STATUS				RenameBox(const QString& NewName);
 	virtual SB_STATUS				RemoveBox();
 
@@ -82,7 +83,7 @@ public:
 	virtual SB_PROGRESS				TakeSnapshot(const QString& Name);
 	virtual SB_PROGRESS				RemoveSnapshot(const QString& ID);
 	virtual SB_PROGRESS				SelectSnapshot(const QString& ID);
-	SB_PROGRESS						SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory);
+	SB_PROGRESS						SelectSnapshotEx(const QString& ID, bool DeleteFileHistory, bool DeleteRegistryHistory, bool DeleteFileStateHistory = false);
 	virtual SB_STATUS				SetSnapshotInfo(const QString& ID, const QString& Name, const QString& Description = QString());
 
 	// Mount Manager
