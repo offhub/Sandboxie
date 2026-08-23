@@ -301,6 +301,8 @@ public:
 		eDontCopy,
 		eCopyEmpty,
 		eCopyNewer,
+		eKeepFileVersions,
+		eKeepFileVersionsExclude,
 	};
 
 	enum ENetWfAction

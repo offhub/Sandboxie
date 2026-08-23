@@ -241,6 +241,14 @@ void CFinder::Open()
 		m_pBtnSearch->setChecked(true);
 }
 
+void CFinder::SetSearchText(const QString& Text, bool RegExp)
+{
+	if (m_pRegExp)
+		m_pRegExp->setChecked(RegExp);
+	m_pSearch->setText(Text);
+	Open();
+}
+
 void CFinder::OnUpdate()
 {
 	m_pTimer->stop();

@@ -276,6 +276,8 @@ _FX BOOLEAN File_Init(void)
 
     File_InitFileMigration();
 
+    File_HistoryInitCrypto();
+
     //
     // intercept NTDLL entry points
     //
@@ -364,6 +366,9 @@ _FX BOOLEAN File_Init(void)
         GetProcAddress(Dll_KernelBase ? Dll_KernelBase : Dll_Kernel32,
             "WriteProcessMemory");
     SBIEDLL_HOOK(File_, WriteProcessMemory);
+
+    if (!File_InitHistory())
+        return FALSE;
 
     return TRUE;
 }

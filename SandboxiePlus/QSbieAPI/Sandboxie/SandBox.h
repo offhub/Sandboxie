@@ -67,6 +67,7 @@ public:
 	virtual bool					IsInitialized() const;
 	virtual bool					HasSnapshots() const;
 	virtual SB_PROGRESS				CleanBox();
+	SB_PROGRESS						CleanFileHistory();
 	virtual SB_STATUS				RenameBox(const QString& NewName);
 	virtual SB_STATUS				RemoveBox();
 

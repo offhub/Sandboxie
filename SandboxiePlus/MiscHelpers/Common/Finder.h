@@ -15,6 +15,7 @@ public:
 
 	void				SetTree(QTreeView* pTree);
 	void				SetModel(QAbstractItemModel* pModel) { m_pModel = pModel; }
+	void				SetSearchText(const QString& Text, bool RegExp = false);
 
 	void				SetAlwaysRaw() {m_bAlwaysRaw = true;}
 

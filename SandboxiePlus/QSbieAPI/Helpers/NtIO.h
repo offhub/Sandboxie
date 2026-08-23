@@ -40,4 +40,8 @@ QSBIEAPI_EXPORT NTSTATUS NtIo_RenameJunction(POBJECT_ATTRIBUTES src_objattrs, PO
 
 QSBIEAPI_EXPORT NTSTATUS NtIo_MergeFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs, bool (*cb)(const WCHAR* info, void* param) = NULL, void* param = NULL);
 
+typedef bool (*P_NtIoCopyFilter)(const WCHAR* name, ULONG attributes, ULONG depth, void* param);
+
 QSBIEAPI_EXPORT NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs, bool (*cb)(const WCHAR* info, void* param), void* param);
+QSBIEAPI_EXPORT NTSTATUS NtIo_CopyFolderEx(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs,
+	bool (*cb)(const WCHAR* info, void* param), void* param, P_NtIoCopyFilter filter, void* filter_param);

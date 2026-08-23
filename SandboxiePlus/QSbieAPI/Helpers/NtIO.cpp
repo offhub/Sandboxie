@@ -775,8 +775,9 @@ NTSTATUS NtIo_CopyFile(
     return status;
 }
 
-NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs,
-                         bool (*cb)(const WCHAR* info, void* param), void* param)
+static NTSTATUS NtIo_CopyFolderInternal(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs,
+	bool (*cb)(const WCHAR* info, void* param), void* param,
+	P_NtIoCopyFilter filter, void* filter_param, ULONG depth)
 {
     NTSTATUS status = STATUS_SUCCESS;
     IO_STATUS_BLOCK IoStatusBlock;
@@ -840,6 +841,8 @@ NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES des
         free(Info);
 
         if (FileName == L"." || FileName == L"..") continue;
+		if (filter && !filter(FileName.c_str(), FileAttributes, depth, filter_param))
+			continue;
 
         SNtObject ntSrcObject(srcBase + L"\\" + FileName);
         SNtObject ntDestObject(destBase + L"\\" + FileName);
@@ -847,7 +850,8 @@ NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES des
         if (FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
             status = NtIo_CopyReparsePoint(&ntSrcObject.attr, &ntDestObject.attr, srcBase, destBase, cb, param);
         } else if (FileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            status = NtIo_CopyFolder(&ntSrcObject.attr, &ntDestObject.attr, cb, param);
+            status = NtIo_CopyFolderInternal(&ntSrcObject.attr, &ntDestObject.attr,
+				cb, param, filter, filter_param, depth + 1);
         } else {
             status = NtIo_CopyFile(&ntSrcObject.attr, &ntDestObject.attr, cb, param);
         }
@@ -858,4 +862,19 @@ NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES des
     NtClose(srcHandle);
     NtClose(destFolderHandle);
     return status;
+}
+
+NTSTATUS NtIo_CopyFolder(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs,
+	bool (*cb)(const WCHAR* info, void* param), void* param)
+{
+	return NtIo_CopyFolderInternal(src_objattrs, dest_objattrs,
+		cb, param, NULL, NULL, 0);
+}
+
+NTSTATUS NtIo_CopyFolderEx(POBJECT_ATTRIBUTES src_objattrs, POBJECT_ATTRIBUTES dest_objattrs,
+	bool (*cb)(const WCHAR* info, void* param), void* param,
+	P_NtIoCopyFilter filter, void* filter_param)
+{
+	return NtIo_CopyFolderInternal(src_objattrs, dest_objattrs,
+		cb, param, filter, filter_param, 0);
 }

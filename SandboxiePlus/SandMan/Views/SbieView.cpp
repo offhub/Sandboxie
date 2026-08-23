@@ -8,6 +8,7 @@
 #include "../../MiscHelpers/Common/Common.h"
 #include "../Windows/OptionsWindow.h"
 #include "../Windows/SnapshotsWindow.h"
+#include "../Windows/FileHistoryWindow.h"
 #include "../../MiscHelpers/Common/CheckableMessageBox.h"
 #include "../Windows/RecoveryWindow.h"
 #include "../Views/FileView.h"
@@ -262,6 +263,7 @@ void CSbieView::CreateMenu()
 		m_pMenuPresetsForce->setCheckable(true);
 	
 	m_pMenuTools = m_pMenuBox->addMenu(CSandMan::GetIcon("Maintenance"), tr("Sandbox Tools"));
+		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
@@ -400,6 +402,7 @@ void CSbieView::CreateOldMenu()
 		m_pMenuBrowse = m_pMenuTools->addAction(CSandMan::GetIcon("Tree"), tr("Browse Content"), this, SLOT(OnSandBoxAction()));
 		m_pMenuSnapshots = m_pMenuTools->addAction(CSandMan::GetIcon("Snapshots"), tr("Snapshots Manager"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
+		m_pMenuHistory = m_pMenuTools->addAction(CSandMan::GetIcon("Recover"), tr("Retained File Versions"), this, SLOT(OnSandBoxAction()));
 		m_pMenuBrowseNT = m_pMenuTools->addAction(CSandMan::GetIcon("Objects"), tr("Browse NT Namespace"), this, SLOT(OnSandBoxAction()));
 		m_pMenuCompactDeleteV3 = m_pMenuTools->addAction(CSandMan::GetIcon("Refresh"), tr("Compact DeleteV3 Metadata"), this, SLOT(OnSandBoxAction()));
 		m_pMenuTools->addSeparator();
@@ -733,6 +736,7 @@ bool CSbieView::UpdateMenu(bool bAdvanced, const CSandBoxPtr &pBox, int iSandBox
 
 	//m_pMenuTools->setEnabled(iSandBoxeCount == 1)
 	m_pMenuBrowseNT->setEnabled(iSandBoxeCount == 1);
+	m_pMenuHistory->setEnabled(iSandBoxeCount == 1);
 	m_pMenuCompactDeleteV3->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicate->setEnabled(iSandBoxeCount == 1);
 	m_pMenuDuplicateEx->setEnabled(iSandBoxeCount == 1);
@@ -1563,6 +1567,27 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 		CNtObjectBrowserWindow* pBrowserWindow = new CNtObjectBrowserWindow(SandBoxes.first());
 		connect(theGUI, SIGNAL(Closed()), pBrowserWindow, SLOT(close()));
 		CSandMan::SafeShow(pBrowserWindow);
+	}
+	else if (Action == m_pMenuHistory)
+	{
+		CSandBoxPtr pBox = SandBoxes.first();
+
+		static QMap<void*, CFileHistoryWindow*> HistoryWindows;
+		CFileHistoryWindow* pHistoryWindow = HistoryWindows.value(pBox.data());
+		if (pHistoryWindow == NULL) {
+			pHistoryWindow = new CFileHistoryWindow(pBox);
+			connect(theGUI, SIGNAL(Closed()), pHistoryWindow, SLOT(close()));
+			HistoryWindows.insert(pBox.data(), pHistoryWindow);
+			connect(pHistoryWindow, &CFileHistoryWindow::Closed, [pBox]() {
+				HistoryWindows.remove(pBox.data());
+			});
+			CSandMan::SafeShow(pHistoryWindow);
+		}
+		else {
+			pHistoryWindow->setWindowState(
+				(pHistoryWindow->windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+			SetForegroundWindow((HWND)pHistoryWindow->winId());
+		}
 	}
 	else if (Action == m_pMenuCompactDeleteV3)
 		Results.append(theGUI->RunStart(SandBoxes.first()->GetName(), "compact_delete_v3"));

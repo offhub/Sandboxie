@@ -87,6 +87,9 @@
     <ClCompile Include="Windows\RecoveryWindow.cpp">
       <Filter>Windows</Filter>
     </ClCompile>
+    <ClCompile Include="Windows\FileHistoryWindow.cpp">
+      <Filter>Windows</Filter>
+    </ClCompile>
     <ClCompile Include="Helpers\FindTool.cpp">
       <Filter>Helpers</Filter>
     </ClCompile>
@@ -342,6 +345,9 @@
       <Filter>Windows</Filter>
     </QtMoc>
     <QtMoc Include="Windows\RecoveryWindow.h">
+      <Filter>Windows</Filter>
+    </QtMoc>
+    <QtMoc Include="Windows\FileHistoryWindow.h">
       <Filter>Windows</Filter>
     </QtMoc>
     <QtMoc Include="Models\TraceModel.h">

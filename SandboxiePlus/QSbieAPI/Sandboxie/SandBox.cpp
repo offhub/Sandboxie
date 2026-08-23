@@ -218,6 +218,20 @@ SB_PROGRESS CSandBox::CleanBox()
 	return CleanBoxFolders(QStringList(m_FilePath));
 }
 
+SB_PROGRESS CSandBox::CleanFileHistory()
+{
+	if (m_FilePath.isEmpty())
+		return SB_ERR(SB_PathFail);
+
+	if (GetBool("NeverDelete", false))
+		return SB_ERR(SB_DeleteProtect);
+
+	if (GetActiveProcessCount() > 0)
+		return SB_ERR(SB_DeleteNotEmpty);
+
+	return CleanBoxFolders(QStringList(m_FilePath + "\\FileHistory"));
+}
+
 SB_PROGRESS CSandBox::CleanBoxFolders(const QStringList& BoxFolders)
 {
 	CSbieProgressPtr pProgress = CSbieProgressPtr(new CSbieProgress());

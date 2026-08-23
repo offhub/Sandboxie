@@ -395,6 +395,32 @@ void CBoxTransferDialog::SetFilter(const QRegularExpression& Exp, int iOptions, 
 // Export
 //
 
+static QStringList ListBoxContent(const QString& rootPath)
+{
+	QStringList fileList;
+	QDir root(rootPath);
+	if (!root.exists())
+		return fileList;
+
+	foreach(const QString& fileName,
+			root.entryList(QDir::Files | QDir::Hidden | QDir::System)) {
+		fileList.append(fileName);
+	}
+
+	foreach(const QString& dirName,
+			root.entryList(QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)) {
+		if (dirName.compare("FileHistory", Qt::CaseInsensitive) == 0)
+			continue;
+
+		foreach(const QString& fileName,
+				ListDir(rootPath + "/" + dirName)) {
+			fileList.append(dirName + "/" + fileName);
+		}
+	}
+
+	return fileList;
+}
+
 static void ExportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QString& exportPath,
 	const QStringList& boxNames, const QMap<QString, QString>& boxRoots, const QMap<QString, QString>& boxConfigs,
 	bool exportGlobalConfig, const QString& globalConfig, const QVariantMap& params,
@@ -440,7 +466,7 @@ static void ExportMultiBoxesAsync(const CSbieProgressPtr& pProgress, const QStri
 			delete pConfigFile;
 
 		// Add all box files
-		QStringList FileList = ListDir(rootPath + "\\");
+		QStringList FileList = ListBoxContent(rootPath);
 		for (const QString& File : FileList) {
 			if (pProgress->IsCanceled()) break;
 

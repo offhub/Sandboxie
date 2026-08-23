@@ -514,6 +514,7 @@ BOOLEAN Dll_UseChromeSecurePreferencesHack = FALSE;
 #include "file_recovery.c"
 #include "file_misc.c"
 #include "file_copy.c"
+#include "file_history.c"
 #include "file_init.c"
 
 
@@ -4169,6 +4170,23 @@ ReparseLoop:
     } else
         DeleteOnClose = FALSE;
 
+    if (HaveCopyFile && (FileType & TYPE_FILE) &&
+            !(FileType & TYPE_DELETED) && !CopyPathColon) {
+        BOOLEAN content_write =
+            (DesiredAccess & (GENERIC_WRITE | GENERIC_ALL |
+                              MAXIMUM_ALLOWED | FILE_WRITE_DATA |
+                              FILE_APPEND_DATA)) != 0;
+        BOOLEAN destructive_open =
+            CreateDisposition == FILE_SUPERSEDE ||
+            CreateDisposition == FILE_OVERWRITE ||
+            CreateDisposition == FILE_OVERWRITE_IF;
+
+        if (DeleteOnClose)
+            File_HistoryCapture(TruePath, CopyPath, L"delete-on-close");
+        else if (content_write || destructive_open)
+            File_HistoryCapture(TruePath, CopyPath, L"modify");
+    }
+
     //
     // for Windows Explorer, any write access on an existing TruePath
     // file that has no corresponding CopyPath file (and disposition
@@ -4296,6 +4314,8 @@ ReparseLoop:
 
             status = File_MigrateFile(
                             TruePath, CopyPath, IsWritePath, WithContents);
+            if (NT_SUCCESS(status) && WithContents)
+                File_HistoryTrackMigrated(TruePath, CopyPath);
 
         //
         // if the file is to be overwritten, as opposed to superseded,
@@ -4438,7 +4458,18 @@ ReparseLoop:
 
     if (NT_SUCCESS(status)) {
 
+        if (IoStatusBlock->Information == FILE_CREATED &&
+                !(CreateOptions & FILE_DIRECTORY_FILE) &&
+                !TruePathColon && !CopyPathColon &&
+                (FileType == 0 || (FileType & TYPE_DELETED))) {
+            File_HistoryTrackCreated(
+                TruePath, CopyPath, *FileHandle);
+        }
+
         if (DeleteOnClose) {
+
+            File_HistoryArmDelete(
+                *FileHandle, TruePath, CopyPath);
 
             //
             // if we have a corresponding true file, then mark the copy
@@ -4497,6 +4528,7 @@ ReparseLoop:
 
                         IsRecover = File_RecordRecover(*FileHandle, TruePath);
                     }
+
                 }
 
                 //
@@ -7628,6 +7660,8 @@ _FX NTSTATUS File_SetDisposition(
     ULONG FileFlags;
     ULONG mp_flags;
     FILE_ATTRIBUTE_TAG_INFORMATION taginfo;
+    WCHAR *HistoryTruePath = NULL;
+    WCHAR *HistoryCopyPath = NULL;
 
     //
     // check if the specified path is an open or closed path
@@ -7693,6 +7727,18 @@ _FX NTSTATUS File_SetDisposition(
             }
         }
 
+        if (NT_SUCCESS(status) && CopyPath) {
+            ULONG true_len = (wcslen(TruePath) + 1) * sizeof(WCHAR);
+            ULONG copy_len = (wcslen(CopyPath) + 1) * sizeof(WCHAR);
+
+            HistoryTruePath = Dll_AllocTemp(true_len);
+            HistoryCopyPath = Dll_AllocTemp(copy_len);
+            if (HistoryTruePath && HistoryCopyPath) {
+                memcpy(HistoryTruePath, TruePath, true_len);
+                memcpy(HistoryCopyPath, CopyPath, copy_len);
+            }
+        }
+
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
     }
@@ -7744,6 +7790,26 @@ _FX NTSTATUS File_SetDisposition(
         } else {
 
             Handle_SetDeleteOnClose(FileHandle, DeleteOnClose);
+            if (HistoryTruePath && HistoryCopyPath) {
+                if (DeleteOnClose) {
+                    File_HistoryCapture(
+                        HistoryTruePath, HistoryCopyPath, L"delete");
+                    File_HistoryArmDelete(
+                        FileHandle, HistoryTruePath, HistoryCopyPath);
+                }
+                else {
+                    FILE_DISPOSITION_INFORMATION disposition;
+                    IO_STATUS_BLOCK history_iosb;
+                    NTSTATUS history_status;
+
+                    disposition.DeleteFileOnClose = FALSE;
+                    history_status = __sys_NtSetInformationFile(
+                        FileHandle, &history_iosb, &disposition,
+                        sizeof(disposition), FileDispositionInformation);
+                    if (NT_SUCCESS(history_status))
+                        File_HistoryCancelDelete(HistoryTruePath);
+                }
+            }
         }
 
 	    /*
@@ -7761,6 +7827,11 @@ _FX NTSTATUS File_SetDisposition(
 
     //if (DosPath)
     //    Dll_Free(DosPath);
+
+    if (HistoryTruePath)
+        Dll_Free(HistoryTruePath);
+    if (HistoryCopyPath)
+        Dll_Free(HistoryCopyPath);
 
     SetLastError(LastError);
     return status;
@@ -8010,6 +8081,7 @@ _FX NTSTATUS File_RenameFile(
     THREAD_DATA *TlsData = Dll_GetTlsData(NULL);
 
     NTSTATUS status;
+    NTSTATUS attr_status;
     OBJECT_ATTRIBUTES objattrs;
     UNICODE_STRING objname;
     IO_STATUS_BLOCK IoStatusBlock;
@@ -8026,10 +8098,12 @@ _FX NTSTATUS File_RenameFile(
     ULONG info2_len;
     void *info2;
     FILE_NETWORK_OPEN_INFORMATION open_info;
+    FILE_ATTRIBUTE_TAG_INFORMATION source_tag;
     ULONG SourceFlags;
     ULONG TargetFlags;
     ULONG len;
     BOOLEAN ReplaceIfExists;
+    BOOLEAN SourceIsDirectory;
 
     SourceHandle = NULL;
     TargetHandle = NULL;
@@ -8038,6 +8112,7 @@ _FX NTSTATUS File_RenameFile(
     TargetTruePath = NULL;
     TargetCopyPath = NULL;
     info2 = NULL;
+    SourceIsDirectory = FALSE;
 
     Dll_PushTlsNameBuffer(TlsData);
 
@@ -8109,6 +8184,29 @@ _FX NTSTATUS File_RenameFile(
     len = (wcslen(CopyPath) + 1) * sizeof(WCHAR);
     SourceCopyPath = Dll_AllocTemp(len);
     memcpy(SourceCopyPath, CopyPath, len);
+
+    if (File_HistoryRoot) {
+        RtlInitUnicodeString(&objname, SourceCopyPath);
+        attr_status = __sys_NtQueryFullAttributesFile(&objattrs, &open_info);
+        if (!NT_SUCCESS(attr_status)) {
+            RtlInitUnicodeString(&objname, SourceTruePath);
+            attr_status =
+                __sys_NtQueryFullAttributesFile(&objattrs, &open_info);
+        }
+        if (NT_SUCCESS(attr_status) &&
+                (open_info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            SourceIsDirectory = TRUE;
+        }
+        else if (!NT_SUCCESS(attr_status)) {
+            attr_status = __sys_NtQueryInformationFile(
+                FileHandle, &IoStatusBlock, &source_tag, sizeof(source_tag),
+                FileAttributeTagInformation);
+            if (NT_SUCCESS(attr_status) &&
+                    (source_tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                SourceIsDirectory = TRUE;
+            }
+        }
+    }
 
     //
     // get the target name requested by the caller, and keep
@@ -8202,8 +8300,12 @@ _FX NTSTATUS File_RenameFile(
 
         if (status != STATUS_BAD_INITIAL_PC) {
 
-            if (NT_SUCCESS(status))
+            if (NT_SUCCESS(status)) {
+                File_HistoryRename(
+                    SourceTruePath, SourceCopyPath,
+                    TargetTruePath, TargetCopyPath, SourceIsDirectory);
                 goto after_rename;
+            }
             __leave;
         }
 
@@ -8403,6 +8505,8 @@ _FX NTSTATUS File_RenameFile(
 
     if (ReplaceIfExists) {
 
+        File_HistoryCapture(
+            TargetTruePath, TargetCopyPath, L"replace");
         __sys_NtDeleteFile(&objattrs);
     }
 
@@ -8479,6 +8583,11 @@ issue_rename:
     //
 
     File_RecordRecover(FileHandle, TargetTruePath);
+
+    if (!LinkOp)
+        File_HistoryRename(
+            SourceTruePath, SourceCopyPath,
+            TargetTruePath, TargetCopyPath, SourceIsDirectory);
 
     //
     // if the source file exists in the sandbox, we need to create an
