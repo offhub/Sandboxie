@@ -84,28 +84,38 @@ static bool ConfirmDeleteContent(QWidget* Parent, const QString& Message,
 }
 
 static bool SelectHistoryTransferOptions(QWidget* Parent, const QString& Title,
+	bool HasFileHistory, bool HasRegistryHistory,
 	bool& IncludeFileHistory, bool& IncludeRegistryHistory)
 {
+	if (!HasFileHistory && !HasRegistryHistory)
+		return true;
+
 	QDialog Dialog(Parent);
 	Dialog.setWindowTitle(Title);
-	QVBoxLayout* Layout = new QVBoxLayout(&Dialog);
+	QGridLayout* Layout = new QGridLayout(&Dialog);
 	QCheckBox* FileHistory = new QCheckBox(CSbieView::tr("Include retained file versions"), &Dialog);
 	QCheckBox* RegistryHistory = new QCheckBox(CSbieView::tr("Include registry history"), &Dialog);
-	Layout->addWidget(FileHistory);
-	Layout->addWidget(RegistryHistory);
+	FileHistory->setVisible(HasFileHistory);
+	RegistryHistory->setVisible(HasRegistryHistory);
+	Layout->addWidget(FileHistory, 0, 0);
+	Layout->addWidget(RegistryHistory, 1, 0);
 	QLabel* Warning = new QLabel(CSbieView::tr(
 		"File History may use hard links to share data in the source sandbox. "
 		"Duplication copies each history path as an individual file, so the destination may require substantially more storage."), &Dialog);
 	Warning->setWordWrap(true);
 	Warning->setVisible(false);
 	Warning->setStyleSheet("QLabel { color: #c06000; }");
-	Layout->addWidget(Warning);
+	QSizePolicy WarningPolicy = Warning->sizePolicy();
+	WarningPolicy.setRetainSizeWhenHidden(HasFileHistory);
+	Warning->setSizePolicy(WarningPolicy);
+	Layout->addWidget(Warning, 2, 0);
 	QObject::connect(FileHistory, &QCheckBox::toggled, Warning, &QWidget::setVisible);
 
 	QDialogButtonBox* Buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &Dialog);
 	QObject::connect(Buttons, &QDialogButtonBox::accepted, &Dialog, &QDialog::accept);
 	QObject::connect(Buttons, &QDialogButtonBox::rejected, &Dialog, &QDialog::reject);
-	Layout->addWidget(Buttons);
+	Layout->addWidget(Buttons, 3, 0);
+	Dialog.adjustSize();
 	if (theGUI->SafeExec(&Dialog) != QDialog::Accepted)
 		return false;
 	IncludeFileHistory = FileHistory->isChecked();
@@ -1795,7 +1805,8 @@ void CSbieView::OnSandBoxAction(QAction* Action, const QList<CSandBoxPtr>& SandB
 		bool IncludeFileHistory = false;
 		bool IncludeRegistryHistory = false;
 		if (Action == m_pMenuDuplicateEx && !SelectHistoryTransferOptions(this,
-			tr("Duplicate Sandbox with Content"), IncludeFileHistory, IncludeRegistryHistory))
+			tr("Duplicate Sandbox with Content"), pSrcBox->HasFileHistory(), pSrcBox->HasRegistryHistory(),
+			IncludeFileHistory, IncludeRegistryHistory))
 			return;
 		SB_STATUS Status = theAPI->CreateBox(Name, false);
 		

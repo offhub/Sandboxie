@@ -5,7 +5,7 @@
 #include "../MiscHelpers/Common/Common.h"
 
 
-CCompressDialog::CCompressDialog(QWidget *parent)
+CCompressDialog::CCompressDialog(QWidget *parent, bool HasFileHistory, bool HasRegistryHistory)
 	: QDialog(parent)
 {
 	Qt::WindowFlags flags = windowFlags();
@@ -34,11 +34,18 @@ CCompressDialog::CCompressDialog(QWidget *parent)
 	ui.cmbCompression->addItem(tr("Maximum"), 7);
 	ui.cmbCompression->addItem(tr("Ultra"), 9);
 	ui.cmbCompression->setCurrentIndex(ui.cmbCompression->findData(theConf->GetInt("Options/ExportCompression", 3)));
+	ui.chkFileHistory->setVisible(HasFileHistory);
+	ui.chkRegistryHistory->setVisible(HasRegistryHistory);
+	ui.grpHistory->setVisible(HasFileHistory || HasRegistryHistory);
+	QSizePolicy WarningPolicy = ui.lblHistoryWarning->sizePolicy();
+	WarningPolicy.setRetainSizeWhenHidden(HasFileHistory);
+	ui.lblHistoryWarning->setSizePolicy(WarningPolicy);
 	connect(ui.chkFileHistory, &QCheckBox::toggled, ui.lblHistoryWarning, &QWidget::setVisible);
 	ui.lblHistoryWarning->setStyleSheet("QLabel { color: #c06000; }");
 
 	connect(ui.buttonBox, SIGNAL(accepted()), SLOT(accept()));
 	connect(ui.buttonBox, SIGNAL(rejected()), SLOT(reject()));
+	adjustSize();
 
 	//restoreGeometry(theConf->GetBlob("CompressDialog/Window_Geometry"));
 }

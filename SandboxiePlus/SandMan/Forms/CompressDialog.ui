@@ -86,22 +86,22 @@
     <property name="title">
      <string>Retained Histories</string>
     </property>
-    <layout class="QVBoxLayout" name="verticalLayoutHistory">
-     <item>
+    <layout class="QGridLayout" name="gridLayoutHistory">
+     <item row="0" column="0">
       <widget class="QCheckBox" name="chkFileHistory">
        <property name="text">
         <string>Include retained file versions</string>
        </property>
       </widget>
      </item>
-     <item>
+     <item row="1" column="0">
       <widget class="QCheckBox" name="chkRegistryHistory">
        <property name="text">
         <string>Include registry history</string>
        </property>
       </widget>
      </item>
-     <item>
+     <item row="2" column="0">
       <widget class="QLabel" name="lblHistoryWarning">
        <property name="visible">
         <bool>false</bool>

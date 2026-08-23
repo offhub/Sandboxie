@@ -578,8 +578,18 @@ void ExportMultiBoxes(QWidget* parent, const QList<CSandBoxPtr>& SandBoxes)
 		}
 	}
 
+	bool hasFileHistory = false;
+	bool hasRegistryHistory = false;
+	for (const QString& boxName : selectedBoxes) {
+		CSandBoxPtr pBox = theAPI->GetBoxByName(boxName);
+		if (!pBox)
+			continue;
+		hasFileHistory |= pBox->HasFileHistory();
+		hasRegistryHistory |= pBox->HasRegistryHistory();
+	}
+
 	// 2. Compression options
-	CCompressDialog compDlg(parent);
+	CCompressDialog compDlg(parent, hasFileHistory, hasRegistryHistory);
 	if (mustEncrypt)
 		compDlg.SetMustEncrypt();
 	if (theGUI->SafeExec(&compDlg) != QDialog::Accepted)

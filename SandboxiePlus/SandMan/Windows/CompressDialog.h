@@ -9,7 +9,7 @@ class CCompressDialog : public QDialog
 	Q_OBJECT
 
 public:
-	CCompressDialog(QWidget *parent = Q_NULLPTR);
+	CCompressDialog(QWidget *parent = Q_NULLPTR, bool HasFileHistory = true, bool HasRegistryHistory = true);
 	~CCompressDialog();
 
 	QString GetFormat();
