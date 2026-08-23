@@ -30,6 +30,7 @@
 
 #define FILE_HISTORY_DIR             L"FileHistory"
 #define FILE_HISTORY_INDEX_DIR       L"Index"
+#define FILE_HISTORY_DELTA_DIR       L"Deltas"
 #define FILE_HISTORY_ARTIFACT_DIR    L"Artifacts"
 #define FILE_HISTORY_BLOB_DIR        L"Blobs"
 #define FILE_HISTORY_MARKER_SLOTS    4
@@ -38,6 +39,8 @@
 #define FILE_HISTORY_USAGE_SCAN_ATTEMPTS 2
 #define FILE_HISTORY_COLLISION_ATTEMPTS 16
 #define FILE_HISTORY_PUBLISH_ATTEMPTS 2
+#define FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS 1000
+#define FILE_HISTORY_COUNTER_REDIRECTS 256
 #define FILE_HISTORY_SHARING_RETRY_ATTEMPTS 3
 #define FILE_HISTORY_SHARING_RETRY_DELAY_MS 10
 #define FILE_HISTORY_ULONG_MAX       ((ULONG)-1)
@@ -65,6 +68,7 @@ static LIST File_HistoryOptions;
 static LIST File_HistoryExclusions;
 static WCHAR *File_HistoryRoot = NULL;
 static WCHAR *File_HistoryIndex = NULL;
+static WCHAR *File_HistoryDeltas = NULL;
 static WCHAR *File_HistoryArtifacts = NULL;
 static WCHAR *File_HistoryBlobs = NULL;
 static ULONG File_HistoryMaxVersionsTotal = 0;
@@ -141,11 +145,34 @@ static _FX WCHAR *File_HistoryGetCopyPathField(
     const WCHAR *Text, const WCHAR *Name);
 static _FX WCHAR *File_HistorySetMetadataField(
     const WCHAR *Text, const WCHAR *Name, const WCHAR *Value);
+static _FX WCHAR *File_HistoryAppendMetadataField(
+    const WCHAR *Text, const WCHAR *Name, const WCHAR *Value);
+static _FX BOOLEAN File_HistoryRenameFile(
+    const WCHAR *OldTruePath, const WCHAR *NewTruePath,
+    const WCHAR *NewCopyPath, const WCHAR *ExpectedArtifact);
+static _FX WCHAR *File_HistoryGetMarkerCounter(const WCHAR *Marker);
+static _FX NTSTATUS File_HistoryReadCounterVersions(
+    const WCHAR *Counter, ULONG *Versions);
+static _FX NTSTATUS File_HistoryResolveCounter(
+    const WCHAR *Counter, WCHAR *Resolved, ULONG ResolvedLength,
+    ULONG *Versions);
+static _FX NTSTATUS File_HistoryWriteCounterRecord(
+    const WCHAR *Counter, ULONG Versions, const WCHAR *Redirect);
+static _FX NTSTATUS File_HistoryWriteCounterVersions(
+    const WCHAR *Counter, ULONG Versions);
+static _FX NTSTATUS File_HistorySetMarkerCounter(
+    const WCHAR *Marker, const WCHAR *Counter);
 static _FX VOID File_HistoryUpdatePendingPaths(
     const WCHAR *Artifact, const WCHAR *TruePath, const WCHAR *CopyPath);
 static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned);
 static _FX NTSTATUS File_HistoryCheckLimits(
-    const WCHAR *ArtifactPath, ULONGLONG AdditionalSize, HANDLE *Mutex);
+    const WCHAR *Marker, ULONG *Versions, BOOLEAN CheckFileLimit,
+    ULONGLONG AdditionalSize, HANDLE *Mutex);
+static _FX NTSTATUS File_HistoryUpdateMarkerVersions(
+    const WCHAR *Marker, ULONG Versions);
+static _FX NTSTATUS File_HistoryAdjustMarkerVersions(
+    const WCHAR *TruePath, LONG Delta);
+static _FX VOID File_HistoryApplyDeletionJournal(void);
 static _FX BOOLEAN File_HistoryCapture(
     const WCHAR *TruePath, const WCHAR *CopyPath, const WCHAR *Operation);
 
@@ -354,18 +381,73 @@ static _FX VOID File_HistoryFormatHash(
 //---------------------------------------------------------------------------
 
 
+static _FX WCHAR *File_HistoryGetLogicalPath(const WCHAR *TruePath)
+{
+    WCHAR *reparsed_path;
+    WCHAR *logical_path;
+    const WCHAR *path;
+    ULONG length;
+
+    reparsed_path = File_TranslateTempLinks((WCHAR *)TruePath, FALSE);
+    path = reparsed_path ? reparsed_path : TruePath;
+    length = wcslen(path) + 64;
+    logical_path = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (!logical_path) {
+        if (reparsed_path)
+            Dll_Free(reparsed_path);
+        return NULL;
+    }
+
+    wcscpy(logical_path, path);
+    if (reparsed_path)
+        Dll_Free(reparsed_path);
+    SbieDll_TranslateNtToDosPath(logical_path);
+    return logical_path;
+}
+
+
+static _FX BOOLEAN File_HistoryPathsEqual(
+    const WCHAR *First, const WCHAR *Second)
+{
+    WCHAR *first_logical;
+    WCHAR *second_logical;
+    BOOLEAN equal;
+
+    first_logical = File_HistoryGetLogicalPath(First);
+    second_logical = File_HistoryGetLogicalPath(Second);
+    if (first_logical && second_logical)
+        equal = _wcsicmp(first_logical, second_logical) == 0;
+    else
+        equal = _wcsicmp(First, Second) == 0;
+
+    if (first_logical)
+        Dll_Free(first_logical);
+    if (second_logical)
+        Dll_Free(second_logical);
+    return equal;
+}
+
+
 static _FX ULONGLONG File_HistoryHashPath(const WCHAR *Path)
 {
-    ULONGLONG hash = 1469598103934665603ULL;
+    WCHAR *logical_path;
+    const WCHAR *key;
+    ULONGLONG hash;
 
-    while (*Path) {
-        WCHAR c = *Path++;
+    logical_path = File_HistoryGetLogicalPath(Path);
+    key = logical_path ? logical_path : Path;
+    hash = 1469598103934665603ULL;
+
+    while (*key) {
+        WCHAR c = *key++;
         if (c >= L'A' && c <= L'Z')
             c |= 0x20;
         hash ^= (ULONGLONG)(USHORT)c;
         hash *= 1099511628211ULL;
     }
 
+    if (logical_path)
+        Dll_Free(logical_path);
     return hash;
 }
 
@@ -379,18 +461,10 @@ static _FX WCHAR *File_HistoryEscapeDosPath(const WCHAR *NtPath)
 {
     WCHAR *dos_path;
     WCHAR *escaped;
-    ULONG length;
 
-    length = wcslen(NtPath) + 64;
-    dos_path = Dll_AllocTemp(length * sizeof(WCHAR));
+    dos_path = File_HistoryGetLogicalPath(NtPath);
     if (!dos_path)
         return NULL;
-
-    wcscpy(dos_path, NtPath);
-    if (!SbieDll_TranslateNtToDosPath(dos_path)) {
-        Dll_Free(dos_path);
-        return File_JournalEscapeField_internal(L"");
-    }
 
     escaped = File_JournalEscapeField_internal(dos_path);
     Dll_Free(dos_path);
@@ -869,22 +943,200 @@ static _FX WCHAR *File_HistoryBuildMarkerPath(
 }
 
 
+static _FX WCHAR *File_HistoryBuildCounterPath(const WCHAR *Counter)
+{
+    WCHAR *path;
+    ULONG length;
+
+    if (!File_HistoryValidArtifact(Counter))
+        return NULL;
+
+    length = wcslen(File_HistoryIndex) + wcslen(Counter) + 16;
+    path = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (!path)
+        return NULL;
+
+    Sbie_snwprintf(path, length, L"%s\\counter.%s.cnt",
+        File_HistoryIndex, Counter);
+    return path;
+}
+
+
+// Rename aliases use counter metadata so the quota does not reset when a
+// marker moves between paths. Redirect records merge complete alias lineages
+// without scanning and rewriting every marker.
+static _FX NTSTATUS File_HistoryReadCounterVersions(
+    const WCHAR *Counter, ULONG *Versions)
+{
+    return File_HistoryResolveCounter(Counter, NULL, 0, Versions);
+}
+
+
+static _FX NTSTATUS File_HistoryResolveCounter(
+    const WCHAR *Counter, WCHAR *Resolved, ULONG ResolvedLength,
+    ULONG *Versions)
+{
+    WCHAR current[80];
+    WCHAR *path;
+    ULONG depth;
+    NTSTATUS status;
+
+    if (!File_HistoryValidArtifact(Counter))
+        return STATUS_INVALID_PARAMETER;
+    wcscpy(current, Counter);
+
+    for (depth = 0; depth != FILE_HISTORY_COUNTER_REDIRECTS; ++depth) {
+        WCHAR *text = NULL;
+        WCHAR *redirect;
+        WCHAR *versions_text;
+        WCHAR *version_end;
+        ULONGLONG version_value;
+
+        path = File_HistoryBuildCounterPath(current);
+        if (!path)
+            return STATUS_INVALID_PARAMETER;
+        status = File_HistoryReadText(path, &text);
+        Dll_Free(path);
+        if (!NT_SUCCESS(status))
+            return status;
+
+        redirect = File_HistoryGetMetadataField(
+            text, L"redirect", FALSE);
+        if (redirect && *redirect) {
+            if (!File_HistoryValidArtifact(redirect) ||
+                    _wcsicmp(redirect, current) == 0) {
+                Dll_Free(redirect);
+                Dll_Free(text);
+                return STATUS_INVALID_PARAMETER;
+            }
+            wcscpy(current, redirect);
+            Dll_Free(redirect);
+            Dll_Free(text);
+            continue;
+        }
+        if (redirect)
+            Dll_Free(redirect);
+
+        versions_text = File_HistoryGetMetadataField(
+            text, L"versions", FALSE);
+        Dll_Free(text);
+        if (!versions_text || !*versions_text) {
+            if (versions_text)
+                Dll_Free(versions_text);
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        version_end = NULL;
+        version_value = _wcstoui64(versions_text, &version_end, 10);
+        if (version_end == versions_text || *version_end != L'\0') {
+            Dll_Free(versions_text);
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (version_value > FILE_HISTORY_ULONG_MAX)
+            version_value = FILE_HISTORY_ULONG_MAX;
+        if (Versions)
+            *Versions = (ULONG)version_value;
+        if (Resolved) {
+            if (ResolvedLength <= wcslen(current)) {
+                Dll_Free(versions_text);
+                return STATUS_BUFFER_TOO_SMALL;
+            }
+            wcscpy(Resolved, current);
+        }
+        Dll_Free(versions_text);
+        return STATUS_SUCCESS;
+    }
+
+    return STATUS_INVALID_PARAMETER;
+}
+
+
+static _FX NTSTATUS File_HistoryWriteCounterRecord(
+    const WCHAR *Counter, ULONG Versions, const WCHAR *Redirect)
+{
+    WCHAR *path;
+    WCHAR text[96];
+    NTSTATUS status;
+
+    path = File_HistoryBuildCounterPath(Counter);
+    if (!path || (Redirect && !File_HistoryValidArtifact(Redirect))) {
+        if (path)
+            Dll_Free(path);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Redirect) {
+        Sbie_snwprintf(text, RTL_NUMBER_OF_V1(text),
+            L"redirect=%s\r\n", Redirect);
+    }
+    else {
+        Sbie_snwprintf(text, RTL_NUMBER_OF_V1(text),
+            L"versions=%u\r\n", Versions);
+    }
+    status = File_HistoryWriteTextAtomic(path, text, TRUE);
+    Dll_Free(path);
+    return status;
+}
+
+
+static _FX NTSTATUS File_HistoryWriteCounterVersions(
+    const WCHAR *Counter, ULONG Versions)
+{
+    WCHAR resolved[80];
+    NTSTATUS status;
+
+    status = File_HistoryResolveCounter(
+        Counter, resolved, RTL_NUMBER_OF_V1(resolved), NULL);
+    if (!NT_SUCCESS(status)) {
+        if (status != STATUS_OBJECT_NAME_NOT_FOUND &&
+                status != STATUS_OBJECT_PATH_NOT_FOUND &&
+                status != STATUS_NO_SUCH_FILE) {
+            return status;
+        }
+        wcscpy(resolved, Counter);
+    }
+    return File_HistoryWriteCounterRecord(resolved, Versions, NULL);
+}
+
+
 //---------------------------------------------------------------------------
 // File_HistoryParseMarker
 //---------------------------------------------------------------------------
 
 
 static _FX BOOLEAN File_HistoryParseMarker(
-    WCHAR *Text, const WCHAR *TruePath, WCHAR *Artifact, ULONG ArtifactLength)
+    WCHAR *Text, const WCHAR *TruePath, WCHAR *Artifact, ULONG ArtifactLength,
+    ULONG *Versions)
 {
     WCHAR *artifact_end;
     WCHAR *path;
     WCHAR *path_end;
     WCHAR *unescaped_path;
+    WCHAR *versions_text;
+    WCHAR *version_end;
+    ULONGLONG version_value;
     BOOLEAN matches;
 
     if (_wcsnicmp(Text, L"artifact=", 9) != 0)
         return FALSE;
+
+    versions_text = File_HistoryGetMetadataField(
+        Text, L"versions", FALSE);
+    if (!versions_text || !*versions_text) {
+        if (versions_text)
+            Dll_Free(versions_text);
+        return FALSE;
+    }
+    version_end = NULL;
+    version_value = _wcstoui64(versions_text, &version_end, 10);
+    if (version_end == versions_text || *version_end != L'\0') {
+        Dll_Free(versions_text);
+        return FALSE;
+    }
+    if (version_value > FILE_HISTORY_ULONG_MAX)
+        version_value = FILE_HISTORY_ULONG_MAX;
+    *Versions = (ULONG)version_value;
+    Dll_Free(versions_text);
 
     artifact_end = wcschr(Text + 9, L'\n');
     if (!artifact_end)
@@ -906,7 +1158,7 @@ static _FX BOOLEAN File_HistoryParseMarker(
     unescaped_path = File_JournalUnescapeField_internal(path);
     if (!unescaped_path)
         return FALSE;
-    matches = _wcsicmp(unescaped_path, TruePath) == 0;
+    matches = File_HistoryPathsEqual(unescaped_path, TruePath);
     Dll_Free(unescaped_path);
     if (!matches)
         return FALSE;
@@ -926,14 +1178,17 @@ static _FX BOOLEAN File_HistoryParseMarker(
 
 static _FX WCHAR *File_HistoryFindMarker(
     const WCHAR *TruePath, WCHAR *Artifact, ULONG ArtifactLength,
-    BOOLEAN FindFree)
+    ULONG *Versions, BOOLEAN FindFree)
 {
     WCHAR *first_free = NULL;
     ULONG slot;
 
+    *Versions = 0;
+
     for (slot = 0; slot != FILE_HISTORY_MARKER_SLOTS; ++slot) {
         WCHAR *marker = File_HistoryBuildMarkerPath(TruePath, slot);
         WCHAR *text = NULL;
+        WCHAR *counter = NULL;
         NTSTATUS status;
 
         if (!marker)
@@ -941,13 +1196,26 @@ static _FX WCHAR *File_HistoryFindMarker(
 
         status = File_HistoryReadText(marker, &text);
         if (NT_SUCCESS(status)) {
+            counter = File_HistoryGetMetadataField(
+                text, L"counter", FALSE);
             if (File_HistoryParseMarker(
-                    text, TruePath, Artifact, ArtifactLength)) {
+                    text, TruePath, Artifact, ArtifactLength, Versions)) {
+                if (counter) {
+                    ULONG counter_versions;
+
+                    if (NT_SUCCESS(File_HistoryReadCounterVersions(
+                            counter, &counter_versions)))
+                        *Versions = counter_versions;
+                }
+                if (counter)
+                    Dll_Free(counter);
                 Dll_Free(text);
                 if (first_free)
                     Dll_Free(first_free);
                 return marker;
             }
+            if (counter)
+                Dll_Free(counter);
             Dll_Free(text);
         }
         else if ((status == STATUS_OBJECT_NAME_NOT_FOUND ||
@@ -966,11 +1234,133 @@ static _FX WCHAR *File_HistoryFindMarker(
 
 
 //---------------------------------------------------------------------------
+// File_HistoryUpdateMarkerVersions
+//---------------------------------------------------------------------------
+
+
+static _FX NTSTATUS File_HistoryUpdateMarkerVersions(
+    const WCHAR *Marker, ULONG Versions)
+{
+    WCHAR versions_text[32];
+    WCHAR *text = NULL;
+    WCHAR *updated = NULL;
+    WCHAR *counter;
+    NTSTATUS status;
+
+    counter = File_HistoryGetMarkerCounter(Marker);
+    if (counter) {
+        status = File_HistoryWriteCounterVersions(counter, Versions);
+        Dll_Free(counter);
+        return status;
+    }
+
+    status = File_HistoryReadText(Marker, &text);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    Sbie_snwprintf(versions_text, RTL_NUMBER_OF_V1(versions_text),
+        L"%u", Versions);
+    updated = File_HistorySetMetadataField(
+        text, L"versions", versions_text);
+    if (!updated) {
+        Dll_Free(text);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = File_HistoryWriteTextAtomic(Marker, updated, TRUE);
+    Dll_Free(updated);
+    Dll_Free(text);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryAdjustMarkerVersions
+//---------------------------------------------------------------------------
+
+
+static _FX NTSTATUS File_HistoryAdjustMarkerVersions(
+    const WCHAR *TruePath, LONG Delta)
+{
+    WCHAR artifact[80];
+    WCHAR *marker;
+    ULONG versions;
+    NTSTATUS status;
+
+    marker = File_HistoryFindMarker(
+        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), &versions, FALSE);
+    if (!marker)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    if (Delta < 0) {
+        ULONGLONG decrement = -(LONGLONG)Delta;
+
+        if (versions != 0 && versions != FILE_HISTORY_ULONG_MAX) {
+            if (decrement >= versions)
+                versions = 0;
+            else
+                versions -= (ULONG)decrement;
+        }
+    }
+    else if (Delta > 0 && versions != FILE_HISTORY_ULONG_MAX) {
+        if ((ULONG)Delta > FILE_HISTORY_ULONG_MAX - versions)
+            versions = FILE_HISTORY_ULONG_MAX;
+        else
+            versions += (ULONG)Delta;
+    }
+
+    status = File_HistoryUpdateMarkerVersions(marker, versions);
+    Dll_Free(marker);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryCreateDeltaMutex
+//---------------------------------------------------------------------------
+
+
+static _FX HANDLE File_HistoryCreateDeltaMutexEx(DWORD Timeout)
+{
+    WCHAR *name;
+    HANDLE mutex;
+    DWORD wait_result;
+    ULONG length;
+
+    length = wcslen(Dll_BoxName) + 48;
+    name = Dll_AllocTemp(length * sizeof(WCHAR));
+    if (!name)
+        return NULL;
+
+    Sbie_snwprintf(name, length,
+        L"Sandboxie_FileHistoryDelta_%s", Dll_BoxName);
+    mutex = CreateMutex(NULL, FALSE, name);
+    Dll_Free(name);
+    if (!mutex)
+        return NULL;
+
+    wait_result = WaitForSingleObject(mutex, Timeout);
+    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return NULL;
+    }
+    return mutex;
+}
+
+
+static _FX HANDLE File_HistoryCreateDeltaMutex(void)
+{
+    return File_HistoryCreateDeltaMutexEx(INFINITE);
+}
+
+
+//---------------------------------------------------------------------------
 // File_HistoryCreateMutex
 //---------------------------------------------------------------------------
 
 
-static _FX HANDLE File_HistoryCreateMutex(const WCHAR *TruePath)
+static _FX HANDLE File_HistoryCreateMutexEx(
+    const WCHAR *TruePath, DWORD Timeout)
 {
     WCHAR *name;
     HANDLE mutex;
@@ -989,13 +1379,19 @@ static _FX HANDLE File_HistoryCreateMutex(const WCHAR *TruePath)
     if (!mutex)
         return NULL;
 
-    wait_result = WaitForSingleObject(mutex, INFINITE);
+    wait_result = WaitForSingleObject(mutex, Timeout);
     if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
         CloseHandle(mutex);
         return NULL;
     }
 
     return mutex;
+}
+
+
+static _FX HANDLE File_HistoryCreateMutex(const WCHAR *TruePath)
+{
+    return File_HistoryCreateMutexEx(TruePath, INFINITE);
 }
 
 
@@ -1018,7 +1414,8 @@ static _FX VOID File_HistoryReleaseMutex(HANDLE Mutex)
 //---------------------------------------------------------------------------
 
 
-static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned)
+static _FX HANDLE File_HistoryCreateLimitMutexEx(
+    BOOLEAN *Abandoned, DWORD Timeout)
 {
     WCHAR *name;
     HANDLE mutex;
@@ -1040,7 +1437,7 @@ static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned)
     if (!mutex)
         return NULL;
 
-    wait_result = WaitForSingleObject(mutex, INFINITE);
+    wait_result = WaitForSingleObject(mutex, Timeout);
     if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
         CloseHandle(mutex);
         return NULL;
@@ -1049,6 +1446,12 @@ static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned)
         *Abandoned = TRUE;
 
     return mutex;
+}
+
+
+static _FX HANDLE File_HistoryCreateLimitMutex(BOOLEAN *Abandoned)
+{
+    return File_HistoryCreateLimitMutexEx(Abandoned, INFINITE);
 }
 
 
@@ -1068,14 +1471,18 @@ static _FX BOOLEAN File_HistoryCreateMutexPair(
     *NewMutex = NULL;
 
     if (old_hash <= new_hash) {
-        *OldMutex = File_HistoryCreateMutex(OldTruePath);
+        *OldMutex = File_HistoryCreateMutexEx(
+            OldTruePath, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
         if (*OldMutex)
-            *NewMutex = File_HistoryCreateMutex(NewTruePath);
+            *NewMutex = File_HistoryCreateMutexEx(
+                NewTruePath, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
     }
     else {
-        *NewMutex = File_HistoryCreateMutex(NewTruePath);
+        *NewMutex = File_HistoryCreateMutexEx(
+            NewTruePath, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
         if (*NewMutex)
-            *OldMutex = File_HistoryCreateMutex(OldTruePath);
+            *OldMutex = File_HistoryCreateMutexEx(
+                OldTruePath, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
     }
 
     if (!*OldMutex || !*NewMutex) {
@@ -1465,7 +1872,8 @@ static _FX NTSTATUS File_HistoryQueryUsage(
 
 
 static _FX NTSTATUS File_HistoryCheckLimits(
-    const WCHAR *ArtifactPath, ULONGLONG AdditionalSize, HANDLE *Mutex)
+    const WCHAR *Marker, ULONG *Versions, BOOLEAN CheckFileLimit,
+    ULONGLONG AdditionalSize, HANDLE *Mutex)
 {
     HANDLE mutex;
     NTSTATUS status;
@@ -1484,17 +1892,8 @@ static _FX NTSTATUS File_HistoryCheckLimits(
             AdditionalSize > File_HistoryMaxFileSize)
         return STATUS_FILE_TOO_LARGE;
 
-    if (File_HistoryMaxVersionsPerFile) {
-        ULONG file_versions = 0;
-        ULONGLONG file_size = 0;
-
-        status = File_HistoryAddDirectoryUsage(
-            ArtifactPath, &file_versions, &file_size,
-            File_HistoryMaxVersionsPerFile);
-        if (!NT_SUCCESS(status))
-            return status;
-    }
-    if (!File_HistoryMaxVersionsTotal &&
+    if (!CheckFileLimit &&
+            !File_HistoryMaxVersionsTotal &&
             !File_HistoryMaxSizeTotal &&
             !File_HistoryGetUsageState())
         return STATUS_SUCCESS;
@@ -1502,6 +1901,25 @@ static _FX NTSTATUS File_HistoryCheckLimits(
     mutex = File_HistoryCreateLimitMutex(&abandoned);
     if (!mutex)
         return STATUS_INSUFFICIENT_RESOURCES;
+
+    if (CheckFileLimit && Marker) {
+        WCHAR *counter = File_HistoryGetMarkerCounter(Marker);
+
+        if (counter) {
+            ULONG current_versions;
+
+            if (NT_SUCCESS(File_HistoryReadCounterVersions(
+                    counter, &current_versions))) {
+                *Versions = current_versions;
+            }
+            Dll_Free(counter);
+        }
+        if (File_HistoryMaxVersionsPerFile &&
+                *Versions >= File_HistoryMaxVersionsPerFile) {
+            File_HistoryReleaseMutex(mutex);
+            return STATUS_QUOTA_EXCEEDED;
+        }
+    }
 
     // Build aggregate usage once per box and session.
     // Captures update it under this mutex; pending removals invalidate it.
@@ -1577,10 +1995,13 @@ static _FX VOID File_HistoryTrackCreated(
     WCHAR *escaped_copy;
     WCHAR *escaped_copy_dos;
     WCHAR *escaped_image;
+    WCHAR *counter;
+    WCHAR *updated;
     HANDLE mutex;
     FILETIME now;
     NTSTATUS status;
     ULONG length;
+    ULONG versions;
 
     if (!File_HistoryMatches(TruePath))
         return;
@@ -1590,11 +2011,12 @@ static _FX VOID File_HistoryTrackCreated(
         return;
 
     marker = File_HistoryFindMarker(
-        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), TRUE);
+        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), &versions, TRUE);
     if (!marker) {
         File_HistoryReleaseMutex(mutex);
         return;
     }
+    counter = File_HistoryGetMarkerCounter(marker);
 
     status = __sys_NtQueryInformationFile(
         FileHandle, &iosb, &internal, sizeof(internal),
@@ -1616,6 +2038,8 @@ static _FX VOID File_HistoryTrackCreated(
     }
     if (!NT_SUCCESS(status)) {
         Dll_Free(marker);
+        if (counter)
+            Dll_Free(counter);
         File_HistoryReleaseMutex(mutex);
         return;
     }
@@ -1631,6 +2055,8 @@ static _FX VOID File_HistoryTrackCreated(
     artifact_path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (!artifact_path) {
         Dll_Free(marker);
+        if (counter)
+            Dll_Free(counter);
         File_HistoryReleaseMutex(mutex);
         return;
     }
@@ -1649,7 +2075,8 @@ static _FX VOID File_HistoryTrackCreated(
             length = wcslen(artifact) + wcslen(escaped_true) +
                      wcslen(escaped_dos) + wcslen(escaped_copy) +
                      wcslen(escaped_copy_dos) +
-                     wcslen(escaped_image) + 160;
+                     wcslen(escaped_image) +
+                     (counter ? wcslen(counter) + 32 : 0) + 160;
             text = Dll_AllocTemp(length * sizeof(WCHAR));
         }
         else
@@ -1658,12 +2085,23 @@ static _FX VOID File_HistoryTrackCreated(
             Sbie_snwprintf(text, length,
                 L"artifact=%s\r\npath=%s\r\ndos_path=%s\r\n"
                 L"copy_path=%s\r\ncopy_dos_path=%s\r\n"
-                L"created=%016I64X\r\npid=%u\r\nimage=%s\r\n",
+                L"created=%016I64X\r\npid=%u\r\nimage=%s\r\n"
+                L"versions=%u\r\n",
                 artifact, escaped_true, escaped_dos,
                 escaped_copy, escaped_copy_dos,
-                basic.CreationTime.QuadPart, Dll_ProcessId, escaped_image);
-            status = File_HistoryWriteTextAtomic(
-                marker, text, TRUE);
+                basic.CreationTime.QuadPart, Dll_ProcessId, escaped_image,
+                versions);
+            if (counter) {
+                updated = File_HistoryAppendMetadataField(
+                    text, L"counter", counter);
+                Dll_Free(text);
+                text = updated;
+            }
+            if (text)
+                status = File_HistoryWriteTextAtomic(
+                    marker, text, TRUE);
+            else
+                status = STATUS_INSUFFICIENT_RESOURCES;
             Dll_Free(text);
         }
         else
@@ -1685,6 +2123,8 @@ static _FX VOID File_HistoryTrackCreated(
 
     Dll_Free(artifact_path);
     Dll_Free(marker);
+    if (counter)
+        Dll_Free(counter);
     File_HistoryReleaseMutex(mutex);
 }
 
@@ -2359,7 +2799,11 @@ static _FX BOOLEAN File_HistoryCapture(
     BOOLEAN write_metadata;
     BOOLEAN hash_valid;
     BOOLEAN content_reused;
+    BOOLEAN evidence_published = FALSE;
+    BOOLEAN version_reserved = FALSE;
+    BOOLEAN version_committed = FALSE;
     ULONG blob_state;
+    ULONG versions;
 
     if (!File_HistoryMatches(TruePath))
         return FALSE;
@@ -2369,16 +2813,15 @@ static _FX BOOLEAN File_HistoryCapture(
         return FALSE;
 
     marker = File_HistoryFindMarker(
-        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), FALSE);
+        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), &versions, FALSE);
     if (!marker) {
         File_HistoryReleaseMutex(mutex);
         return FALSE;
     }
-    Dll_Free(marker);
-
     length = wcslen(File_HistoryArtifacts) + wcslen(artifact) + 2;
     artifact_path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (!artifact_path) {
+        Dll_Free(marker);
         File_HistoryReleaseMutex(mutex);
         return FALSE;
     }
@@ -2392,6 +2835,7 @@ static _FX BOOLEAN File_HistoryCapture(
     if (!NT_SUCCESS(status) ||
             (info.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
                                     FILE_ATTRIBUTE_REPARSE_POINT))) {
+        Dll_Free(marker);
         Dll_Free(artifact_path);
         File_HistoryReleaseMutex(mutex);
         return FALSE;
@@ -2408,6 +2852,7 @@ static _FX BOOLEAN File_HistoryCapture(
             Dll_Free(meta_path);
         if (temp_path)
             Dll_Free(temp_path);
+        Dll_Free(marker);
         Dll_Free(artifact_path);
         File_HistoryReleaseMutex(mutex);
         return FALSE;
@@ -2448,6 +2893,7 @@ retry_capture:
                     Dll_Free(temp_path);
                     Dll_Free(version_path);
                     Dll_Free(artifact_path);
+                    Dll_Free(marker);
                     File_HistoryReleaseMutex(mutex);
                     return TRUE;
                 }
@@ -2489,7 +2935,7 @@ retry_capture:
 
     if (need_copy) {
         status = File_HistoryCheckLimits(
-            artifact_path,
+            marker, &versions, TRUE,
             info.EndOfFile.QuadPart > 0
                 ? (ULONGLONG)info.EndOfFile.QuadPart : 0,
             &limit_mutex);
@@ -2523,7 +2969,7 @@ retry_capture:
                         publish_attempt < FILE_HISTORY_PUBLISH_ATTEMPTS;
                         ++publish_attempt) {
                     status = File_HistoryCheckLimits(
-                        artifact_path,
+                        marker, &versions, !version_reserved,
                         info.EndOfFile.QuadPart > 0
                             ? (ULONGLONG)info.EndOfFile.QuadPart : 0,
                         &limit_mutex);
@@ -2531,10 +2977,28 @@ retry_capture:
                         File_HistoryDeleteFile(temp_path);
                         break;
                     }
+                    if (!version_reserved &&
+                            info.EndOfFile.QuadPart > 0) {
+                        ULONG next_versions = versions;
+
+                        if (next_versions != FILE_HISTORY_ULONG_MAX)
+                            ++next_versions;
+                        status = File_HistoryUpdateMarkerVersions(
+                            marker, next_versions);
+                        if (!NT_SUCCESS(status)) {
+                            File_HistoryReleaseMutex(limit_mutex);
+                            limit_mutex = NULL;
+                            File_HistoryDeleteFile(temp_path);
+                            break;
+                        }
+                        versions = next_versions;
+                        version_reserved = TRUE;
+                    }
                     status = File_HistoryPublishCopy(
                         temp_path, version_path, hash, hash_valid,
                         blob_state, &content_reused);
                     if (NT_SUCCESS(status)) {
+                        evidence_published = TRUE;
                         File_HistoryCommitUsage(
                             info.EndOfFile.QuadPart > 0
                                 ? (ULONGLONG)info.EndOfFile.QuadPart : 0);
@@ -2627,6 +3091,8 @@ retry_capture:
                 content_reused ? L"y" : L"n");
             status = File_HistoryWriteTextAtomic(
                 meta_path, text, FALSE);
+            if (NT_SUCCESS(status) && evidence_published)
+                version_committed = TRUE;
             Dll_Free(text);
         }
         else
@@ -2648,10 +3114,35 @@ retry_capture:
     else if (!NT_SUCCESS(status) && status != STATUS_FILE_TOO_LARGE)
         File_HistoryLogWarning(L"Evidence capture", status, TruePath);
 
+    if (evidence_published && !version_committed) {
+        File_HistoryDeleteFile(version_path);
+        File_HistoryDeleteFile(meta_path);
+        File_HistoryInvalidateUsage();
+    }
+    if (version_reserved && !version_committed &&
+            versions != FILE_HISTORY_ULONG_MAX) {
+        BOOLEAN rollback_abandoned;
+        HANDLE rollback_mutex = File_HistoryCreateLimitMutex(
+            &rollback_abandoned);
+        NTSTATUS counter_status;
+
+        if (rollback_mutex && rollback_abandoned)
+            File_HistoryInvalidateUsage();
+        counter_status = rollback_mutex
+            ? File_HistoryAdjustMarkerVersions(TruePath, -1)
+            : STATUS_INSUFFICIENT_RESOURCES;
+        File_HistoryReleaseMutex(rollback_mutex);
+        if (!NT_SUCCESS(counter_status))
+            File_HistoryLogWarning(
+                L"Evidence version counter rollback",
+                counter_status, TruePath);
+    }
+
     Dll_Free(meta_path);
     Dll_Free(temp_path);
     Dll_Free(version_path);
     Dll_Free(artifact_path);
+    Dll_Free(marker);
     File_HistoryReleaseMutex(limit_mutex);
     File_HistoryReleaseMutex(mutex);
     return NT_SUCCESS(status) || status == STATUS_FILE_TOO_LARGE;
@@ -2693,10 +3184,13 @@ static _FX BOOLEAN File_HistoryArmDelete(
     ULONG length;
     ULONG name_len;
     ULONG info_len;
+    ULONG versions;
     ULONGLONG event_id;
     ULONGLONG process_start = 0;
     BOOLEAN link_exists = FALSE;
     BOOLEAN link_created = FALSE;
+    BOOLEAN version_reserved = FALSE;
+    BOOLEAN version_committed = FALSE;
 
     if (!File_HistoryMatches(TruePath))
         return FALSE;
@@ -2706,16 +3200,15 @@ static _FX BOOLEAN File_HistoryArmDelete(
         return FALSE;
 
     marker = File_HistoryFindMarker(
-        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), FALSE);
+        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), &versions, FALSE);
     if (!marker) {
         File_HistoryReleaseMutex(mutex);
         return FALSE;
     }
-    Dll_Free(marker);
-
     length = wcslen(File_HistoryArtifacts) + wcslen(artifact) + 2;
     artifact_path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (!artifact_path) {
+        Dll_Free(marker);
         File_HistoryReleaseMutex(mutex);
         return FALSE;
     }
@@ -2730,6 +3223,7 @@ static _FX BOOLEAN File_HistoryArmDelete(
             Dll_Free(link_path);
         if (meta_path)
             Dll_Free(meta_path);
+        Dll_Free(marker);
         Dll_Free(artifact_path);
         File_HistoryReleaseMutex(mutex);
         return FALSE;
@@ -2766,7 +3260,7 @@ static _FX BOOLEAN File_HistoryArmDelete(
             FileNetworkOpenInformation);
         if (NT_SUCCESS(status)) {
             status = File_HistoryCheckLimits(
-                artifact_path,
+                marker, &versions, TRUE,
                 source_network.EndOfFile.QuadPart > 0
                     ? (ULONGLONG)source_network.EndOfFile.QuadPart : 0,
                 &limit_mutex);
@@ -2781,6 +3275,7 @@ static _FX BOOLEAN File_HistoryArmDelete(
             Dll_Free(meta_path);
             Dll_Free(link_path);
             Dll_Free(artifact_path);
+            Dll_Free(marker);
             File_HistoryReleaseMutex(limit_mutex);
             File_HistoryReleaseMutex(mutex);
             return FALSE;
@@ -2791,6 +3286,22 @@ static _FX BOOLEAN File_HistoryArmDelete(
         info->RootDirectory = NULL;
         info->FileNameLength = name_len;
         memcpy(info->FileName, link_path, name_len);
+        if (source_network.EndOfFile.QuadPart > 0) {
+            ULONG next_versions = versions;
+
+            if (next_versions != FILE_HISTORY_ULONG_MAX)
+                ++next_versions;
+            status = File_HistoryUpdateMarkerVersions(
+                marker, next_versions);
+            if (NT_SUCCESS(status)) {
+                versions = next_versions;
+                version_reserved = TRUE;
+            }
+        }
+        if (!NT_SUCCESS(status)) {
+            Dll_Free(info);
+            goto arm_delete_finish;
+        }
         status = __sys_NtSetInformationFile(
             FileHandle, &iosb, info, info_len, FileLinkInformation);
         Dll_Free(info);
@@ -2839,6 +3350,8 @@ static _FX BOOLEAN File_HistoryArmDelete(
                 Dll_ProcessId, process_start, escaped_image);
             meta_status = File_HistoryWriteTextAtomic(
                 meta_path, text, TRUE);
+            if (NT_SUCCESS(meta_status) && version_reserved)
+                version_committed = TRUE;
             Dll_Free(text);
         }
         else
@@ -2899,9 +3412,30 @@ static _FX BOOLEAN File_HistoryArmDelete(
                 L"Delete-on-close evidence link", status, TruePath);
     }
 
+arm_delete_finish:
+    if (version_reserved && !version_committed &&
+            versions != FILE_HISTORY_ULONG_MAX) {
+        BOOLEAN rollback_abandoned;
+        HANDLE rollback_mutex = File_HistoryCreateLimitMutex(
+            &rollback_abandoned);
+        NTSTATUS counter_status;
+
+        if (rollback_mutex && rollback_abandoned)
+            File_HistoryInvalidateUsage();
+        counter_status = rollback_mutex
+            ? File_HistoryAdjustMarkerVersions(TruePath, -1)
+            : STATUS_INSUFFICIENT_RESOURCES;
+        File_HistoryReleaseMutex(rollback_mutex);
+        if (!NT_SUCCESS(counter_status))
+            File_HistoryLogWarning(
+                L"Delete-on-close version counter rollback",
+                counter_status, TruePath);
+    }
+
     Dll_Free(meta_path);
     Dll_Free(link_path);
     Dll_Free(artifact_path);
+    Dll_Free(marker);
     File_HistoryReleaseMutex(limit_mutex);
     File_HistoryReleaseMutex(mutex);
     return NT_SUCCESS(status) || status == STATUS_FILE_TOO_LARGE;
@@ -2918,10 +3452,13 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
     WCHAR artifact[80];
     WCHAR *marker;
     WCHAR *path;
+    FILE_INTERNAL_INFORMATION internal;
+    FILE_NETWORK_OPEN_INFORMATION info;
     HANDLE mutex;
     HANDLE limit_mutex;
     BOOLEAN abandoned;
     ULONG length;
+    ULONG versions;
 
     if (!File_HistoryRoot)
         return;
@@ -2931,15 +3468,14 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
         return;
 
     marker = File_HistoryFindMarker(
-        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), FALSE);
+        TruePath, artifact, RTL_NUMBER_OF_V1(artifact), &versions, FALSE);
     if (!marker) {
         File_HistoryReleaseMutex(mutex);
         return;
     }
-    Dll_Free(marker);
-
     limit_mutex = File_HistoryCreateLimitMutex(&abandoned);
     if (!limit_mutex) {
+        Dll_Free(marker);
         File_HistoryReleaseMutex(mutex);
         return;
     }
@@ -2950,12 +3486,27 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
     path = Dll_AllocTemp(length * sizeof(WCHAR));
     if (path) {
         NTSTATUS status;
+        BOOLEAN counted = FALSE;
 
         Sbie_snwprintf(path, length, L"%s\\%s\\pending.bin",
             File_HistoryArtifacts, artifact);
+        status = File_HistoryQueryIdentity(
+            path, &internal, &info, NULL);
+        if (NT_SUCCESS(status) && info.EndOfFile.QuadPart > 0)
+            counted = TRUE;
         status = File_HistoryDeleteFile(path);
-        if (NT_SUCCESS(status))
+        if (NT_SUCCESS(status)) {
             File_HistoryInvalidateUsage();
+            if (counted && versions != 0 &&
+                    versions != FILE_HISTORY_ULONG_MAX) {
+                NTSTATUS counter_status =
+                    File_HistoryUpdateMarkerVersions(marker, versions - 1);
+                if (!NT_SUCCESS(counter_status))
+                    File_HistoryLogWarning(
+                        L"Delete-on-close version counter rollback",
+                        counter_status, TruePath);
+            }
+        }
         Sbie_snwprintf(path, length, L"%s\\%s\\pending.txt",
             File_HistoryArtifacts, artifact);
         File_HistoryDeleteFile(path);
@@ -2963,6 +3514,7 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
     }
 
     File_HistoryReleaseMutex(limit_mutex);
+    Dll_Free(marker);
     File_HistoryReleaseMutex(mutex);
 }
 
@@ -2972,66 +3524,161 @@ static _FX VOID File_HistoryCancelDelete(const WCHAR *TruePath)
 //---------------------------------------------------------------------------
 
 
-static _FX VOID File_HistoryRenameFile(
+static _FX BOOLEAN File_HistoryRenameFile(
     const WCHAR *OldTruePath, const WCHAR *NewTruePath,
     const WCHAR *NewCopyPath, const WCHAR *ExpectedArtifact)
 {
     WCHAR artifact[80];
     WCHAR artifact2[80];
-    WCHAR *old_marker;
-    WCHAR *new_marker;
-    WCHAR *text;
-    WCHAR *escaped_new;
-    WCHAR *escaped_new_dos;
-    WCHAR *escaped_copy;
-    WCHAR *escaped_copy_dos;
+    WCHAR *old_marker = NULL;
+    WCHAR *new_marker = NULL;
+    WCHAR *text = NULL;
+    WCHAR *escaped_new = NULL;
+    WCHAR *escaped_new_dos = NULL;
+    WCHAR *escaped_copy = NULL;
+    WCHAR *escaped_copy_dos = NULL;
+    WCHAR *old_counter = NULL;
+    WCHAR *new_counter = NULL;
+    WCHAR *counter = NULL;
+    WCHAR *old_marker_text = NULL;
+    WCHAR *updated;
+    WCHAR old_root[80];
+    WCHAR new_root[80];
+    WCHAR displaced_root[80];
     HANDLE old_mutex;
     HANDLE new_mutex;
+    HANDLE limit_mutex = NULL;
     NTSTATUS status;
     ULONG length;
+    ULONG old_versions;
+    ULONG new_versions;
+    ULONG versions;
+    ULONG counter_versions = 0;
+    ULONG displaced_versions = 0;
+    BOOLEAN counter_existed = FALSE;
+    BOOLEAN counter_updated = FALSE;
+    BOOLEAN redirect_written = FALSE;
+    BOOLEAN old_marker_updated = FALSE;
+    BOOLEAN completed = FALSE;
 
     if (!File_HistoryRoot)
-        return;
+        return TRUE;
 
     if (!File_HistoryCreateMutexPair(
             OldTruePath, NewTruePath, &old_mutex, &new_mutex))
-        return;
+        return FALSE;
+
+    {
+        BOOLEAN abandoned;
+
+        limit_mutex = File_HistoryCreateLimitMutexEx(
+            &abandoned, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
+        if (!limit_mutex)
+            goto rename_finish;
+        if (abandoned)
+            File_HistoryInvalidateUsage();
+    }
 
     old_marker = File_HistoryFindMarker(
-        OldTruePath, artifact, RTL_NUMBER_OF_V1(artifact), FALSE);
+        OldTruePath, artifact, RTL_NUMBER_OF_V1(artifact),
+        &old_versions, FALSE);
     if (!old_marker) {
-        if (ExpectedArtifact) {
-            File_HistoryReleaseMutex(new_mutex);
-            File_HistoryReleaseMutex(old_mutex);
-            return;
-        }
-
-        new_marker = File_HistoryFindMarker(
-            NewTruePath, artifact2, RTL_NUMBER_OF_V1(artifact2), FALSE);
-        if (new_marker) {
-            File_HistoryDeleteFile(new_marker);
-            Dll_Free(new_marker);
-        }
-        File_HistoryReleaseMutex(new_mutex);
-        File_HistoryReleaseMutex(old_mutex);
-        return;
+        completed = TRUE;
+        goto rename_finish;
     }
 
     if (ExpectedArtifact &&
             _wcsicmp(artifact, ExpectedArtifact) != 0) {
-        Dll_Free(old_marker);
-        File_HistoryReleaseMutex(new_mutex);
-        File_HistoryReleaseMutex(old_mutex);
-        return;
+        completed = TRUE;
+        goto rename_finish;
     }
 
     new_marker = File_HistoryFindMarker(
-        NewTruePath, artifact2, RTL_NUMBER_OF_V1(artifact2), TRUE);
+        NewTruePath, artifact2, RTL_NUMBER_OF_V1(artifact2),
+        &new_versions, TRUE);
     if (!new_marker) {
-        Dll_Free(old_marker);
-        File_HistoryReleaseMutex(new_mutex);
-        File_HistoryReleaseMutex(old_mutex);
-        return;
+        goto rename_finish;
+    }
+
+    old_counter = File_HistoryGetMarkerCounter(old_marker);
+    new_counter = File_HistoryGetMarkerCounter(new_marker);
+    old_root[0] = L'\0';
+    new_root[0] = L'\0';
+    displaced_root[0] = L'\0';
+    if (old_counter) {
+        status = File_HistoryResolveCounter(
+            old_counter, old_root, RTL_NUMBER_OF_V1(old_root),
+            &old_versions);
+        if (!NT_SUCCESS(status))
+            goto rename_finish;
+    }
+    if (new_counter) {
+        status = File_HistoryResolveCounter(
+            new_counter, new_root, RTL_NUMBER_OF_V1(new_root),
+            &new_versions);
+        if (!NT_SUCCESS(status))
+            goto rename_finish;
+    }
+
+    if (old_counter && new_counter &&
+            _wcsicmp(old_root, new_root) == 0) {
+        versions = old_versions;
+    }
+    else if (new_versions > FILE_HISTORY_ULONG_MAX - old_versions) {
+        versions = FILE_HISTORY_ULONG_MAX;
+    }
+    else {
+        versions = old_versions + new_versions;
+    }
+
+    if (old_root[0]) {
+        counter = Dll_AllocTemp((wcslen(old_root) + 1) * sizeof(WCHAR));
+        if (counter)
+            wcscpy(counter, old_root);
+        counter_versions = old_versions;
+        counter_existed = TRUE;
+        if (new_root[0] && _wcsicmp(old_root, new_root) != 0) {
+            wcscpy(displaced_root, new_root);
+            displaced_versions = new_versions;
+        }
+    }
+    else if (new_root[0]) {
+        counter = Dll_AllocTemp((wcslen(new_root) + 1) * sizeof(WCHAR));
+        if (counter)
+            wcscpy(counter, new_root);
+        counter_versions = new_versions;
+        counter_existed = TRUE;
+    }
+    else {
+        counter = Dll_AllocTemp((wcslen(artifact) + 1) * sizeof(WCHAR));
+        if (counter)
+            wcscpy(counter, artifact);
+    }
+    if (!counter)
+        goto rename_finish;
+
+    if (!old_root[0] || !new_root[0] ||
+            _wcsicmp(old_root, new_root) != 0) {
+        status = File_HistoryWriteCounterRecord(counter, versions, NULL);
+        if (!NT_SUCCESS(status))
+            goto rename_finish;
+        counter_updated = TRUE;
+    }
+    if (displaced_root[0]) {
+        status = File_HistoryWriteCounterRecord(
+            displaced_root, 0, counter);
+        if (!NT_SUCCESS(status))
+            goto rename_rollback;
+        redirect_written = TRUE;
+    }
+    if (!old_counter || _wcsicmp(old_counter, counter) != 0) {
+        status = File_HistoryReadText(old_marker, &old_marker_text);
+        if (!NT_SUCCESS(status))
+            goto rename_rollback;
+        status = File_HistorySetMarkerCounter(old_marker, counter);
+        if (!NT_SUCCESS(status))
+            goto rename_rollback;
+        old_marker_updated = TRUE;
     }
 
     escaped_new = File_JournalEscapeField_internal(NewTruePath);
@@ -3042,7 +3689,7 @@ static _FX VOID File_HistoryRenameFile(
             escaped_copy && escaped_copy_dos) {
         length = wcslen(artifact) + wcslen(escaped_new) +
                  wcslen(escaped_new_dos) + wcslen(escaped_copy) +
-                 wcslen(escaped_copy_dos) + 96;
+                 wcslen(escaped_copy_dos) + wcslen(counter) + 128;
         text = Dll_AllocTemp(length * sizeof(WCHAR));
     }
     else
@@ -3050,19 +3697,75 @@ static _FX VOID File_HistoryRenameFile(
     if (text) {
         Sbie_snwprintf(text, length,
             L"artifact=%s\r\npath=%s\r\ndos_path=%s\r\n"
-            L"copy_path=%s\r\ncopy_dos_path=%s\r\n",
+            L"copy_path=%s\r\ncopy_dos_path=%s\r\n"
+            L"versions=%u\r\n",
             artifact, escaped_new, escaped_new_dos,
-            escaped_copy, escaped_copy_dos);
-        status = File_HistoryWriteTextAtomic(
-            new_marker, text, TRUE);
+            escaped_copy, escaped_copy_dos, versions);
+        updated = File_HistoryAppendMetadataField(
+            text, L"counter", counter);
+        Dll_Free(text);
+        text = updated;
+        if (text)
+            status = File_HistoryWriteTextAtomic(
+                new_marker, text, TRUE);
+        else
+            status = STATUS_INSUFFICIENT_RESOURCES;
         Dll_Free(text);
         if (NT_SUCCESS(status)) {
             File_HistoryUpdatePendingPaths(
                 artifact, NewTruePath, NewCopyPath);
-            if (_wcsicmp(old_marker, new_marker) != 0)
-                File_HistoryDeleteFile(old_marker);
+            completed = TRUE;
         }
     }
+    else
+        status = STATUS_INSUFFICIENT_RESOURCES;
+
+    if (!completed)
+        goto rename_rollback;
+    goto rename_finish;
+
+rename_rollback:
+    if (old_marker_updated) {
+        NTSTATUS rollback_status = File_HistoryWriteTextAtomic(
+            old_marker, old_marker_text, TRUE);
+        if (!NT_SUCCESS(rollback_status))
+            File_HistoryLogWarning(
+                L"Rename counter marker rollback", rollback_status,
+                OldTruePath);
+    }
+    if (redirect_written) {
+        NTSTATUS rollback_status = File_HistoryWriteCounterRecord(
+            displaced_root, displaced_versions, NULL);
+        if (!NT_SUCCESS(rollback_status))
+            File_HistoryLogWarning(
+                L"Rename counter redirect rollback", rollback_status,
+                NewTruePath);
+    }
+    if (counter_updated) {
+        NTSTATUS rollback_status;
+
+        if (counter_existed) {
+            rollback_status = File_HistoryWriteCounterRecord(
+                counter, counter_versions, NULL);
+        }
+        else {
+            WCHAR *counter_path = File_HistoryBuildCounterPath(counter);
+
+            rollback_status = counter_path
+                ? File_HistoryDeleteFile(counter_path)
+                : STATUS_INSUFFICIENT_RESOURCES;
+            if (counter_path)
+                Dll_Free(counter_path);
+        }
+        if (!NT_SUCCESS(rollback_status))
+            File_HistoryLogWarning(
+                L"Rename counter value rollback", rollback_status,
+                OldTruePath);
+    }
+
+rename_finish:
+    if (limit_mutex)
+        File_HistoryReleaseMutex(limit_mutex);
     if (escaped_new)
         Dll_Free(escaped_new);
     if (escaped_new_dos)
@@ -3072,10 +3775,20 @@ static _FX VOID File_HistoryRenameFile(
     if (escaped_copy_dos)
         Dll_Free(escaped_copy_dos);
 
+    if (counter)
+        Dll_Free(counter);
+    if (old_marker_text)
+        Dll_Free(old_marker_text);
+    if (new_counter)
+        Dll_Free(new_counter);
+    if (old_counter)
+        Dll_Free(old_counter);
+
     Dll_Free(new_marker);
     Dll_Free(old_marker);
     File_HistoryReleaseMutex(new_mutex);
     File_HistoryReleaseMutex(old_mutex);
+    return completed;
 }
 
 
@@ -3127,6 +3840,24 @@ static _FX WCHAR *File_HistoryGetMetadataField(
     }
 
     return NULL;
+}
+
+
+static _FX WCHAR *File_HistoryGetMarkerCounter(const WCHAR *Marker)
+{
+    WCHAR *text = NULL;
+    WCHAR *counter;
+
+    if (!NT_SUCCESS(File_HistoryReadText(Marker, &text)))
+        return NULL;
+    counter = File_HistoryGetMetadataField(text, L"counter", FALSE);
+    Dll_Free(text);
+    if (!counter || !File_HistoryValidArtifact(counter)) {
+        if (counter)
+            Dll_Free(counter);
+        return NULL;
+    }
+    return counter;
 }
 
 
@@ -3249,6 +3980,34 @@ static _FX WCHAR *File_HistoryAppendMetadataField(
         L"\r\n", 2);
     updated[length - 1] = L'\0';
     return updated;
+}
+
+
+static _FX NTSTATUS File_HistorySetMarkerCounter(
+    const WCHAR *Marker, const WCHAR *Counter)
+{
+    WCHAR *text = NULL;
+    WCHAR *updated = NULL;
+    NTSTATUS status;
+
+    status = File_HistoryReadText(Marker, &text);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    updated = File_HistorySetMetadataField(
+        text, L"counter", Counter);
+    if (!updated)
+        updated = File_HistoryAppendMetadataField(
+            text, L"counter", Counter);
+    if (!updated) {
+        Dll_Free(text);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    status = File_HistoryWriteTextAtomic(Marker, updated, TRUE);
+    Dll_Free(updated);
+    Dll_Free(text);
+    return status;
 }
 
 
@@ -3916,8 +4675,17 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
             File_HistoryInvalidateUsage();
         status = File_HistoryDeleteFile(pending_path);
         if (NT_SUCCESS(status)) {
+            NTSTATUS counter_status;
+
             File_HistoryInvalidateUsage();
             File_HistoryDeleteFile(pending_meta_path);
+            counter_status = File_HistoryAdjustMarkerVersions(true_path, -1);
+            if (!NT_SUCCESS(counter_status) &&
+                    counter_status != STATUS_OBJECT_NAME_NOT_FOUND) {
+                File_HistoryLogWarning(
+                    L"Oversized pending version counter rollback",
+                    counter_status, true_path);
+            }
         }
         else {
             File_HistoryLogWarning(
@@ -4076,6 +4844,16 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
         pending_handle = NULL;
         if (NT_SUCCESS(status))
             File_HistoryInvalidateUsage();
+        if (NT_SUCCESS(status) && pending_info.EndOfFile.QuadPart > 0) {
+            NTSTATUS counter_status =
+                File_HistoryAdjustMarkerVersions(true_path, -1);
+            if (!NT_SUCCESS(counter_status) &&
+                    counter_status != STATUS_OBJECT_NAME_NOT_FOUND) {
+                File_HistoryLogWarning(
+                    L"Duplicate pending version counter rollback",
+                    counter_status, true_path);
+            }
+        }
         File_HistoryReleaseMutex(limit_mutex);
         limit_mutex = NULL;
     }
@@ -4107,8 +4885,20 @@ static _FX VOID File_HistoryRecoverArtifact(const WCHAR *Artifact)
                 if (abandoned)
                     File_HistoryInvalidateUsage();
                 status = File_HistoryDeleteFile(pending_path);
-                if (NT_SUCCESS(status))
+                if (NT_SUCCESS(status) &&
+                        pending_info.EndOfFile.QuadPart > 0) {
+                    NTSTATUS counter_status;
+
                     File_HistoryInvalidateUsage();
+                    counter_status = File_HistoryAdjustMarkerVersions(
+                        true_path, -1);
+                    if (!NT_SUCCESS(counter_status) &&
+                            counter_status != STATUS_OBJECT_NAME_NOT_FOUND) {
+                        File_HistoryLogWarning(
+                            L"Collision pending version counter rollback",
+                            counter_status, true_path);
+                    }
+                }
                 File_HistoryReleaseMutex(limit_mutex);
                 limit_mutex = NULL;
             }
@@ -4233,6 +5023,296 @@ static _FX VOID File_HistoryRecoverPending(void)
 
 
 //---------------------------------------------------------------------------
+// File_HistoryFindJournalSeparator
+//---------------------------------------------------------------------------
+
+
+static _FX WCHAR *File_HistoryFindJournalSeparator(WCHAR *Text)
+{
+    while (*Text) {
+        if (*Text == L'\\' && Text[1]) {
+            Text += 2;
+            continue;
+        }
+        if (*Text == L'|')
+            return Text;
+        ++Text;
+    }
+    return NULL;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryProcessDeletionJournal
+//---------------------------------------------------------------------------
+
+
+static _FX BOOLEAN File_HistoryProcessDeletionJournal(
+    const WCHAR *JournalPath)
+{
+    WCHAR *text = NULL;
+    BOOLEAN failed = FALSE;
+    BOOLEAN updated = FALSE;
+    BOOLEAN complete = TRUE;
+    NTSTATUS status;
+
+    status = File_HistoryReadText(JournalPath, &text);
+    if (!NT_SUCCESS(status))
+        return FALSE;
+
+    while (*text) {
+        WCHAR *end = wcschr(text, L'\n');
+        WCHAR *next_text;
+        WCHAR *separator;
+        WCHAR *true_path;
+        WCHAR *count_end;
+        ULONGLONG count;
+        ULONG remaining_length;
+        HANDLE mutex = NULL;
+        HANDLE limit_mutex = NULL;
+        BOOLEAN abandoned;
+
+        if (end) {
+            remaining_length = (ULONG)wcslen(end + 1);
+            *end = L'\0';
+            if (end > text && end[-1] == L'\r')
+                end[-1] = L'\0';
+        }
+        else
+            remaining_length = 0;
+
+        next_text = Dll_AllocTemp(
+            (remaining_length + 1) * sizeof(WCHAR));
+        if (!next_text) {
+            complete = FALSE;
+            failed = TRUE;
+            break;
+        }
+        if (end)
+            wcscpy(next_text, end + 1);
+        else
+            next_text[0] = L'\0';
+
+        if (*text == (WCHAR)0xFEFF)
+            separator = File_HistoryFindJournalSeparator(text + 1);
+        else
+            separator = File_HistoryFindJournalSeparator(text);
+        if (!separator || separator == text || !separator[1]) {
+            status = File_HistoryWriteTextAtomic(
+                JournalPath, next_text, TRUE);
+            if (!NT_SUCCESS(status)) {
+                Dll_Free(next_text);
+                complete = FALSE;
+                failed = TRUE;
+                break;
+            }
+            failed = TRUE;
+            Dll_Free(text);
+            text = next_text;
+            continue;
+        }
+
+        *separator = L'\0';
+        count_end = NULL;
+        count = _wcstoui64(separator + 1, &count_end, 10);
+        if (count == 0 || count > 0x7FFFFFFFULL ||
+                count_end == separator + 1 || *count_end != L'\0') {
+            *separator = L'|';
+            status = File_HistoryWriteTextAtomic(
+                JournalPath, next_text, TRUE);
+            if (!NT_SUCCESS(status)) {
+                Dll_Free(next_text);
+                complete = FALSE;
+                failed = TRUE;
+                break;
+            }
+            failed = TRUE;
+            Dll_Free(text);
+            text = next_text;
+            continue;
+        }
+
+        true_path = File_JournalUnescapeField_internal(
+            *text == (WCHAR)0xFEFF ? text + 1 : text);
+        *separator = L'|';
+        if (!true_path) {
+            Dll_Free(next_text);
+            complete = FALSE;
+            failed = TRUE;
+            break;
+        }
+        if (!*true_path) {
+            Dll_Free(true_path);
+            status = File_HistoryWriteTextAtomic(
+                JournalPath, next_text, TRUE);
+            if (!NT_SUCCESS(status)) {
+                Dll_Free(next_text);
+                complete = FALSE;
+                failed = TRUE;
+                break;
+            }
+            failed = TRUE;
+            Dll_Free(text);
+            text = next_text;
+            continue;
+        }
+
+        mutex = File_HistoryCreateMutexEx(
+            true_path, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
+        if (!mutex) {
+            Dll_Free(true_path);
+            Dll_Free(next_text);
+            complete = FALSE;
+            failed = TRUE;
+            break;
+        }
+        limit_mutex = File_HistoryCreateLimitMutexEx(
+            &abandoned, FILE_HISTORY_RENAME_MUTEX_TIMEOUT_MS);
+        if (!limit_mutex) {
+            File_HistoryReleaseMutex(mutex);
+            Dll_Free(true_path);
+            Dll_Free(next_text);
+            complete = FALSE;
+            failed = TRUE;
+            break;
+        }
+        if (abandoned)
+            File_HistoryInvalidateUsage();
+
+        status = File_HistoryWriteTextAtomic(
+            JournalPath, next_text, TRUE);
+        if (!NT_SUCCESS(status)) {
+            File_HistoryReleaseMutex(limit_mutex);
+            File_HistoryReleaseMutex(mutex);
+            Dll_Free(true_path);
+            Dll_Free(next_text);
+            complete = FALSE;
+            failed = TRUE;
+            break;
+        }
+
+        status = File_HistoryAdjustMarkerVersions(
+            true_path, -(LONG)count);
+        if (NT_SUCCESS(status))
+            updated = TRUE;
+        else if (status != STATUS_OBJECT_NAME_NOT_FOUND &&
+                 status != STATUS_OBJECT_PATH_NOT_FOUND &&
+                 status != STATUS_NO_SUCH_FILE) {
+            File_HistoryLogWarning(
+                L"File History deletion journal", status, true_path);
+            failed = TRUE;
+        }
+        File_HistoryReleaseMutex(limit_mutex);
+        File_HistoryReleaseMutex(mutex);
+        Dll_Free(true_path);
+        Dll_Free(text);
+        text = next_text;
+    }
+
+    if (complete) {
+        status = File_HistoryDeleteFile(JournalPath);
+        if (!NT_SUCCESS(status)) {
+            File_HistoryLogWarning(
+                L"File History deletion journal cleanup", status, JournalPath);
+            failed = TRUE;
+        }
+    }
+    if (updated)
+        File_HistoryInvalidateUsage();
+    Dll_Free(text);
+    return !failed;
+}
+
+
+//---------------------------------------------------------------------------
+// File_HistoryApplyDeletionJournal
+//---------------------------------------------------------------------------
+
+
+static _FX VOID File_HistoryApplyDeletionJournal(void)
+{
+    OBJECT_ATTRIBUTES objattrs;
+    UNICODE_STRING objname;
+    IO_STATUS_BLOCK iosb;
+    FILE_ATTRIBUTE_TAG_INFORMATION taginfo;
+    FILE_DIRECTORY_INFORMATION *info;
+    HANDLE handle;
+    HANDLE mutex;
+    NTSTATUS status;
+    BOOLEAN restart = TRUE;
+    ULONG info_len;
+
+    mutex = File_HistoryCreateDeltaMutex();
+    if (!mutex)
+        return;
+
+    InitializeObjectAttributes(
+        &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    RtlInitUnicodeString(&objname, File_HistoryDeltas);
+    status = __sys_NtCreateFile(
+        &handle, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        &objattrs, &iosb, NULL, 0, FILE_SHARE_VALID_FLAGS, FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
+        FILE_OPEN_REPARSE_POINT, NULL, 0);
+    if (!NT_SUCCESS(status)) {
+        File_HistoryReleaseMutex(mutex);
+        return;
+    }
+
+    status = __sys_NtQueryInformationFile(
+        handle, &iosb, &taginfo, sizeof(taginfo),
+        FileAttributeTagInformation);
+    if (!NT_SUCCESS(status) ||
+            (taginfo.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        NtClose(handle);
+        File_HistoryReleaseMutex(mutex);
+        return;
+    }
+
+    info_len = 4096;
+    info = Dll_AllocTemp(info_len);
+    if (!info) {
+        NtClose(handle);
+        File_HistoryReleaseMutex(mutex);
+        return;
+    }
+
+    while (1) {
+        ULONG name_len;
+        ULONG length;
+        WCHAR *journal_path;
+
+        status = __sys_NtQueryDirectoryFile(
+            handle, NULL, NULL, NULL, &iosb,
+            info, info_len, FileDirectoryInformation,
+            TRUE, NULL, restart);
+        restart = FALSE;
+        if (!NT_SUCCESS(status))
+            break;
+
+        name_len = info->FileNameLength / sizeof(WCHAR);
+        if ((info->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                name_len < 4 ||
+                _wcsnicmp(info->FileName + name_len - 4, L".jrn", 4) != 0)
+            continue;
+
+        length = wcslen(File_HistoryDeltas) + name_len + 2;
+        journal_path = Dll_AllocTemp(length * sizeof(WCHAR));
+        if (!journal_path)
+            break;
+        Sbie_snwprintf(journal_path, length, L"%s\\%.*s",
+            File_HistoryDeltas, name_len, info->FileName);
+        File_HistoryProcessDeletionJournal(journal_path);
+        Dll_Free(journal_path);
+    }
+
+    Dll_Free(info);
+    NtClose(handle);
+    File_HistoryReleaseMutex(mutex);
+}
+
+
+//---------------------------------------------------------------------------
 // File_InitHistory
 //---------------------------------------------------------------------------
 
@@ -4248,6 +5328,8 @@ static _FX BOOLEAN File_InitHistory(void)
 
     List_Init(&File_HistoryOptions);
     List_Init(&File_HistoryExclusions);
+    if (!SbieApi_QueryConfBool(NULL, L"FileHistory", TRUE))
+        return TRUE;
     Config_InitPatternList(
         NULL, L"KeepFileVersions", &File_HistoryOptions, FALSE);
     Config_InitPatternList(
@@ -4301,19 +5383,24 @@ static _FX BOOLEAN File_InitHistory(void)
 
     length = wcslen(File_HistoryRoot) + 16;
     File_HistoryIndex = Dll_Alloc(length * sizeof(WCHAR));
+    File_HistoryDeltas = Dll_Alloc(length * sizeof(WCHAR));
     File_HistoryArtifacts = Dll_Alloc(length * sizeof(WCHAR));
     File_HistoryBlobs = Dll_Alloc(length * sizeof(WCHAR));
-    if (!File_HistoryIndex || !File_HistoryArtifacts ||
+    if (!File_HistoryIndex || !File_HistoryDeltas ||
+            !File_HistoryArtifacts ||
             !File_HistoryBlobs) {
         if (File_HistoryBlobs)
             Dll_Free(File_HistoryBlobs);
         if (File_HistoryArtifacts)
             Dll_Free(File_HistoryArtifacts);
+        if (File_HistoryDeltas)
+            Dll_Free(File_HistoryDeltas);
         if (File_HistoryIndex)
             Dll_Free(File_HistoryIndex);
         Dll_Free(File_HistoryRoot);
         File_HistoryRoot = NULL;
         File_HistoryIndex = NULL;
+        File_HistoryDeltas = NULL;
         File_HistoryArtifacts = NULL;
         File_HistoryBlobs = NULL;
         return TRUE;
@@ -4321,6 +5408,8 @@ static _FX BOOLEAN File_InitHistory(void)
 
     Sbie_snwprintf(File_HistoryIndex, length, L"%s\\%s",
         File_HistoryRoot, FILE_HISTORY_INDEX_DIR);
+    Sbie_snwprintf(File_HistoryDeltas, length, L"%s\\%s",
+        File_HistoryRoot, FILE_HISTORY_DELTA_DIR);
     Sbie_snwprintf(File_HistoryArtifacts, length, L"%s\\%s",
         File_HistoryRoot, FILE_HISTORY_ARTIFACT_DIR);
     Sbie_snwprintf(File_HistoryBlobs, length, L"%s\\%s",
@@ -4330,6 +5419,8 @@ static _FX BOOLEAN File_InitHistory(void)
     if (NT_SUCCESS(status))
         status = File_HistoryCreateDirectory(File_HistoryIndex);
     if (NT_SUCCESS(status))
+        status = File_HistoryCreateDirectory(File_HistoryDeltas);
+    if (NT_SUCCESS(status))
         status = File_HistoryCreateDirectory(File_HistoryArtifacts);
     if (NT_SUCCESS(status))
         status = File_HistoryCreateDirectory(File_HistoryBlobs);
@@ -4338,16 +5429,19 @@ static _FX BOOLEAN File_InitHistory(void)
         File_HistoryLogWarning(L"Archive initialization", status, NULL);
         Dll_Free(File_HistoryBlobs);
         Dll_Free(File_HistoryArtifacts);
+        Dll_Free(File_HistoryDeltas);
         Dll_Free(File_HistoryIndex);
         Dll_Free(File_HistoryRoot);
         File_HistoryRoot = NULL;
         File_HistoryIndex = NULL;
+        File_HistoryDeltas = NULL;
         File_HistoryArtifacts = NULL;
         File_HistoryBlobs = NULL;
         return TRUE;
     }
 
     File_HistoryInitNotices();
+    File_HistoryApplyDeletionJournal();
     File_HistoryRecoverPending();
 
     return TRUE;
