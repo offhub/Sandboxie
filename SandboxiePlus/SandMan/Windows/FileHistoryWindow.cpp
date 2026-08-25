@@ -699,6 +699,47 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pViewOptionsButton->setAutoRaise(true);
 	m_pViewOptionsButton->setToolTip(
 		tr("Show or hide retained file history options."));
+	m_pShowModify = new QCheckBox(tr("Modify"), this);
+	m_pShowModify->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowModify", true));
+	m_pShowModify->setToolTip(
+		tr("Show retained versions captured before a file modification."));
+	m_pShowDeleteOnClose = new QCheckBox(tr("Delete-on-close"), this);
+	m_pShowDeleteOnClose->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowDeleteOnClose", true));
+	m_pShowDeleteOnClose->setToolTip(
+		tr("Show retained versions captured for delete-on-close operations."));
+	m_pShowDelete = new QCheckBox(tr("Delete"), this);
+	m_pShowDelete->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowDelete", true));
+	m_pShowDelete->setToolTip(
+		tr("Show retained versions captured before a file deletion."));
+	m_pShowReplace = new QCheckBox(tr("Replace"), this);
+	m_pShowReplace->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowReplace", true));
+	m_pShowReplace->setToolTip(
+		tr("Show retained versions captured before a file replacement."));
+	m_pShowMigrate = new QCheckBox(tr("Migrate"), this);
+	m_pShowMigrate->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowMigrate", true));
+	m_pShowMigrate->setToolTip(
+		tr("Show retained versions captured during file migration."));
+	m_pShowAvailable = new QCheckBox(tr("Available"), this);
+	m_pShowAvailable->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowAvailable", true));
+	m_pShowAvailable->setToolTip(
+		tr("Show retained versions with available evidence."));
+	m_pShowPending = new QCheckBox(tr("Pending"), this);
+	m_pShowPending->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowPending", true));
+	m_pShowPending->setToolTip(
+		tr("Show pending retained versions, including still-live, still-linked, "
+			"and still-open evidence."));
+	m_pShowFinalized = new QCheckBox(tr("Finalized"), this);
+	m_pShowFinalized->setChecked(
+		theConf->GetBool("FileHistoryWindow/ShowFinalized", true));
+	m_pShowFinalized->setToolTip(
+		tr("Show retained versions finalized after a delete-on-close operation."));
 	m_pHighlightSame = new QCheckBox(tr("Highlight same"), this);
 	m_pHighlightSame->setChecked(
 		theConf->GetBool("FileHistoryWindow/HighlightSameHash", true));
@@ -731,6 +772,18 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	TopOptionsRow->setMinimumHeight(m_pHighlightSame->sizeHint().height());
 	QHBoxLayout* TopOptionsLayout = new QHBoxLayout(TopOptionsRow);
 	TopOptionsLayout->setContentsMargins(0, 0, 0, 0);
+	TopOptionsLayout->addWidget(m_pShowModify);
+	TopOptionsLayout->addWidget(m_pShowDeleteOnClose);
+	TopOptionsLayout->addWidget(m_pShowDelete);
+	TopOptionsLayout->addWidget(m_pShowReplace);
+	TopOptionsLayout->addWidget(m_pShowMigrate);
+	QFrame* TopSeparator = new QFrame(TopOptionsRow);
+	TopSeparator->setFrameShape(QFrame::VLine);
+	TopSeparator->setFrameShadow(QFrame::Sunken);
+	TopOptionsLayout->addWidget(TopSeparator);
+	TopOptionsLayout->addWidget(m_pShowAvailable);
+	TopOptionsLayout->addWidget(m_pShowPending);
+	TopOptionsLayout->addWidget(m_pShowFinalized);
 	TopOptionsLayout->addStretch();
 	QWidget* BottomOptionsRow = new QWidget(ViewOptionsWidget);
 	QHBoxLayout* BottomOptionsLayout = new QHBoxLayout(BottomOptionsRow);
@@ -839,6 +892,11 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 		});
 	connect(m_pHighlightSame, &QCheckBox::toggled,
 		this, [this](bool) { UpdateSelection(); });
+	for (QCheckBox* Check : { m_pShowModify, m_pShowDeleteOnClose,
+			m_pShowDelete, m_pShowReplace, m_pShowMigrate,
+			m_pShowAvailable, m_pShowPending, m_pShowFinalized })
+		connect(Check, &QCheckBox::toggled,
+			this, [this](bool) { ApplyFilter(); });
 	connect(m_pHideEmpty, &QCheckBox::toggled,
 		this, [this](bool) {
 			if (!m_TrackFileViewAdjusting)
@@ -971,6 +1029,23 @@ CFileHistoryWindow::~CFileHistoryWindow()
 		"FileHistoryWindow/GroupByParentFolder", m_pGroupByParent->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/HighlightSameHash", m_pHighlightSame->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowModify", m_pShowModify->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowDeleteOnClose",
+		m_pShowDeleteOnClose->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowDelete", m_pShowDelete->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowReplace", m_pShowReplace->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowMigrate", m_pShowMigrate->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowAvailable", m_pShowAvailable->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowPending", m_pShowPending->isChecked());
+	theConf->SetValue(
+		"FileHistoryWindow/ShowFinalized", m_pShowFinalized->isChecked());
 	theConf->SetValue("FileHistoryWindow/AutoLoad", m_pAutoLoad->isChecked());
 }
 
@@ -1682,6 +1757,28 @@ void CFileHistoryWindow::ApplyFilter()
 
 		for (int ChildIndex = 0; ChildIndex < PathItem->childCount(); ++ChildIndex) {
 			QTreeWidgetItem* Child = PathItem->child(ChildIndex);
+			QString Operation = Child->data(0, eOperation).toString();
+			bool OperationMatches = true;
+			if (Operation.compare("modify", Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowModify->isChecked();
+			else if (Operation.compare("delete-on-close",
+					Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowDeleteOnClose->isChecked();
+			else if (Operation.compare("delete", Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowDelete->isChecked();
+			else if (Operation.compare("replace", Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowReplace->isChecked();
+			else if (Operation.compare("migrate", Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowMigrate->isChecked();
+			QString State = Child->data(0, eState).toString();
+			bool StateMatches = true;
+			if (Child->data(0, eIsPending).toBool())
+				StateMatches = m_pShowPending->isChecked();
+			else if (State.startsWith("finalized", Qt::CaseInsensitive))
+				StateMatches = m_pShowFinalized->isChecked();
+			else if (State.compare(tr("Available"),
+					Qt::CaseInsensitive) == 0)
+				StateMatches = m_pShowAvailable->isChecked();
 			bool IsEmpty = Child->data(0, eIsEmpty).toBool();
 			bool IsReused = Child->data(0, eIsReused).toBool();
 			if (IsEmpty)
@@ -1691,6 +1788,7 @@ void CFileHistoryWindow::ApplyFilter()
 			bool Match = !HideEmpty
 				|| !IsEmpty;
 			Match = Match && (!HideReused || !IsReused);
+			Match = Match && OperationMatches && StateMatches;
 			bool ChildFilterMatches = FilterEmpty
 				|| m_FilterExp.match(FilterValue(Child, Scope)).hasMatch();
 			Match = Match && (SelectionExclude

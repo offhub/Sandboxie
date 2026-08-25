@@ -79,6 +79,14 @@ private:
 	int m_LastTab;
 	CFinder* m_pFinder;
 	QCheckBox* m_pHighlightSame;
+	QCheckBox* m_pShowModify;
+	QCheckBox* m_pShowDeleteOnClose;
+	QCheckBox* m_pShowDelete;
+	QCheckBox* m_pShowReplace;
+	QCheckBox* m_pShowMigrate;
+	QCheckBox* m_pShowAvailable;
+	QCheckBox* m_pShowPending;
+	QCheckBox* m_pShowFinalized;
 	QCheckBox* m_pHideEmpty;
 	QCheckBox* m_pHideReused;
 	QCheckBox* m_pMergeRenamed;
