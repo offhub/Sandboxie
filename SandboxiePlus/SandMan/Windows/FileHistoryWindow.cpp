@@ -3,6 +3,7 @@
 #include "FileStateHistoryWidget.h"
 #include "HistoryWindowUtils.h"
 #include "SandMan.h"
+#include "../Helpers/ReadDirectoryChanges.h"
 #include "../../MiscHelpers/Common/Finder.h"
 #include "../../MiscHelpers/Common/PanelView.h"
 #include "../../MiscHelpers/Common/TreeWidgetEx.h"
@@ -11,7 +12,67 @@
 #include <QItemSelectionModel>
 #include <QStackedLayout>
 #include <QTabWidget>
+#include <QtConcurrent>
 #include <windows.h>
+
+
+class CRetainedVersionsWatcher : public CReadDirectoryChanges
+{
+public:
+	explicit CRetainedVersionsWatcher(CFileHistoryWindow* pWindow)
+		: m_pWindow(pWindow), m_Generation(0),
+		  m_ChangeSequence(new std::atomic<quint64>(0)),
+		  m_NotificationsSuppressed(new std::atomic_bool(false)) {}
+
+	quint64 Start(const QString& Path)
+	{
+		Terminate();
+		quint64 Generation = m_Generation.fetch_add(1) + 1;
+		if (QDir(Path).exists())
+			AddDirectory((LPCWSTR)Path.utf16(), TRUE,
+				FILE_NOTIFY_CHANGE_FILE_NAME |
+				FILE_NOTIFY_CHANGE_DIR_NAME |
+				FILE_NOTIFY_CHANGE_SIZE |
+				FILE_NOTIFY_CHANGE_LAST_WRITE |
+				FILE_NOTIFY_CHANGE_CREATION |
+				FILE_NOTIFY_CHANGE_ATTRIBUTES);
+		return Generation;
+	}
+
+	quint64 ChangeSequence() const
+	{
+		return m_ChangeSequence->load();
+	}
+
+	std::shared_ptr<std::atomic<quint64>> ChangeSequenceState() const
+	{
+		return m_ChangeSequence;
+	}
+
+	std::shared_ptr<std::atomic_bool> NotificationSuppressionState() const
+	{
+		return m_NotificationsSuppressed;
+	}
+
+protected:
+	void Notify(const std::wstring&) override
+	{
+		if (m_NotificationsSuppressed->load())
+			return;
+		quint64 Sequence = m_ChangeSequence->fetch_add(1) + 1;
+		quint64 Generation = m_Generation.load();
+		if (m_pWindow)
+			QMetaObject::invokeMethod(m_pWindow, "HistoryChanged",
+				Qt::QueuedConnection, Q_ARG(quint64, Generation),
+				Q_ARG(quint64, Sequence));
+	}
+
+private:
+	CFileHistoryWindow* m_pWindow;
+	std::atomic<quint64> m_Generation;
+	std::shared_ptr<std::atomic<quint64>> m_ChangeSequence;
+	std::shared_ptr<std::atomic_bool> m_NotificationsSuppressed;
+};
 
 
 namespace
@@ -630,12 +691,195 @@ namespace
 			Values.append(Value);
 	}
 
+	bool ScanCancelled(const std::shared_ptr<std::atomic_bool>& Cancel)
+	{
+		return Cancel && Cancel->load();
+	}
+
+	SRetainedVersionsScanResult ScanRetainedVersions(
+		const QString& HistoryPath, bool CleanOrphans,
+		const std::shared_ptr<std::atomic_bool>& Cancel,
+		const std::shared_ptr<std::atomic<int>>& Current,
+		const std::shared_ptr<std::atomic<int>>& Total,
+		const std::shared_ptr<std::atomic<quint64>>& ChangeSequence,
+		const std::shared_ptr<std::atomic_bool>& NotificationsSuppressed)
+	{
+		SRetainedVersionsScanResult Result;
+		if (ChangeSequence)
+			Result.ChangeSequence = ChangeSequence->load();
+		if (NotificationsSuppressed && CleanOrphans)
+			NotificationsSuppressed->store(true);
+		if (CleanOrphans)
+			RemoveOrphanedBlobs(HistoryPath);
+		if (NotificationsSuppressed && CleanOrphans)
+			NotificationsSuppressed->store(false);
+		if (ScanCancelled(Cancel))
+			return Result;
+		if (ChangeSequence)
+			Result.ChangeSequence = ChangeSequence->load();
+
+		QString InitialFingerprint = RetainedVersionsCache::CalculateFingerprint(
+			HistoryPath, Cancel.get());
+		if (InitialFingerprint.isEmpty())
+			return Result;
+
+		QDir Artifacts(QDir::cleanPath(HistoryPath + "\\Artifacts"));
+		QFileInfoList ArtifactList = Artifacts.entryInfoList(
+			QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+			QDir::Name);
+		int ArtifactCount = 0;
+		for (const QFileInfo& ArtifactInfo : ArtifactList)
+			if (IsArtifactId(ArtifactInfo.fileName()))
+				++ArtifactCount;
+		if (Total)
+			Total->store(ArtifactCount);
+		Result.Data.PathLineages = ReadPathLineages(HistoryPath);
+		auto AddSize = [](quint64& Total, quint64 Size) {
+			const quint64 MaximumSize = ~quint64(0);
+			Total = Size > MaximumSize - Total
+				? MaximumSize : Total + Size;
+		};
+		int ArtifactIndex = 0;
+		for (const QFileInfo& ArtifactInfo : ArtifactList) {
+			if (ScanCancelled(Cancel))
+				return Result;
+			if (!IsArtifactId(ArtifactInfo.fileName()))
+				continue;
+
+			QDir ArtifactDir(ArtifactInfo.absoluteFilePath());
+			QMap<QString, SHistoryFilePair> Pairs;
+			foreach(const QFileInfo& FileInfo,
+					ArtifactDir.entryInfoList(
+						QStringList() << "*.bin" << "*.txt",
+						QDir::Files | QDir::NoSymLinks,
+						QDir::Name)) {
+				if (ScanCancelled(Cancel))
+					return Result;
+				QString BaseName = FileInfo.completeBaseName();
+				SHistoryFilePair& Pair = Pairs[BaseName];
+				if (FileInfo.suffix().compare("bin", Qt::CaseInsensitive) == 0)
+					Pair.BinaryPath = FileInfo.absoluteFilePath();
+				else
+					Pair.MetadataPath = FileInfo.absoluteFilePath();
+			}
+
+			for (auto PairIt = Pairs.constBegin(); PairIt != Pairs.constEnd();
+					++PairIt) {
+				if (ScanCancelled(Cancel))
+					return Result;
+				const SHistoryFilePair& Pair = PairIt.value();
+				QMap<QString, QString> Fields;
+				bool MetadataValid = !Pair.MetadataPath.isEmpty() &&
+					ReadMetadata(Pair.MetadataPath, Fields);
+
+				SRetainedVersionRecord Record;
+				Record.Artifact = ArtifactInfo.fileName();
+				Record.MetadataValid = MetadataValid;
+				if (MetadataValid) {
+					Record.TruePath = UnescapeField(Fields.value("path"));
+					Record.LogicalPath = UnescapeField(Fields.value("dos_path"));
+					if (Record.LogicalPath.isEmpty())
+						Record.LogicalPath = UnescapeField(Fields.value("path"));
+				}
+				Record.Operation = Fields.value("operation");
+				Record.State = Fields.value("state");
+				Record.ProcessName = UnescapeField(Fields.value("image"));
+				Record.Pid = Fields.value("pid");
+				Record.Timestamp = Fields.value("timestamp");
+				Record.Pending = PairIt.key().compare(
+					"pending", Qt::CaseInsensitive) == 0 ||
+					Record.State.startsWith("still-", Qt::CaseInsensitive) ||
+					Record.State.compare("pending", Qt::CaseInsensitive) == 0;
+				Record.Reused = Fields.value("content_reused").compare(
+					"y", Qt::CaseInsensitive) == 0;
+				Record.Hash = Fields.value("sha256");
+				if (!IsSha256(Record.Hash))
+					Record.Hash.clear();
+				Record.Lineage = Result.Data.PathLineages.value(
+					Record.LogicalPath.toLower());
+
+				if (!Pair.BinaryPath.isEmpty()) {
+					qint64 BinarySize = QFileInfo(Pair.BinaryPath).size();
+					Record.Size = BinarySize > 0 ? (quint64)BinarySize : 0;
+					Record.HasSize = true;
+					Record.IsEmpty = BinarySize == 0;
+					if (Record.Size)
+						++Result.Data.UsedVersions;
+					AddSize(Result.Data.AccountedSize, Record.Size);
+					if (!Record.Reused)
+						AddSize(Result.Data.StoredSize, Record.Size);
+				}
+				else
+					Record.Size = Fields.value("size").toULongLong(
+						&Record.HasSize);
+
+				QFileInfo TimeInfo(!Pair.BinaryPath.isEmpty()
+					? Pair.BinaryPath : Pair.MetadataPath);
+				Record.TimestampFallback = TimeInfo.lastModified()
+					.toMSecsSinceEpoch();
+				QDateTime CapturedDate = QDateTime::fromMSecsSinceEpoch(
+					Record.TimestampFallback);
+				if (Record.Timestamp.size() == 16) {
+					bool Ok = false;
+					quint64 FileTime = Record.Timestamp.toULongLong(&Ok, 16);
+					if (Ok && FileTime >= 116444736000000000ULL)
+						CapturedDate = QDateTime::fromMSecsSinceEpoch(
+							(qint64)((FileTime - 116444736000000000ULL) / 10000),
+							Qt::UTC);
+				}
+				if (CapturedDate.isValid())
+					Record.CapturedSort = CapturedDate.toMSecsSinceEpoch();
+
+				if (!Record.Hash.isEmpty()) {
+					QString BlobPath = QDir::cleanPath(
+						HistoryPath + "\\Blobs\\" + Record.Hash + ".bin");
+					Record.BlobAvailable = QFileInfo::exists(BlobPath);
+				}
+				Record.BinaryPath = Pair.BinaryPath.isEmpty()
+					? QString() : QDir(HistoryPath).relativeFilePath(
+						Pair.BinaryPath);
+				Record.MetadataPath = Pair.MetadataPath.isEmpty()
+					? QString() : QDir(HistoryPath).relativeFilePath(
+						Pair.MetadataPath);
+				Record.BinaryPath = QDir::fromNativeSeparators(
+					Record.BinaryPath);
+				Record.MetadataPath = QDir::fromNativeSeparators(
+					Record.MetadataPath);
+				if (Result.Data.Records.size() >=
+						RetainedVersionsCache::MaximumRecords) {
+					Result.TooLarge = true;
+					return Result;
+				}
+				Result.Data.Records.append(Record);
+			}
+			if (Current)
+				Current->store(++ArtifactIndex);
+		}
+
+		if (ScanCancelled(Cancel))
+			return Result;
+		QString FinalFingerprint = RetainedVersionsCache::CalculateFingerprint(
+			HistoryPath, Cancel.get());
+		if (FinalFingerprint.isEmpty())
+			return Result;
+		Result.Complete = true;
+		Result.Stable = InitialFingerprint == FinalFingerprint;
+		Result.Data.Fingerprint = FinalFingerprint;
+		return Result;
+	}
+
 }
 
 
 CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	: QDialog(parent), m_pBox(pBox), m_LastTab(0), m_Loading(false),
-	  m_AbortRequested(false), m_Loaded(false),
+	  m_AbortRequested(false), m_Loaded(false), m_CacheChecking(false),
+	  m_CacheDirty(false), m_RefreshPromptShown(false),
+	  m_pCacheValidationWatcher(NULL), m_pScanWatcher(NULL),
+	  m_pHistoryWatcher(NULL), m_HistoryGeneration(0),
+	  m_HistoryChangeSequenceFloor(0), m_ReloadStartedWithDirty(false),
+	  m_pReloadProgressTimer(NULL), m_pCacheAttentionTimer(NULL),
+	  m_CacheAttentionPhase(false),
 	  m_TrackFileViewAdjusting(false),
 	  m_TrackFileHideEmptyOverride(false),
 	  m_TrackFileHideReusedOverride(false),
@@ -867,6 +1111,8 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 
 	QHBoxLayout* BottomLayout = new QHBoxLayout();
 	m_pStatus = new QLabel(this);
+	m_pCacheStatus = new QLabel(this);
+	m_pCacheStatus->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	m_pSelectionStatus = new QLabel(m_pHighlightSame->isChecked()
 		? tr("Selected: 0; Highlighted: 0") : tr("Selected: 0"), this);
 	m_pSelectionStatus->setToolTip(tr(
@@ -879,6 +1125,7 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pOpenFolder->setEnabled(false);
 
 	BottomLayout->addWidget(m_pStatus, 1);
+	BottomLayout->addWidget(m_pCacheStatus);
 	BottomLayout->addWidget(m_pSelectionStatus);
 	BottomLayout->addWidget(m_pRemoveHistory);
 	BottomLayout->addWidget(m_pOpenFolder);
@@ -925,6 +1172,27 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	connect(m_pOpenFolder, SIGNAL(clicked(bool)), this, SLOT(OpenEvidenceFolder()));
 	connect(ConfigureLimitsButton, SIGNAL(clicked(bool)), this, SLOT(ConfigureLimits()));
 	connect(CloseButton, SIGNAL(clicked(bool)), this, SLOT(close()));
+
+	m_pCacheValidationWatcher = new QFutureWatcher<QString>(this);
+	connect(m_pCacheValidationWatcher, &QFutureWatcher<QString>::finished,
+		this, &CFileHistoryWindow::CacheValidationFinished);
+	m_pScanWatcher = new QFutureWatcher<SRetainedVersionsScanResult>(this);
+	connect(m_pScanWatcher,
+		&QFutureWatcher<SRetainedVersionsScanResult>::finished,
+		this, &CFileHistoryWindow::ScanFinished);
+	m_pHistoryWatcher = new CRetainedVersionsWatcher(this);
+	RestartHistoryWatcher();
+	m_pReloadProgressTimer = new QTimer(this);
+	m_pReloadProgressTimer->setInterval(100);
+	connect(m_pReloadProgressTimer, &QTimer::timeout,
+		this, &CFileHistoryWindow::UpdateReloadProgress);
+	m_pCacheAttentionTimer = new QTimer(this);
+	m_pCacheAttentionTimer->setInterval(500);
+	connect(m_pCacheAttentionTimer, &QTimer::timeout, this, [this]() {
+		m_CacheAttentionPhase = !m_CacheAttentionPhase;
+		m_pRefreshButton->setIcon(CSandMan::GetIcon(
+			m_CacheAttentionPhase ? "Warning" : "Refresh"));
+	});
 
 	m_pCopyCell = new QAction(CPanelView::m_CopyCell, this);
 	m_pCopyRow = new QAction(CPanelView::m_CopyRow, this);
@@ -1014,6 +1282,19 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 
 CFileHistoryWindow::~CFileHistoryWindow()
 {
+	if (m_pHistoryWatcher) {
+		m_pHistoryWatcher->Terminate();
+		delete m_pHistoryWatcher;
+		m_pHistoryWatcher = NULL;
+	}
+	if (m_ReloadCancel)
+		m_ReloadCancel->store(true);
+	if (m_CacheValidationCancel)
+		m_CacheValidationCancel->store(true);
+	if (m_pScanWatcher)
+		m_pScanWatcher->cancel();
+	if (m_pCacheValidationWatcher)
+		m_pCacheValidationWatcher->cancel();
 	theConf->SetBlob("FileHistoryWindow/Window_Geometry", saveGeometry());
 	theConf->SetBlob("FileHistoryWindow/Tree_Columns", m_pTree->header()->saveState());
 	theConf->SetValue("FileHistoryWindow/LastTab", m_LastTab);
@@ -1074,274 +1355,201 @@ void CFileHistoryWindow::closeEvent(QCloseEvent* e)
 }
 
 
-void CFileHistoryWindow::Reload()
+void CFileHistoryWindow::SetLoadingState(bool Loading)
 {
-	if (m_Loading) {
-		m_AbortRequested = true;
-		return;
+	if (Loading) {
+		m_pRefreshButton->setIcon(CSandMan::GetIcon("Stop"));
+		m_pRefreshButton->setText(tr("Abort"));
+		m_pRefreshButton->setEnabled(true);
+		m_pViewOptionsButton->setEnabled(false);
+		m_pMergeRenamed->setEnabled(false);
+		m_pGroupByParent->setEnabled(false);
+		SetProgressVisible(true);
+		m_pLoadIndicator->setText(
+			m_Loaded ? tr("Refreshing...") : tr("Loading..."));
+		if (m_pReloadProgressTimer)
+			m_pReloadProgressTimer->start();
 	}
-
-	m_AbortRequested = false;
-	m_Loading = true;
-	m_pRefreshButton->setIcon(CSandMan::GetIcon("Stop"));
-	m_pRefreshButton->setText(tr("Abort"));
-	m_pRefreshButton->setEnabled(true);
-	m_pViewOptionsButton->setEnabled(false);
-	m_pMergeRenamed->setEnabled(false);
-	m_pGroupByParent->setEnabled(false);
-	SetProgressVisible(true);
-	m_pLoadIndicator->setText(
-		m_Loaded ? tr("Refreshing...") : tr("Loading..."));
-	m_pLoadIndicator->repaint();
-	m_pRefreshButton->repaint();
-	auto AbortReload = [this]() {
-		for (QTreeWidgetItem* Item : m_EvidenceItems)
-			delete Item;
-		m_EvidenceItems.clear();
-		m_PathLineages.clear();
-		m_pTree->setSortingEnabled(true);
-		m_pLoadIndicator->clear();
-		SetProgressVisible(false);
-		m_pStatus->setText(tr("Refresh aborted."));
+	else {
 		m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
 		m_pRefreshButton->setText(tr("Refresh"));
 		m_pRefreshButton->setEnabled(true);
 		m_pViewOptionsButton->setEnabled(true);
 		m_pMergeRenamed->setEnabled(true);
 		m_pGroupByParent->setEnabled(true);
-		m_AbortRequested = false;
-		m_Loading = false;
-	};
+		SetProgressVisible(false);
+		if (m_pReloadProgressTimer)
+			m_pReloadProgressTimer->stop();
+	}
+	m_pRefreshButton->repaint();
+	m_pLoadIndicator->repaint();
+}
 
+
+void CFileHistoryWindow::RestartHistoryWatcher()
+{
+	if (m_pHistoryWatcher)
+		m_HistoryGeneration = m_pHistoryWatcher->Start(QDir::cleanPath(
+			m_pBox->GetFileRoot() + "\\FileHistory"));
+}
+
+
+void CFileHistoryWindow::SetCacheStatus(
+	const QString& Status, const QString& ToolTip)
+{
+	m_pCacheStatus->setText(Status);
+	m_pCacheStatus->setToolTip(ToolTip.isEmpty() ? Status : ToolTip);
+}
+
+
+void CFileHistoryWindow::SetCacheAttention(bool Attention)
+{
+	if (!m_pCacheAttentionTimer)
+		return;
+	if (Attention) {
+		m_pRefreshButton->setToolTip(tr(
+			"Refresh retained versions because the cache is stale."));
+		if (!m_pCacheAttentionTimer->isActive()) {
+			m_CacheAttentionPhase = false;
+			m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+			m_pCacheAttentionTimer->start();
+		}
+	}
+	else {
+		m_pCacheAttentionTimer->stop();
+		m_CacheAttentionPhase = false;
+		m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+		m_pRefreshButton->setToolTip(QString());
+	}
+}
+
+
+void CFileHistoryWindow::UpdateReloadProgress()
+{
+	if (!m_Loading || !m_ReloadProgressCurrent ||
+			!m_ReloadProgressTotal)
+		return;
+	int Current = m_ReloadProgressCurrent->load();
+	int Total = m_ReloadProgressTotal->load();
+	QString Prefix = m_Loaded ? tr("Refreshing...") : tr("Loading...");
+	m_pLoadIndicator->setText(Total >= 0
+		? tr("%1 %2 / %3 files").arg(Prefix).arg(Current).arg(Total)
+		: Prefix);
+	m_pLoadIndicator->repaint();
+}
+
+
+void CFileHistoryWindow::ApplyLoadedData(
+	const SRetainedVersionsData& Data, bool PreserveState)
+{
 	QSet<QString> CollapsedItems;
 	bool HadParents = m_pTree->topLevelItemCount() > 0;
-	foreach(QTreeWidgetItem* Item, TreeItems(m_pTree)) {
-		if (Item->data(0, eIsEvidence).toBool() || Item->isExpanded())
-			continue;
-		QString Prefix = Item->data(0, eIsGroup).toBool()
-			? QStringLiteral("group:") : QStringLiteral("path:");
-		CollapsedItems.insert(
-			Prefix + Item->data(0, eLogicalPath).toString().toLower());
+	if (PreserveState) {
+		foreach(QTreeWidgetItem* Item, TreeItems(m_pTree)) {
+			if (Item->data(0, eIsEvidence).toBool() || Item->isExpanded())
+				continue;
+			QString Prefix = Item->data(0, eIsGroup).toBool()
+				? QStringLiteral("group:") : QStringLiteral("path:");
+			CollapsedItems.insert(
+				Prefix + Item->data(0, eLogicalPath).toString().toLower());
+		}
 	}
-	m_EvidenceItems.clear();
-	m_PathLineages.clear();
+
+	m_PathLineages = Data.PathLineages;
 	m_pTree->setSortingEnabled(false);
 	m_pTree->clear();
+	m_EvidenceItems.clear();
 
-	quint64 MaxVersions = qMax(0,
-		m_pBox->GetNum("FileHistoryMaxVersionsTotal", 2500, true, true));
-	quint64 MaxVersionsPerFile = qMax(0,
-		m_pBox->GetNum(
-			"FileHistoryMaxVersionsPerFile", 25, true, true));
-	quint64 MaxSizeKB = qMax<qint64>(0,
-		m_pBox->GetNum64(
-			"FileHistoryMaxSizeTotalKB", 1024 * 1024, true, true));
-	quint64 MaxFileSizeKB = qMax<qint64>(0,
-		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 10 * 1024, true, true));
 	QString HistoryPath = QDir::cleanPath(
 		m_pBox->GetFileRoot() + "\\FileHistory");
-	QCoreApplication::processEvents(QEventLoop::AllEvents);
-	if (m_AbortRequested) {
-		AbortReload();
-		return;
-	}
-	if (m_pBox->GetActiveProcessCount() == 0)
-		RemoveOrphanedBlobs(HistoryPath);
-	QCoreApplication::processEvents(QEventLoop::AllEvents);
-	if (m_AbortRequested) {
-		AbortReload();
-		return;
-	}
-	QString ArtifactsPath = QDir::cleanPath(HistoryPath + "\\Artifacts");
-	QDir Artifacts(ArtifactsPath);
-	QFileInfoList ArtifactList = Artifacts.entryInfoList(
-		QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-		QDir::Name);
-	int ArtifactCount = 0;
-	foreach(const QFileInfo& ArtifactInfo, ArtifactList) {
-		if (IsArtifactId(ArtifactInfo.fileName()))
-			++ArtifactCount;
-	}
-	int ArtifactIndex = 0;
-	QString LoadPrefix = m_Loaded
-		? tr("Refreshing...") : tr("Loading...");
-	m_pLoadIndicator->setText(
-		tr("%1 0 / %2 files").arg(LoadPrefix).arg(ArtifactCount));
-	m_pLoadIndicator->repaint();
-	QCoreApplication::processEvents(QEventLoop::AllEvents);
-	if (m_AbortRequested) {
-		AbortReload();
-		return;
-	}
-	m_PathLineages = ReadPathLineages(HistoryPath);
-	QCoreApplication::processEvents(QEventLoop::AllEvents);
-	if (m_AbortRequested) {
-		AbortReload();
-		return;
-	}
-	quint64 UsedVersions = 0;
-	quint64 AccountedSize = 0;
-	quint64 StoredSize = 0;
-	auto AddSize = [](quint64& Total, quint64 Size) {
-		const quint64 MaximumSize = ~quint64(0);
-		Total = Size > MaximumSize - Total ? MaximumSize : Total + Size;
-	};
+	for (const SRetainedVersionRecord& Record : Data.Records) {
+		QString LogicalPath = Record.LogicalPath;
+		if (LogicalPath.isEmpty())
+			LogicalPath = tr("(Unknown path) [%1]").arg(Record.Artifact);
 
-	foreach(const QFileInfo& ArtifactInfo, ArtifactList) {
-		if (!IsArtifactId(ArtifactInfo.fileName()))
-			continue;
-		++ArtifactIndex;
-		if (ArtifactIndex == 1 || ArtifactIndex == ArtifactCount ||
-				(ArtifactIndex % 16) == 0) {
-			m_pLoadIndicator->setText(
-				tr("%1 %2 / %3 files")
-					.arg(LoadPrefix).arg(ArtifactIndex).arg(ArtifactCount));
-			m_pLoadIndicator->repaint();
-		}
-		QCoreApplication::processEvents(QEventLoop::AllEvents);
-		if (m_AbortRequested) {
-			AbortReload();
-			return;
-		}
-
-		QDir ArtifactDir(ArtifactInfo.absoluteFilePath());
-		QMap<QString, SHistoryFilePair> Pairs;
-
-		foreach(const QFileInfo& FileInfo,
-				ArtifactDir.entryInfoList(
-					QStringList() << "*.bin" << "*.txt",
-					QDir::Files | QDir::NoSymLinks,
-					QDir::Name)) {
-			QString BaseName = FileInfo.completeBaseName();
-			SHistoryFilePair& Pair = Pairs[BaseName];
-			if (FileInfo.suffix().compare("bin", Qt::CaseInsensitive) == 0)
-				Pair.BinaryPath = FileInfo.absoluteFilePath();
-			else
-				Pair.MetadataPath = FileInfo.absoluteFilePath();
-		}
-
-		for (auto PairIt = Pairs.constBegin(); PairIt != Pairs.constEnd(); ++PairIt) {
-			QCoreApplication::processEvents(QEventLoop::AllEvents);
-			if (m_AbortRequested) {
-				AbortReload();
-				return;
-			}
-			const SHistoryFilePair& Pair = PairIt.value();
-			QMap<QString, QString> Fields;
-			bool MetadataValid = !Pair.MetadataPath.isEmpty()
-				&& ReadMetadata(Pair.MetadataPath, Fields);
-
-			QString TruePath;
-			QString LogicalPath;
-			if (MetadataValid) {
-				TruePath = UnescapeField(Fields.value("path"));
-				LogicalPath = UnescapeField(Fields.value("dos_path"));
-				if (LogicalPath.isEmpty())
-					LogicalPath = UnescapeField(Fields.value("path"));
-			}
-			if (LogicalPath.isEmpty())
-				LogicalPath = tr("(Unknown path) [%1]").arg(ArtifactInfo.fileName());
-
-			QString Lineage = m_PathLineages.value(LogicalPath.toLower());
-			QTreeWidgetItem* Item = new CHistoryTreeItem();
-			m_EvidenceItems.append(Item);
-			Item->setData(0, eLineage, Lineage);
-			QString State = Fields.value("state");
-			bool Pending = PairIt.key().compare("pending", Qt::CaseInsensitive) == 0
-				|| State.startsWith("still-", Qt::CaseInsensitive)
-				|| State.compare("pending", Qt::CaseInsensitive) == 0;
-			Item->setText(0, Pending ? tr("Pending version") : tr("Captured version"));
-
-			QString Captured = FormatFileTime(Fields.value("timestamp"));
-			if (Captured.isEmpty()) {
-				QFileInfo TimeInfo(!Pair.BinaryPath.isEmpty()
-					? Pair.BinaryPath : Pair.MetadataPath);
-				Captured = TimeInfo.lastModified().toString(
+		QString Captured = FormatFileTime(Record.Timestamp);
+		if (Captured.isEmpty() && Record.TimestampFallback > 0)
+			Captured = QDateTime::fromMSecsSinceEpoch(
+				Record.TimestampFallback).toLocalTime().toString(
 					QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
-			}
-			Item->setText(2, Captured);
-			QDateTime CapturedDate = QDateTime::fromString(
-				Captured, QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
-			if (CapturedDate.isValid())
-				Item->setData(2, eSortValue,
-					(quint64)CapturedDate.toMSecsSinceEpoch());
-			Item->setText(3, Fields.value("operation"));
-			Item->setText(4, State.isEmpty() ? tr("Available") : State);
-			bool Reused = Fields.value("content_reused").compare(
-				"y", Qt::CaseInsensitive) == 0;
 
-			bool SizeOk = false;
-			quint64 Size = 0;
-			if (!Pair.BinaryPath.isEmpty()) {
-				qint64 BinarySize = QFileInfo(Pair.BinaryPath).size();
-				Size = BinarySize > 0 ? (quint64)BinarySize : 0;
-				SizeOk = true;
-				Item->setData(0, eIsEmpty, BinarySize == 0);
-				if (Size)
-					++UsedVersions;
-				AddSize(AccountedSize, Size);
-				if (!Reused)
-					AddSize(StoredSize, Size);
-			}
-			else
-				Size = Fields.value("size").toULongLong(&SizeOk);
-			if (SizeOk) {
-				Item->setText(5, FormatSize(Size));
-				Item->setData(5, eSortValue, Size);
-			}
+		QString State = Record.State;
+		QString SizeText;
+		if (Record.HasSize)
+			SizeText = FormatSize(Record.Size);
 
-			QString ProcessName = UnescapeField(Fields.value("image"));
-			QString Process = ProcessName;
-			QString Pid = Fields.value("pid");
-			if (!Pid.isEmpty())
-				Process += Process.isEmpty() ? tr("PID %1").arg(Pid) : tr(" (PID %1)").arg(Pid);
-			Item->setText(6, Process);
+		QString Process = Record.ProcessName;
+		if (!Record.Pid.isEmpty())
+			Process += Process.isEmpty() ? tr("PID %1").arg(Record.Pid)
+				: tr(" (PID %1)").arg(Record.Pid);
 
-			QString EvidencePath = !Pair.BinaryPath.isEmpty()
-				? Pair.BinaryPath : Pair.MetadataPath;
-			Item->setData(0, eFolderPath, QFileInfo(EvidencePath).absolutePath());
-			Item->setData(0, eBinaryPath, Pair.BinaryPath);
-			Item->setData(0, eMetadataPath, Pair.MetadataPath);
-			Item->setData(0, eLogicalPath, LogicalPath);
-			Item->setData(0, eTruePath, TruePath);
-			Item->setData(0, eOperation, Item->text(3));
-			Item->setData(0, eProcess, Item->text(6));
-			Item->setData(0, eState, Item->text(4));
-			Item->setData(0, eSize, Item->text(5));
-			Item->setData(0, eDate, Item->text(2));
-			Item->setData(0, eExtension, QFileInfo(LogicalPath).suffix());
-			Item->setData(0, eProcessName, ProcessName);
-			Item->setData(0, eIsReused, Reused);
-			Item->setData(0, eIsPending, Pending);
-			QString Hash = Fields.value("sha256");
-			if (IsSha256(Hash)) {
-				QString BlobPath = QDir::cleanPath(
-					HistoryPath + "\\Blobs\\" + Hash + ".bin");
-				bool BlobAvailable = QFileInfo::exists(BlobPath);
-				QString HashDisplay = Hash;
-				if (BlobAvailable)
-					HashDisplay += Reused
-						? tr(" (reused blob)") : tr(" (blob)");
-				Item->setText(7, HashDisplay);
-				Item->setData(0, eHashValue, Hash);
-				Item->setData(0, eHash, HashDisplay);
-				Item->setToolTip(7,
-					tr("SHA-256: %1\nBlob: %2\nContent reused: %3")
-						.arg(Hash)
-						.arg(BlobAvailable ? BlobPath : tr("(not available)"))
-						.arg(Reused ? tr("yes") : tr("no")));
-			}
-			Item->setData(0, eIsEvidence, true);
-			Item->setToolTip(0, tr("Artifact: %1\nBinary: %2\nMetadata: %3")
-				.arg(ArtifactInfo.fileName(),
-					Pair.BinaryPath.isEmpty() ? tr("(missing)") : Pair.BinaryPath,
-					Pair.MetadataPath.isEmpty() ? tr("(missing)") : Pair.MetadataPath));
-			if (Pair.BinaryPath.isEmpty())
-				Item->setText(4, State.isEmpty() ? tr("Metadata only") : State + tr(" (metadata only)"));
-			else if (!MetadataValid)
-				Item->setText(4, tr("Missing or invalid metadata"));
-			Item->setData(0, eState, Item->text(4));
+		QString BinaryPath = Record.BinaryPath.isEmpty()
+			? QString() : QDir(HistoryPath).filePath(Record.BinaryPath);
+		QString MetadataPath = Record.MetadataPath.isEmpty()
+			? QString() : QDir(HistoryPath).filePath(Record.MetadataPath);
+		QString EvidencePath = !BinaryPath.isEmpty()
+			? BinaryPath : MetadataPath;
+
+		CHistoryTreeItem* Item = new CHistoryTreeItem();
+		m_EvidenceItems.append(Item);
+		Item->setData(0, eLineage, Record.Lineage);
+		Item->setText(0, Record.Pending
+			? tr("Pending version") : tr("Captured version"));
+		Item->setText(2, Captured);
+		if (Record.CapturedSort)
+			Item->setData(2, eSortValue, Record.CapturedSort);
+		Item->setText(3, Record.Operation);
+		Item->setText(4, State.isEmpty() ? tr("Available") : State);
+		Item->setText(5, SizeText);
+		if (Record.HasSize)
+			Item->setData(5, eSortValue, Record.Size);
+		Item->setText(6, Process);
+
+		Item->setData(0, eFolderPath, QFileInfo(EvidencePath).absolutePath());
+		Item->setData(0, eBinaryPath, BinaryPath);
+		Item->setData(0, eMetadataPath, MetadataPath);
+		Item->setData(0, eLogicalPath, LogicalPath);
+		Item->setData(0, eTruePath, Record.TruePath);
+		Item->setData(0, eOperation, Record.Operation);
+		Item->setData(0, eProcess, Process);
+		Item->setData(0, eState,
+			State.isEmpty() ? tr("Available") : State);
+		Item->setData(0, eSize, SizeText);
+		Item->setData(0, eDate, Captured);
+		Item->setData(0, eExtension, QFileInfo(LogicalPath).suffix());
+		Item->setData(0, eProcessName, Record.ProcessName);
+		Item->setData(0, eIsEmpty, Record.IsEmpty);
+		Item->setData(0, eIsReused, Record.Reused);
+		Item->setData(0, eIsPending, Record.Pending);
+
+		if (!Record.Hash.isEmpty()) {
+			QString BlobPath = QDir::cleanPath(
+				HistoryPath + "\\Blobs\\" + Record.Hash + ".bin");
+			QString HashDisplay = Record.Hash;
+			if (Record.BlobAvailable)
+				HashDisplay += Record.Reused
+					? tr(" (reused blob)") : tr(" (blob)");
+			Item->setText(7, HashDisplay);
+			Item->setData(0, eHashValue, Record.Hash);
+			Item->setData(0, eHash, HashDisplay);
+			Item->setToolTip(7,
+				tr("SHA-256: %1\nBlob: %2\nContent reused: %3")
+					.arg(Record.Hash)
+					.arg(Record.BlobAvailable
+						? BlobPath : tr("(not available)"))
+					.arg(Record.Reused ? tr("yes") : tr("no")));
 		}
+		Item->setData(0, eIsEvidence, true);
+		Item->setToolTip(0, tr("Artifact: %1\nBinary: %2\nMetadata: %3")
+			.arg(Record.Artifact,
+				BinaryPath.isEmpty() ? tr("(missing)") : BinaryPath,
+				MetadataPath.isEmpty() ? tr("(missing)") : MetadataPath));
+		if (BinaryPath.isEmpty())
+			Item->setText(4, State.isEmpty()
+				? tr("Metadata only") : State + tr(" (metadata only)"));
+		else if (!Record.MetadataValid)
+			Item->setText(4, tr("Missing or invalid metadata"));
+		Item->setData(0, eState, Item->text(4));
 	}
 
 	RebuildTree(false);
@@ -1350,31 +1558,241 @@ void CFileHistoryWindow::Reload()
 			continue;
 		QString Prefix = Item->data(0, eIsGroup).toBool()
 			? QStringLiteral("group:") : QStringLiteral("path:");
-		Item->setExpanded(!HadParents || !CollapsedItems.contains(
-			Prefix + Item->data(0, eLogicalPath).toString().toLower()));
+		Item->setExpanded(!PreserveState || !HadParents ||
+			!CollapsedItems.contains(
+				Prefix + Item->data(0, eLogicalPath).toString().toLower()));
 	}
 	ApplyFilter();
+
+	quint64 MaxVersions = qMax<qint64>(0,
+		m_pBox->GetNum("FileHistoryMaxVersionsTotal", 2500, true, true));
+	quint64 MaxVersionsPerFile = qMax<qint64>(0,
+		m_pBox->GetNum(
+			"FileHistoryMaxVersionsPerFile", 25, true, true));
+	quint64 MaxSizeKB = qMax<qint64>(0,
+		m_pBox->GetNum64(
+			"FileHistoryMaxSizeTotalKB", 1024 * 1024, true, true));
+	quint64 MaxFileSizeKB = qMax<qint64>(0,
+		m_pBox->GetNum64("FileHistoryMaxFileSizeKB", 10 * 1024, true, true));
 	m_pLimits->setText(tr("Usage / limits: %1 / %2 non-empty versions; "
 		"%3 / %4 limit-accounted size; %5 stored after content reuse. "
 		"Limits: %6 non-empty versions per file; %7 per capture.")
-		.arg(QString::number(UsedVersions))
+		.arg(QString::number(Data.UsedVersions))
 		.arg(FormatCountLimit(MaxVersions))
-		.arg(FormatSize(AccountedSize))
+		.arg(FormatSize(Data.AccountedSize))
 		.arg(FormatLimitKB(MaxSizeKB))
-		.arg(FormatSize(StoredSize))
+		.arg(FormatSize(Data.StoredSize))
 		.arg(FormatCountLimit(MaxVersionsPerFile))
 		.arg(FormatLimitKB(MaxFileSizeKB)));
 	m_pRemoveHistory->setEnabled(QDir(HistoryPath).exists());
-	m_pLoadIndicator->clear();
-	SetProgressVisible(false);
-	m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
-	m_pRefreshButton->setText(tr("Refresh"));
-	m_pRefreshButton->setEnabled(true);
-	m_pViewOptionsButton->setEnabled(true);
-	m_pMergeRenamed->setEnabled(true);
-	m_pGroupByParent->setEnabled(true);
-	m_Loading = false;
 	m_Loaded = true;
+}
+
+
+void CFileHistoryWindow::Reload()
+{
+	if (m_Loading) {
+		m_AbortRequested = true;
+		if (m_ReloadCancel)
+			m_ReloadCancel->store(true);
+		return;
+	}
+
+	if (!m_Loaded) {
+		SRetainedVersionsData Cached;
+		if (RetainedVersionsCache::Read(
+				m_pBox->GetFileRoot(), Cached) &&
+				!Cached.Fingerprint.isEmpty()) {
+			ApplyLoadedData(Cached, false);
+			m_pRefreshButton->setEnabled(true);
+			m_CacheFingerprint = Cached.Fingerprint;
+			m_CacheDirty = false;
+			m_CacheChecking = true;
+			SetCacheStatus(tr("Cache: checking..."), tr(
+				"The cached retained-version list is being validated against "
+				"the FileHistory archive."));
+			m_pLoadIndicator->setText(tr("Checking cached history..."));
+			SetProgressVisible(true);
+			StartCacheValidation();
+			return;
+		}
+	}
+	StartFullReload();
+}
+
+
+void CFileHistoryWindow::StartCacheValidation()
+{
+	if (m_CacheValidationCancel)
+		m_CacheValidationCancel->store(true);
+	m_CacheValidationCancel =
+		std::shared_ptr<std::atomic_bool>(new std::atomic_bool(false));
+	QString HistoryPath = QDir::cleanPath(
+		m_pBox->GetFileRoot() + "\\FileHistory");
+	std::shared_ptr<std::atomic_bool> Cancel = m_CacheValidationCancel;
+	m_pCacheValidationWatcher->setFuture(QtConcurrent::run(
+		[HistoryPath, Cancel]() {
+			return RetainedVersionsCache::CalculateFingerprint(
+				HistoryPath, Cancel.get());
+		}));
+}
+
+
+void CFileHistoryWindow::CacheValidationFinished()
+{
+	if (!m_CacheChecking)
+		return;
+	QString Fingerprint = m_pCacheValidationWatcher->result();
+	m_CacheChecking = false;
+	SetProgressVisible(false);
+	if (!Fingerprint.isEmpty() &&
+			Fingerprint == m_CacheFingerprint && !m_CacheDirty) {
+		m_RefreshPromptShown = false;
+		SetCacheAttention(false);
+		SetCacheStatus(tr("Cache: valid"), tr(
+			"Loaded retained versions from the box-local cache."));
+		return;
+	}
+
+	m_CacheDirty = true;
+	SetCacheAttention(true);
+	SetCacheStatus(tr("Cache: stale"), tr(
+		"Retained file history changed; the cached list is stale."));
+	PromptForRefresh();
+}
+
+
+void CFileHistoryWindow::StartFullReload()
+{
+	m_ReloadStartedWithDirty = m_CacheDirty;
+	if (m_CacheValidationCancel)
+		m_CacheValidationCancel->store(true);
+	m_CacheChecking = false;
+	m_CacheDirty = false;
+	m_CacheFingerprint.clear();
+	m_AbortRequested = false;
+	SetCacheAttention(false);
+	m_ReloadProgressCurrent =
+		std::shared_ptr<std::atomic<int>>(new std::atomic<int>(0));
+	m_ReloadProgressTotal =
+		std::shared_ptr<std::atomic<int>>(new std::atomic<int>(-1));
+	m_Loading = true;
+	SetCacheStatus(tr("Cache: refreshing..."), tr(
+		"The retained-version cache will be replaced after a stable "
+		"FileHistory scan."));
+	SetLoadingState(true);
+
+	QString HistoryPath = QDir::cleanPath(
+		m_pBox->GetFileRoot() + "\\FileHistory");
+	bool CleanOrphans = m_pBox->GetActiveProcessCount() == 0;
+	m_ReloadCancel =
+		std::shared_ptr<std::atomic_bool>(new std::atomic_bool(false));
+	std::shared_ptr<std::atomic_bool> Cancel = m_ReloadCancel;
+	std::shared_ptr<std::atomic<quint64>> ChangeSequence =
+		m_pHistoryWatcher ? m_pHistoryWatcher->ChangeSequenceState()
+		: std::shared_ptr<std::atomic<quint64>>();
+	std::shared_ptr<std::atomic_bool> NotificationsSuppressed =
+		m_pHistoryWatcher ? m_pHistoryWatcher->NotificationSuppressionState()
+		: std::shared_ptr<std::atomic_bool>();
+	m_pScanWatcher->setFuture(QtConcurrent::run(
+		ScanRetainedVersions, HistoryPath, CleanOrphans, Cancel,
+		m_ReloadProgressCurrent, m_ReloadProgressTotal, ChangeSequence,
+		NotificationsSuppressed));
+}
+
+
+void CFileHistoryWindow::HistoryChanged(quint64 Generation, quint64 Sequence)
+{
+	if (Generation != m_HistoryGeneration)
+		return;
+	if (Sequence <= m_HistoryChangeSequenceFloor)
+		return;
+	if (!m_Loaded && !m_Loading)
+		return;
+	m_CacheDirty = true;
+	if (m_Loading || m_CacheChecking)
+		return;
+	SetCacheAttention(true);
+	SetCacheStatus(tr("Cache: stale"), tr(
+		"Retained file history changed; the cached list is stale."));
+	QTimer::singleShot(0, this, [this]() { PromptForRefresh(); });
+}
+
+
+void CFileHistoryWindow::PromptForRefresh()
+{
+	if (m_RefreshPromptShown || !m_CacheDirty || m_Loading ||
+			m_CacheChecking)
+		return;
+	m_RefreshPromptShown = true;
+	if (QMessageBox::question(this, "Sandboxie-Plus",
+			tr("The retained file history changed since the cached list was "
+				"saved. Refresh it now?"),
+			QMessageBox::Yes,
+			QMessageBox::No | QMessageBox::Default | QMessageBox::Escape,
+			QMessageBox::NoButton) == QMessageBox::Yes)
+		StartFullReload();
+}
+
+
+void CFileHistoryWindow::ScanFinished()
+{
+	SRetainedVersionsScanResult Result = m_pScanWatcher->result();
+	bool Cancelled = m_AbortRequested ||
+		(m_ReloadCancel && m_ReloadCancel->load());
+	bool ChangedDuringReload = m_pHistoryWatcher &&
+		m_pHistoryWatcher->ChangeSequence() != Result.ChangeSequence;
+	m_Loading = false;
+	m_AbortRequested = false;
+	SetLoadingState(false);
+	if (Cancelled) {
+		if (m_ReloadStartedWithDirty || ChangedDuringReload) {
+			m_CacheDirty = true;
+			SetCacheAttention(true);
+			SetCacheStatus(tr("Cache: refresh aborted"), tr(
+				"Refresh aborted; the displayed retained-version list is stale."));
+		}
+		else
+			SetCacheStatus(tr("Cache: refresh aborted"), tr("Refresh aborted."));
+		return;
+	}
+	if (Result.TooLarge) {
+		m_CacheDirty = true;
+		SetCacheAttention(false);
+		SetCacheStatus(tr("Cache: too many items"), tr(
+			"More than %1 retained versions were found. The list was not loaded "
+			"to keep SandMan responsive.").arg(
+				RetainedVersionsCache::MaximumRecords));
+		return;
+	}
+	if (ChangedDuringReload || !Result.Complete || !Result.Stable) {
+		m_CacheDirty = true;
+		SetCacheAttention(true);
+		SetCacheStatus(tr("Cache: refresh required"), tr(
+			"File history changed during refresh; refresh again to retry."));
+		return;
+	}
+
+	ApplyLoadedData(Result.Data, true);
+	m_CacheFingerprint = Result.Data.Fingerprint;
+	m_CacheDirty = false;
+	m_HistoryChangeSequenceFloor = Result.ChangeSequence;
+	m_RefreshPromptShown = false;
+	SetCacheAttention(false);
+	if (!RetainedVersionsCache::Write(
+			m_pBox->GetFileRoot(), Result.Data))
+		SetCacheStatus(tr("Cache: not saved"), tr(
+			"Retained versions loaded, but the cache could not be saved."));
+	else
+		SetCacheStatus(tr("Cache: valid"), tr(
+			"Retained versions were refreshed and the box-local cache was saved."));
+}
+
+
+void CFileHistoryWindow::ReloadAfterHistoryCleanup()
+{
+	RestartHistoryWatcher();
+	Reload();
 }
 
 
@@ -2602,6 +3020,11 @@ void CFileHistoryWindow::ApplySelectionFilter(bool Exclude, bool Combine)
 
 bool CFileHistoryWindow::CanDeleteHistory()
 {
+	if (m_Loading || m_CacheChecking || m_CacheDirty) {
+		QMessageBox::warning(this, "Sandboxie-Plus",
+			tr("Refresh the retained file history before deleting evidence."));
+		return false;
+	}
 	if (m_pBox->GetBool("NeverDelete", false)) {
 		QMessageBox::warning(this, "Sandboxie-Plus",
 			tr("Delete protection is enabled for this sandbox."));
@@ -3142,6 +3565,7 @@ void CFileHistoryWindow::DeleteEvidence()
 	if (!CanDeleteHistory())
 		return;
 
+	RetainedVersionsCache::Remove(m_pBox->GetFileRoot());
 	QString HistoryPath = QDir::cleanPath(
 		m_pBox->GetFileRoot() + "\\FileHistory");
 	QStringList FailedPaths;
@@ -3243,17 +3667,20 @@ void CFileHistoryWindow::RemoveHistory()
 		return;
 
 	m_pRemoveHistory->setEnabled(false);
+	if (m_pHistoryWatcher)
+		m_pHistoryWatcher->Terminate();
+	RetainedVersionsCache::Remove(m_pBox->GetFileRoot());
 	SB_PROGRESS Status = m_pBox->CleanFileHistory();
 	if (Status.GetStatus() == OP_ASYNC) {
 		connect(Status.GetValue().data(), SIGNAL(Finished()),
-			this, SLOT(Reload()));
+			this, SLOT(ReloadAfterHistoryCleanup()));
 		theGUI->AddAsyncOp(Status.GetValue(), false,
 			tr("Removing retained file versions..."), this);
 	}
 	else if (Status.IsError()) {
 		theGUI->CheckResults(QList<SB_STATUS>() << Status, this);
-		Reload();
+		ReloadAfterHistoryCleanup();
 	}
 	else
-		Reload();
+		ReloadAfterHistoryCleanup();
 }

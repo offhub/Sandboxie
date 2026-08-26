@@ -124,9 +124,13 @@ VOID CALLBACK CReadChangesRequest::NotificationCompletion(
 		return;
 	}
 
-	// This might mean overflow? Not sure.
+	// This might mean overflow. Re-arm the request and force a rescan.
 	if(!dwNumberOfBytesTransfered)
+	{
+		pBlock->BeginRead();
+		pBlock->m_pServer->m_pBase->Notify(pBlock->GetDirectory());
 		return;
+	}
 
 	// Can't use sizeof(FILE_NOTIFY_INFORMATION) because
 	// the structure is padded to 16 bytes.

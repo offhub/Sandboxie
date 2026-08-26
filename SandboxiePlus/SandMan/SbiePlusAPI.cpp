@@ -155,6 +155,8 @@ SB_STATUS CSandBoxPlus_CopyFolder(const CSbieProgressPtr& pProgress, const QStri
 		SCopyHistoryOptions* Options = (SCopyHistoryOptions*)param;
 		return depth != 0 ||
 			((Options->IncludeFileHistory || _wcsicmp(name, L"FileHistory") != 0) &&
+			(Options->IncludeFileHistory ||
+				_wcsicmp(name, L"RetainedVersions.cache") != 0) &&
 			(Options->IncludeRegistryHistory || _wcsicmp(name, L"RegistryHistory") != 0) &&
 			(Options->IncludeFileStateHistory || _wcsicmp(name, L"FileStateHistory") != 0));
 	}, &Options);

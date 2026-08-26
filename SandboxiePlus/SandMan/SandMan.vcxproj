@@ -366,7 +366,6 @@
       <QtMocFileName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(Filename).moc</QtMocFileName>
     </ClCompile>
     <ClCompile Include="Views\StackView.cpp" />
-
     <ClCompile Include="Views\TraceView.cpp">
       <DynamicSource Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">input</DynamicSource>
       <QtMocFileName Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">%(Filename).moc</QtMocFileName>
@@ -504,6 +503,7 @@
     <ClCompile Include="Windows\PopUpWindow.cpp" />
     <ClCompile Include="Windows\RecoveryWindow.cpp" />
     <ClCompile Include="Windows\FileHistoryWindow.cpp" />
+    <ClCompile Include="Windows\RetainedVersionsCache.cpp" />
     <ClCompile Include="Windows\FileStateHistoryWidget.cpp" />
     <ClCompile Include="Windows\RegistryHistoryWindow.cpp" />
     <ClCompile Include="Windows\SelectBoxWindow.cpp" />
@@ -533,7 +533,6 @@
     <QtMoc Include="Wizards\SetupWizard.h" />
     <QtMoc Include="Windows\SelectBoxWindow.h" />
     <QtMoc Include="Views\TraceView.h" />
-
     <QtMoc Include="Windows\RecoveryWindow.h" />
     <QtMoc Include="Windows\FileHistoryWindow.h" />
     <QtMoc Include="Windows\FileStateHistoryWidget.h" />
@@ -550,6 +549,7 @@
     <QtMoc Include="BoxJob.h" />
     <ClInclude Include="DeleteContentOptions.h" />
     <ClInclude Include="Windows\HistoryWindowUtils.h" />
+    <ClInclude Include="Windows\RetainedVersionsCache.h" />
     <ClInclude Include="..\version.h" />
     <QtMoc Include="BoxMonitor.h" />
     <QtMoc Include="Engine\BoxEngine.h" />

@@ -405,6 +405,9 @@ static QStringList ListBoxContent(const QString& rootPath, bool includeFileHisto
 
 	foreach(const QString& fileName,
 			root.entryList(QDir::Files | QDir::Hidden | QDir::System)) {
+		if (!includeFileHistory && fileName.compare(
+				"RetainedVersions.cache", Qt::CaseInsensitive) == 0)
+			continue;
 		fileList.append(fileName);
 	}
 

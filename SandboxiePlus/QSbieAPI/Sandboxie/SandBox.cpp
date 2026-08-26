@@ -229,7 +229,9 @@ SB_PROGRESS CSandBox::CleanFileHistory()
 	if (GetActiveProcessCount() > 0)
 		return SB_ERR(SB_DeleteNotEmpty);
 
-	return CleanBoxFolders(QStringList(m_FilePath + "\\FileHistory"));
+	return CleanBoxFolders(QStringList()
+		<< m_FilePath + "\\FileHistory"
+		<< m_FilePath + "\\RetainedVersions.cache");
 }
 
 SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool PreserveRegistryHistory, bool PreserveFileStateHistory)
@@ -257,6 +259,11 @@ SB_PROGRESS CSandBox::CleanBoxExceptHistory(bool PreserveFileHistory, bool Prese
 			continue;
 		}
 		if (PreserveFileStateHistory && Entry.isDir() && Name.compare("FileStateHistory", Qt::CaseInsensitive) == 0) {
+			KeepRoot = true;
+			continue;
+		}
+		if (PreserveFileHistory && Entry.isFile() && Name.compare(
+				"RetainedVersions.cache", Qt::CaseInsensitive) == 0) {
 			KeepRoot = true;
 			continue;
 		}
@@ -761,6 +768,8 @@ SB_STATUS CSandBox__MergeFolders(const CSbieProgressPtr& pProgress, const QStrin
 
 SB_STATUS CSandBox__CleanupSnapshot(const QString& Folder)
 {
+	QFile::remove(Folder + "\\RetainedVersions.cache");
+
 	// remove files which may be in the snapshot
 	foreach(const SBoxDataFile& BoxDataFile, CSandBox__BoxDataFiles) 
 		QFile::remove(Folder + "\\" + BoxDataFile.Name);
@@ -1056,7 +1065,7 @@ void CSandBox::MergeSnapshotAsync(const CSbieProgressPtr& pProgress, const QStri
 	QStringList datFileNames = QStringList() << "FilePaths.dat" << "FilePaths_v3.dat";
 	foreach (const QString& datFileName, datFileNames) {
 	const bool IsDeleteV3 = datFileName == "FilePaths_v3.dat";
-	if (QFile::exists(SourceFolder + "\\" + datFileName))
+	if (QFile::exists(SourceFolder + "\\" + datFileName)) 
 	{
 		QFile datSource(SourceFolder + "\\" + datFileName);
 		if (datSource.open(QFile::ReadOnly)) 
@@ -1268,7 +1277,10 @@ SB_PROGRESS CSandBox::SelectSnapshotEx(const QString& ID, bool DeleteFileHistory
 	foreach(const QString& BoxSubFolder, CSandBox__BoxSubFolders)
 		BoxFolders.append(m_FilePath + "\\" + BoxSubFolder);
 	if (DeleteFileHistory)
+	{
 		BoxFolders.append(m_FilePath + "\\FileHistory");
+		BoxFolders.append(m_FilePath + "\\RetainedVersions.cache");
+	}
 	if (DeleteRegistryHistory)
 		BoxFolders.append(m_FilePath + "\\RegistryHistory");
 	if (DeleteFileStateHistory)

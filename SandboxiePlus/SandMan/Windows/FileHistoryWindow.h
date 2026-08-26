@@ -1,9 +1,14 @@
 #pragma once
 
 #include "SbiePlusAPI.h"
+#include "RetainedVersionsCache.h"
 #include <QHash>
 #include <QList>
 #include <QRegularExpression>
+#include <QFutureWatcher>
+
+#include <atomic>
+#include <memory>
 
 class CFinder;
 class QAction;
@@ -16,6 +21,8 @@ class QToolButton;
 class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QTimer;
+class CRetainedVersionsWatcher;
 
 class CFileHistoryWindow : public QDialog
 {
@@ -52,6 +59,11 @@ private slots:
 	void DeleteEvidence();
 	void RemoveHistory();
 	void ConfigureLimits();
+	void CacheValidationFinished();
+	void ScanFinished();
+	void ReloadAfterHistoryCleanup();
+	void HistoryChanged(quint64 Generation, quint64 Sequence);
+	void UpdateReloadProgress();
 
 public:
 	void SetHistoryTab(int Index);
@@ -64,6 +76,16 @@ private:
 	void RemoveExcludeRules(const QStringList& Rules);
 	void ApplyFilter();
     void RebuildTree(bool PreserveState);
+	void StartFullReload();
+	void RestartHistoryWatcher();
+	void StartCacheValidation();
+	void ApplyLoadedData(const SRetainedVersionsData& Data,
+		bool PreserveState);
+	void SetLoadingState(bool Loading);
+	void PromptForRefresh();
+	void SetCacheStatus(const QString& Status,
+		const QString& ToolTip = QString());
+	void SetCacheAttention(bool Attention);
 	void UpdateHashHighlight(int& SelectedCount, int& HighlightedCount);
 	void ApplySelectionFilter(bool Exclude, bool Combine);
 	void PrepareTrackFileView();
@@ -98,6 +120,7 @@ private:
 	QStackedLayout* m_pLoadStack;
 	QLabel* m_pLimits;
 	QLabel* m_pStatus;
+	QLabel* m_pCacheStatus;
 	QLabel* m_pSelectionStatus;
 	QPushButton* m_pRefreshButton;
 	QPushButton* m_pOpenFolder;
@@ -113,6 +136,23 @@ private:
 	bool m_Loading;
 	bool m_AbortRequested;
 	bool m_Loaded;
+	bool m_CacheChecking;
+	bool m_CacheDirty;
+	bool m_RefreshPromptShown;
+	QString m_CacheFingerprint;
+	QFutureWatcher<QString>* m_pCacheValidationWatcher;
+	QFutureWatcher<SRetainedVersionsScanResult>* m_pScanWatcher;
+	CRetainedVersionsWatcher* m_pHistoryWatcher;
+	quint64 m_HistoryGeneration;
+	quint64 m_HistoryChangeSequenceFloor;
+	bool m_ReloadStartedWithDirty;
+	QTimer* m_pReloadProgressTimer;
+	QTimer* m_pCacheAttentionTimer;
+	bool m_CacheAttentionPhase;
+	std::shared_ptr<std::atomic_bool> m_ReloadCancel;
+	std::shared_ptr<std::atomic_bool> m_CacheValidationCancel;
+	std::shared_ptr<std::atomic<int>> m_ReloadProgressCurrent;
+	std::shared_ptr<std::atomic<int>> m_ReloadProgressTotal;
 	bool m_TrackFileViewAdjusting;
 	bool m_TrackFileHideEmptyOverride;
 	bool m_TrackFileHideReusedOverride;
