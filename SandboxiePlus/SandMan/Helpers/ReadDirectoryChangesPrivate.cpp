@@ -145,7 +145,8 @@ VOID CALLBACK CReadChangesRequest::NotificationCompletion(
 
 	//pBlock->ProcessNotification();
 
-	pBlock->m_pServer->m_pBase->Notify(pBlock->GetDirectory());
+	pBlock->m_pServer->m_pBase->NotifyChanges(pBlock->GetDirectory(),
+		pBlock->m_BackupBuffer.data(), dwNumberOfBytesTransfered);
 }
 
 void CReadChangesRequest::ProcessNotification()

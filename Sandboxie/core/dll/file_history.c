@@ -43,6 +43,9 @@
 #define FILE_HISTORY_COUNTER_REDIRECTS 256
 #define FILE_HISTORY_SHARING_RETRY_ATTEMPTS 3
 #define FILE_HISTORY_SHARING_RETRY_DELAY_MS 10
+#define FILE_HISTORY_CLOSE_QUEUE_LIMIT 64
+#define FILE_HISTORY_CLOSE_RETRIES   8
+#define FILE_HISTORY_CLOSE_POLL_MS   25
 #define FILE_HISTORY_ULONG_MAX       ((ULONG)-1)
 #define FILE_HISTORY_ULONGLONG_MAX   ((ULONGLONG)-1)
 #define FILE_HISTORY_DEFAULT_MAX_VERSIONS_TOTAL 2500
@@ -76,6 +79,21 @@ static ULONG File_HistoryMaxVersionsPerFile = 0;
 static ULONGLONG File_HistoryMaxSizeTotal = 0;
 static ULONGLONG File_HistoryMaxFileSize = 0;
 static BOOLEAN File_HistoryCaptureMigrated = FALSE;
+static ULONG File_HistoryCoalesceMs = 1000;
+static CRITICAL_SECTION File_HistoryCloseLock;
+static LIST File_HistoryCloseQueue;
+static ULONG File_HistoryCloseCount = 0;
+static BOOLEAN File_HistoryCloseWorkerRunning = FALSE;
+
+struct _FILE_HISTORY_CLOSE {
+    LIST_ELEM list_elem;
+    ULONGLONG FileId;
+    LONGLONG CreationTime;
+    ULONG Ticks;
+    ULONG Retries;
+    WCHAR *CopyPath;
+    WCHAR TruePath[1];
+};
 static BOOLEAN File_HistoryLogWarnings = TRUE;
 static HANDLE File_HistoryNoticeHandle = NULL;
 static volatile LONG *File_HistoryNoticeFlags = NULL;
@@ -175,6 +193,9 @@ static _FX NTSTATUS File_HistoryAdjustMarkerVersions(
 static _FX VOID File_HistoryApplyDeletionJournal(void);
 static _FX BOOLEAN File_HistoryCapture(
     const WCHAR *TruePath, const WCHAR *CopyPath, const WCHAR *Operation);
+static _FX BOOLEAN File_HistoryCaptureEx(
+    const WCHAR *TruePath, const WCHAR *CopyPath, const WCHAR *Operation,
+    const FILE_HISTORY_CLOSE *ExpectedClose);
 
 
 //---------------------------------------------------------------------------
@@ -1979,8 +2000,9 @@ static _FX NTSTATUS File_HistoryCheckLimits(
 //---------------------------------------------------------------------------
 
 
-static _FX VOID File_HistoryTrackCreated(
-    const WCHAR *TruePath, const WCHAR *CopyPath, HANDLE FileHandle)
+static _FX VOID File_HistoryTrackCreatedEx(
+    const WCHAR *TruePath, const WCHAR *CopyPath, HANDLE FileHandle,
+    const WCHAR *Origin)
 {
     FILE_INTERNAL_INFORMATION internal;
     FILE_BASIC_INFORMATION basic;
@@ -2097,6 +2119,12 @@ static _FX VOID File_HistoryTrackCreated(
                 Dll_Free(text);
                 text = updated;
             }
+            if (text) {
+                updated = File_HistoryAppendMetadataField(
+                    text, L"origin", Origin);
+                Dll_Free(text);
+                text = updated;
+            }
             if (text)
                 status = File_HistoryWriteTextAtomic(
                     marker, text, TRUE);
@@ -2129,13 +2157,20 @@ static _FX VOID File_HistoryTrackCreated(
 }
 
 
+static _FX VOID File_HistoryTrackCreated(
+    const WCHAR *TruePath, const WCHAR *CopyPath, HANDLE FileHandle)
+{
+    File_HistoryTrackCreatedEx(TruePath, CopyPath, FileHandle, L"created");
+}
+
+
 //---------------------------------------------------------------------------
 // File_HistoryTrackMigrated
 //---------------------------------------------------------------------------
 
 
 static _FX VOID File_HistoryTrackMigrated(
-    const WCHAR *TruePath, const WCHAR *CopyPath)
+    const WCHAR *TruePath, const WCHAR *CopyPath, BOOLEAN ContentMigrated)
 {
     OBJECT_ATTRIBUTES objattrs;
     UNICODE_STRING objname;
@@ -2143,7 +2178,7 @@ static _FX VOID File_HistoryTrackMigrated(
     HANDLE handle = NULL;
     NTSTATUS status;
 
-    if (!File_HistoryCaptureMigrated || !File_HistoryMatches(TruePath))
+    if (!File_HistoryMatches(TruePath))
         return;
 
     RtlInitUnicodeString(&objname, CopyPath);
@@ -2157,9 +2192,11 @@ static _FX VOID File_HistoryTrackMigrated(
     if (!NT_SUCCESS(status))
         return;
 
-    File_HistoryTrackCreated(TruePath, CopyPath, handle);
+    File_HistoryTrackCreatedEx(TruePath, CopyPath, handle,
+        ContentMigrated ? L"migrated-content" : L"migrated-empty");
     __sys_NtClose(handle);
-    File_HistoryCapture(TruePath, CopyPath, L"migrate");
+    if (File_HistoryCaptureMigrated && ContentMigrated)
+        File_HistoryCapture(TruePath, CopyPath, L"migrate");
 }
 
 
@@ -2264,7 +2301,8 @@ finish:
 static _FX NTSTATUS File_HistoryCopyFile(
     const WCHAR *SourcePath, const WCHAR *TargetPath,
     FILE_NETWORK_OPEN_INFORMATION *SourceInfo,
-    UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN *HashValid)
+    UCHAR Hash[FILE_HISTORY_SHA256_SIZE], BOOLEAN *HashValid,
+    const FILE_HISTORY_CLOSE *ExpectedClose)
 {
     OBJECT_ATTRIBUTES objattrs;
     UNICODE_STRING objname;
@@ -2294,7 +2332,7 @@ static _FX NTSTATUS File_HistoryCopyFile(
     // ShareMode: None (exclusive), which is common for temporary/scratch
     // files created by Chrome and similar applications.
     //
-    if (SourceInfo->EndOfFile.QuadPart == 0) {
+    if (SourceInfo->EndOfFile.QuadPart == 0 && !ExpectedClose) {
         FILE_NETWORK_OPEN_INFORMATION verify_info;
 
         RtlInitUnicodeString(&objname, TargetPath);
@@ -2382,6 +2420,18 @@ static _FX NTSTATUS File_HistoryCopyFile(
         FileNetworkOpenInformation);
     if (!NT_SUCCESS(status))
         goto finish;
+    if (ExpectedClose) {
+        FILE_INTERNAL_INFORMATION internal;
+        status = __sys_NtQueryInformationFile(source, &iosb, &internal,
+            sizeof(internal), FileInternalInformation);
+        if (!NT_SUCCESS(status))
+            goto finish;
+        if ((ULONGLONG)internal.IndexNumber.QuadPart != ExpectedClose->FileId ||
+                current_info.CreationTime.QuadPart != ExpectedClose->CreationTime) {
+            status = STATUS_RETRY;
+            goto finish;
+        }
+    }
     if (!File_HistorySameGenerationInfo(&expected_info, &current_info)) {
         status = STATUS_RETRY;
         goto finish;
@@ -2761,6 +2811,82 @@ static _FX NTSTATUS File_HistorySelectCollisionPair(
 
 
 //---------------------------------------------------------------------------
+// File_HistoryLastVersion
+//---------------------------------------------------------------------------
+
+
+static _FX WCHAR *File_HistoryLastVersion(const WCHAR *Marker, const WCHAR *ArtifactPath)
+{
+    WCHAR *text = NULL;
+    WCHAR *name;
+    WCHAR *path = NULL;
+    ULONG length, index;
+    if (!NT_SUCCESS(File_HistoryReadText(Marker, &text)))
+        return NULL;
+    name = File_HistoryGetMetadataField(text, L"last_version", FALSE);
+    Dll_Free(text);
+    if (!name)
+        return NULL;
+    length = wcslen(name);
+    if ((length == 54 || length == 71) && _wcsicmp(name + length - 4, L".bin") == 0) {
+        for (index = 0; index < length - 4; ++index) {
+            WCHAR ch = name[index];
+            if (index == 16 || index == 33 || index == 50) {
+                if (ch != L'-')
+                    break;
+            }
+            else if (!((ch >= L'0' && ch <= L'9') ||
+                    (ch >= L'A' && ch <= L'F') || (ch >= L'a' && ch <= L'f')))
+                break;
+        }
+        if (index == length - 4) {
+            length += wcslen(ArtifactPath) + 2;
+            path = Dll_AllocTemp(length * sizeof(WCHAR));
+            if (path)
+                Sbie_snwprintf(path, length, L"%s\\%s", ArtifactPath, name);
+        }
+    }
+    Dll_Free(name);
+    return path;
+}
+
+
+static _FX NTSTATUS File_HistorySetLastVersion(const WCHAR *Marker, const WCHAR *VersionPath)
+{
+    WCHAR *text = NULL;
+    WCHAR *updated;
+    const WCHAR *line;
+    const WCHAR *name = VersionPath ? wcsrchr(VersionPath, L'\\') : L"";
+    BOOLEAN present = FALSE;
+    NTSTATUS status;
+    if (!name)
+        return STATUS_INVALID_PARAMETER;
+    status = File_HistoryReadText(Marker, &text);
+    if (!NT_SUCCESS(status))
+        return status;
+    for (line = text; line && *line; ) {
+        if (_wcsnicmp(line, L"last_version=", 13) == 0) {
+            present = TRUE;
+            break;
+        }
+        line = wcschr(line, L'\n');
+        if (line)
+            ++line;
+    }
+    updated = present
+        ? File_HistorySetMetadataField(text, L"last_version", VersionPath ? name + 1 : L"")
+        : File_HistoryAppendMetadataField(text, L"last_version", VersionPath ? name + 1 : L"");
+    status = STATUS_INSUFFICIENT_RESOURCES;
+    if (updated) {
+        status = File_HistoryWriteTextAtomic(Marker, updated, TRUE);
+        Dll_Free(updated);
+    }
+    Dll_Free(text);
+    return status;
+}
+
+
+//---------------------------------------------------------------------------
 // File_HistoryCapture
 //---------------------------------------------------------------------------
 
@@ -2768,9 +2894,18 @@ static _FX NTSTATUS File_HistorySelectCollisionPair(
 static _FX BOOLEAN File_HistoryCapture(
     const WCHAR *TruePath, const WCHAR *CopyPath, const WCHAR *Operation)
 {
+    return File_HistoryCaptureEx(TruePath, CopyPath, Operation, NULL);
+}
+
+
+static _FX BOOLEAN File_HistoryCaptureEx(
+    const WCHAR *TruePath, const WCHAR *CopyPath, const WCHAR *Operation,
+    const FILE_HISTORY_CLOSE *ExpectedClose)
+{
     WCHAR artifact[80];
     WCHAR *marker;
     WCHAR *artifact_path;
+    WCHAR *last_version = NULL;
     WCHAR *version_path;
     WCHAR *temp_path;
     WCHAR *meta_path;
@@ -2828,6 +2963,37 @@ static _FX BOOLEAN File_HistoryCapture(
     Sbie_snwprintf(artifact_path, length, L"%s\\%s",
         File_HistoryArtifacts, artifact);
 
+    last_version = File_HistoryLastVersion(marker, artifact_path);
+    if (last_version && (_wcsicmp(Operation, L"modify") == 0 ||
+            _wcsicmp(Operation, L"close") == 0)) {
+        FILE_INTERNAL_INFORMATION internal, internal_after;
+        FILE_NETWORK_OPEN_INFORMATION before, after;
+        WCHAR *last_meta = Dll_AllocTemp((wcslen(last_version) + 1) * sizeof(WCHAR));
+        BOOLEAN duplicate = FALSE;
+        if (last_meta) {
+            wcscpy(last_meta, last_version);
+            wcscpy(last_meta + wcslen(last_meta) - 3, L"txt");
+            RtlInitUnicodeString(&objname, last_meta);
+            InitializeObjectAttributes(&objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
+            duplicate = NT_SUCCESS(__sys_NtQueryFullAttributesFile(&objattrs, &existing_info)) &&
+                !(existing_info.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+                NT_SUCCESS(File_HistoryQueryIdentity(CopyPath, &internal, &before, NULL)) &&
+                File_HistoryFilesEqual(CopyPath, last_version) &&
+                NT_SUCCESS(File_HistoryQueryIdentity(CopyPath, &internal_after, &after, NULL)) &&
+                internal.IndexNumber.QuadPart == internal_after.IndexNumber.QuadPart &&
+                before.CreationTime.QuadPart == after.CreationTime.QuadPart &&
+                File_HistorySameGenerationInfo(&before, &after);
+            Dll_Free(last_meta);
+        }
+        if (duplicate) {
+            Dll_Free(last_version);
+            Dll_Free(artifact_path);
+            Dll_Free(marker);
+            File_HistoryReleaseMutex(mutex);
+            return TRUE;
+        }
+    }
+
     InitializeObjectAttributes(
         &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, NULL);
     RtlInitUnicodeString(&objname, CopyPath);
@@ -2838,6 +3004,8 @@ static _FX BOOLEAN File_HistoryCapture(
         Dll_Free(marker);
         Dll_Free(artifact_path);
         File_HistoryReleaseMutex(mutex);
+        if (last_version)
+            Dll_Free(last_version);
         return FALSE;
     }
 
@@ -2855,6 +3023,8 @@ static _FX BOOLEAN File_HistoryCapture(
         Dll_Free(marker);
         Dll_Free(artifact_path);
         File_HistoryReleaseMutex(mutex);
+        if (last_version)
+            Dll_Free(last_version);
         return FALSE;
     }
 
@@ -2878,7 +3048,8 @@ retry_capture:
     RtlInitUnicodeString(&objname, version_path);
     status = __sys_NtQueryFullAttributesFile(&objattrs, &existing_info);
     if (NT_SUCCESS(status)) {
-        if (File_HistoryFilesEqual(CopyPath, version_path)) {
+        if (last_version && _wcsicmp(last_version, version_path) == 0 &&
+                File_HistoryFilesEqual(CopyPath, version_path)) {
             RtlInitUnicodeString(&objname, meta_path);
             status = __sys_NtQueryFullAttributesFile(
                 &objattrs, &existing_info);
@@ -2889,6 +3060,9 @@ retry_capture:
                     status = STATUS_OBJECT_TYPE_MISMATCH;
                 }
                 else {
+                    File_HistorySetLastVersion(marker, version_path);
+                    if (last_version)
+                        Dll_Free(last_version);
                     Dll_Free(meta_path);
                     Dll_Free(temp_path);
                     Dll_Free(version_path);
@@ -2945,8 +3119,11 @@ retry_capture:
             Sbie_snwprintf(temp_path, length + 32, L"%s.tmp.%08X.%08X",
                 version_path, Dll_ProcessId,
                 InterlockedIncrement(&File_HistorySequence));
-            status = File_HistoryCopyFile(
-                CopyPath, temp_path, &info, hash, &hash_valid);
+            // A failed final pointer update must not leave an older version eligible for deduplication.
+            status = File_HistorySetLastVersion(marker, NULL);
+            if (NT_SUCCESS(status))
+                status = File_HistoryCopyFile(
+                    CopyPath, temp_path, &info, hash, &hash_valid, ExpectedClose);
             if ((status == STATUS_RETRY ||
                  status == STATUS_SHARING_VIOLATION) &&
                     attempts < FILE_HISTORY_CAPTURE_ATTEMPTS) {
@@ -3138,6 +3315,13 @@ retry_capture:
                 counter_status, TruePath);
     }
 
+    if (NT_SUCCESS(status)) {
+        NTSTATUS last_status = File_HistorySetLastVersion(marker, version_path);
+        if (!NT_SUCCESS(last_status))
+            File_HistoryLogWarning(L"Latest retained version", last_status, TruePath);
+    }
+    if (last_version)
+        Dll_Free(last_version);
     Dll_Free(meta_path);
     Dll_Free(temp_path);
     Dll_Free(version_path);
@@ -3541,6 +3725,8 @@ static _FX BOOLEAN File_HistoryRenameFile(
     WCHAR *new_counter = NULL;
     WCHAR *counter = NULL;
     WCHAR *old_marker_text = NULL;
+    WCHAR *origin = NULL;
+    WCHAR *last_version = NULL;
     WCHAR *updated;
     WCHAR old_root[80];
     WCHAR new_root[80];
@@ -3592,6 +3778,12 @@ static _FX BOOLEAN File_HistoryRenameFile(
         completed = TRUE;
         goto rename_finish;
     }
+
+    status = File_HistoryReadText(old_marker, &old_marker_text);
+    if (!NT_SUCCESS(status))
+        goto rename_finish;
+    origin = File_HistoryGetMetadataField(old_marker_text, L"origin", FALSE);
+    last_version = File_HistoryGetMetadataField(old_marker_text, L"last_version", FALSE);
 
     new_marker = File_HistoryFindMarker(
         NewTruePath, artifact2, RTL_NUMBER_OF_V1(artifact2),
@@ -3672,9 +3864,6 @@ static _FX BOOLEAN File_HistoryRenameFile(
         redirect_written = TRUE;
     }
     if (!old_counter || _wcsicmp(old_counter, counter) != 0) {
-        status = File_HistoryReadText(old_marker, &old_marker_text);
-        if (!NT_SUCCESS(status))
-            goto rename_rollback;
         status = File_HistorySetMarkerCounter(old_marker, counter);
         if (!NT_SUCCESS(status))
             goto rename_rollback;
@@ -3705,6 +3894,16 @@ static _FX BOOLEAN File_HistoryRenameFile(
             text, L"counter", counter);
         Dll_Free(text);
         text = updated;
+        if (text && origin) {
+            updated = File_HistoryAppendMetadataField(text, L"origin", origin);
+            Dll_Free(text);
+            text = updated;
+        }
+        if (text && last_version) {
+            updated = File_HistoryAppendMetadataField(text, L"last_version", last_version);
+            Dll_Free(text);
+            text = updated;
+        }
         if (text)
             status = File_HistoryWriteTextAtomic(
                 new_marker, text, TRUE);
@@ -3779,6 +3978,10 @@ rename_finish:
         Dll_Free(counter);
     if (old_marker_text)
         Dll_Free(old_marker_text);
+    if (origin)
+        Dll_Free(origin);
+    if (last_version)
+        Dll_Free(last_version);
     if (new_counter)
         Dll_Free(new_counter);
     if (old_counter)
@@ -5313,6 +5516,222 @@ static _FX VOID File_HistoryApplyDeletionJournal(void)
 
 
 //---------------------------------------------------------------------------
+// File_HistoryPrepareClose
+//---------------------------------------------------------------------------
+
+
+static _FX FILE_HISTORY_CLOSE *File_HistoryPrepareClose(HANDLE Handle)
+{
+    FILE_ACCESS_INFORMATION access;
+    FILE_INTERNAL_INFORMATION internal;
+    FILE_NETWORK_OPEN_INFORMATION network;
+    FILE_STANDARD_INFORMATION standard;
+    IO_STATUS_BLOCK iosb;
+    THREAD_DATA *tls;
+    FILE_HISTORY_CLOSE *entry = NULL;
+
+    if (!File_HistoryRoot || !NT_SUCCESS(__sys_NtQueryInformationFile(
+            Handle, &iosb, &access, sizeof(access), FileAccessInformation)) ||
+            !(access.AccessFlags & (FILE_WRITE_DATA | FILE_APPEND_DATA)))
+        return NULL;
+    if (!NT_SUCCESS(File_HistoryQueryHandleIdentity(
+            Handle, &internal, &network, &standard)) || standard.DeletePending)
+        return NULL;
+
+    tls = Dll_GetTlsData(NULL);
+    Dll_PushTlsNameBuffer(tls);
+    __try {
+        UNICODE_STRING name;
+        WCHAR *true_path, *copy_path;
+        ULONG flags = 0;
+        ULONG true_len, copy_len, root_len;
+
+        RtlInitUnicodeString(&name, L"");
+        if (!NT_SUCCESS(File_GetName(Handle, &name, &true_path, &copy_path, &flags)) ||
+                !(flags & FGN_IS_BOXED_PATH) || wcschr(copy_path, L':'))
+            __leave;
+        root_len = wcslen(File_HistoryRoot);
+        if (_wcsnicmp(copy_path, File_HistoryRoot, root_len) == 0 &&
+                (copy_path[root_len] == L'\\' || !copy_path[root_len]))
+            __leave;
+        if (!File_HistoryMatches(true_path))
+            __leave;
+        true_len = wcslen(true_path);
+        copy_len = wcslen(copy_path);
+        if (true_len > 32767 || copy_len > 32767)
+            __leave;
+        entry = Dll_AllocTemp(sizeof(*entry) +
+            (true_len + copy_len + 1) * sizeof(WCHAR));
+        if (!entry)
+            __leave;
+        memzero(entry, sizeof(*entry));
+        entry->FileId = internal.IndexNumber.QuadPart;
+        entry->CreationTime = network.CreationTime.QuadPart;
+        wcscpy(entry->TruePath, true_path);
+        entry->CopyPath = entry->TruePath + true_len + 1;
+        wcscpy(entry->CopyPath, copy_path);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (entry)
+            Dll_Free(entry);
+        entry = NULL;
+    }
+    Dll_PopTlsNameBuffer(tls);
+    return entry;
+}
+
+
+static _FX BOOLEAN File_HistoryCaptureClosed(FILE_HISTORY_CLOSE *Entry)
+{
+    OBJECT_ATTRIBUTES attrs;
+    UNICODE_STRING name;
+    IO_STATUS_BLOCK iosb;
+    FILE_INTERNAL_INFORMATION internal;
+    FILE_NETWORK_OPEN_INFORMATION network;
+    FILE_STANDARD_INFORMATION standard;
+    HANDLE source = NULL;
+    NTSTATUS status;
+
+    RtlInitUnicodeString(&name, Entry->CopyPath);
+    InitializeObjectAttributes(&attrs, &name, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    status = __sys_NtCreateFile(&source,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        &attrs, &iosb, NULL, 0, FILE_SHARE_VALID_FLAGS, FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT |
+        FILE_OPEN_REPARSE_POINT, NULL, 0);
+    if (!NT_SUCCESS(status)) {
+        if (status != STATUS_SHARING_VIOLATION && status != STATUS_OBJECT_NAME_NOT_FOUND &&
+                status != STATUS_OBJECT_PATH_NOT_FOUND && status != STATUS_NO_SUCH_FILE)
+            File_HistoryLogWarning(L"Post-close source", status, Entry->TruePath);
+        return status != STATUS_SHARING_VIOLATION;
+    }
+    status = File_HistoryQueryHandleIdentity(source, &internal, &network, &standard);
+    if (NT_SUCCESS(status) && !standard.DeletePending &&
+            (ULONGLONG)internal.IndexNumber.QuadPart == Entry->FileId &&
+            network.CreationTime.QuadPart == Entry->CreationTime) {
+        // Keep this identity alive; the copier verifies its own source handle as well.
+        File_HistoryCaptureEx(Entry->TruePath, Entry->CopyPath, L"close", Entry);
+    }
+    __sys_NtClose(source);
+    return TRUE;
+}
+
+
+static DWORD WINAPI File_HistoryCloseWorker(void *Unused)
+{
+    THREAD_DATA *tls = Dll_GetTlsData(NULL);
+    BOOLEAN saved_lock = tls->file_NtClose_lock;
+    (void)Unused;
+    tls->file_NtClose_lock = TRUE;
+
+    for (;;) {
+        FILE_HISTORY_CLOSE *entry;
+        ULONG ticks = GetTickCount();
+        EnterCriticalSection(&File_HistoryCloseLock);
+        entry = List_Head(&File_HistoryCloseQueue);
+        while (entry && (ULONG)(ticks - entry->Ticks) < File_HistoryCoalesceMs)
+            entry = List_Next(entry);
+        if (entry) {
+            List_Remove(&File_HistoryCloseQueue, entry);
+            --File_HistoryCloseCount;
+        }
+        else if (!File_HistoryCloseCount) {
+            File_HistoryCloseWorkerRunning = FALSE;
+            LeaveCriticalSection(&File_HistoryCloseLock);
+            break;
+        }
+        LeaveCriticalSection(&File_HistoryCloseLock);
+        if (!entry) {
+            Sleep(FILE_HISTORY_CLOSE_POLL_MS);
+            continue;
+        }
+        if (!File_HistoryCaptureClosed(entry) && ++entry->Retries < FILE_HISTORY_CLOSE_RETRIES) {
+            FILE_HISTORY_CLOSE *newer;
+            EnterCriticalSection(&File_HistoryCloseLock);
+            newer = List_Head(&File_HistoryCloseQueue);
+            while (newer && _wcsicmp(newer->CopyPath, entry->CopyPath) != 0)
+                newer = List_Next(newer);
+            if (!newer && File_HistoryCloseCount < FILE_HISTORY_CLOSE_QUEUE_LIMIT) {
+                entry->Ticks = GetTickCount();
+                List_Insert_After(&File_HistoryCloseQueue, NULL, entry);
+                ++File_HistoryCloseCount;
+                entry = NULL;
+            }
+            LeaveCriticalSection(&File_HistoryCloseLock);
+        }
+        if (entry && entry->Retries >= FILE_HISTORY_CLOSE_RETRIES)
+            File_HistoryLogWarning(L"Post-close source", STATUS_SHARING_VIOLATION, entry->TruePath);
+        if (entry)
+            Dll_Free(entry);
+    }
+    tls->file_NtClose_lock = saved_lock;
+    return 0;
+}
+
+
+static _FX void File_HistoryCompleteClose(FILE_HISTORY_CLOSE *Entry, BOOLEAN Capture)
+{
+    FILE_HISTORY_CLOSE *old;
+    if (!Entry)
+        return;
+    if (Capture && File_HistoryCoalesceMs) {
+        EnterCriticalSection(&File_HistoryCloseLock);
+        old = List_Head(&File_HistoryCloseQueue);
+        while (old && _wcsicmp(old->CopyPath, Entry->CopyPath) != 0)
+            old = List_Next(old);
+        if (old) {
+            List_Remove(&File_HistoryCloseQueue, old);
+            --File_HistoryCloseCount;
+            Dll_Free(old);
+        }
+        if (File_HistoryCloseCount < FILE_HISTORY_CLOSE_QUEUE_LIMIT) {
+            if (!File_HistoryCloseWorkerRunning)
+                File_HistoryCloseWorkerRunning = QueueUserWorkItem(
+                    File_HistoryCloseWorker, NULL, WT_EXECUTELONGFUNCTION) != FALSE;
+            if (File_HistoryCloseWorkerRunning) {
+                Entry->Ticks = GetTickCount();
+                List_Insert_After(&File_HistoryCloseQueue, NULL, Entry);
+                ++File_HistoryCloseCount;
+                Entry = NULL;
+            }
+        }
+        LeaveCriticalSection(&File_HistoryCloseLock);
+    }
+    if (Entry) {
+        if (Capture && !File_HistoryCaptureClosed(Entry))
+            File_HistoryLogWarning(L"Post-close source", STATUS_SHARING_VIOLATION, Entry->TruePath);
+        Dll_Free(Entry);
+    }
+}
+
+
+static _FX BOOLEAN File_HistoryShouldCoalesce(const WCHAR *TruePath, const WCHAR *CopyPath)
+{
+    FILE_HISTORY_CLOSE *entry;
+    FILE_INTERNAL_INFORMATION internal;
+    FILE_NETWORK_OPEN_INFORMATION network;
+    BOOLEAN coalesce = FALSE;
+    if (!File_HistoryRoot || !File_HistoryCoalesceMs ||
+            !NT_SUCCESS(File_HistoryQueryIdentity(CopyPath, &internal, &network, NULL)))
+        return FALSE;
+    EnterCriticalSection(&File_HistoryCloseLock);
+    entry = List_Head(&File_HistoryCloseQueue);
+    while (entry) {
+        if ((ULONGLONG)internal.IndexNumber.QuadPart == entry->FileId &&
+                network.CreationTime.QuadPart == entry->CreationTime &&
+                _wcsicmp(CopyPath, entry->CopyPath) == 0 &&
+                _wcsicmp(TruePath, entry->TruePath) == 0) {
+            entry->Ticks = GetTickCount();
+            coalesce = TRUE;
+            break;
+        }
+        entry = List_Next(entry);
+    }
+    LeaveCriticalSection(&File_HistoryCloseLock);
+    return coalesce;
+}
+
+
+//---------------------------------------------------------------------------
 // File_InitHistory
 //---------------------------------------------------------------------------
 
@@ -5328,6 +5747,8 @@ static _FX BOOLEAN File_InitHistory(void)
 
     List_Init(&File_HistoryOptions);
     List_Init(&File_HistoryExclusions);
+    List_Init(&File_HistoryCloseQueue);
+    InitializeCriticalSection(&File_HistoryCloseLock);
     if (!SbieApi_QueryConfBool(NULL, L"FileHistory", TRUE))
         return TRUE;
     Config_InitPatternList(
@@ -5344,6 +5765,8 @@ static _FX BOOLEAN File_InitHistory(void)
     File_HistoryCaptureMigrated =
         SbieApi_QueryConfBool(
             NULL, L"FileHistoryCaptureMigrated", FALSE) ? TRUE : FALSE;
+    value = File_HistoryQueryLimit(L"FileHistoryCoalesceMs", 1000);
+    File_HistoryCoalesceMs = (ULONG)(value > 5000 ? 5000 : value);
     File_HistoryLogWarnings =
         SbieApi_QueryConfBool(
             NULL, L"FileHistoryLogWarnings", TRUE) ? TRUE : FALSE;

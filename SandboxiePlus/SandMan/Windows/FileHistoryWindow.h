@@ -6,6 +6,8 @@
 #include <QList>
 #include <QRegularExpression>
 #include <QFutureWatcher>
+#include <QIcon>
+#include <QPointer>
 
 #include <atomic>
 #include <memory>
@@ -22,6 +24,7 @@ class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QTimer;
+class QMessageBox;
 class CRetainedVersionsWatcher;
 
 class CFileHistoryWindow : public QDialog
@@ -70,6 +73,7 @@ public:
 
 protected:
 	void closeEvent(QCloseEvent* e);
+	void changeEvent(QEvent* e) override;
 
 private:
 	void AddExcludeRules(const QStringList& Rules);
@@ -91,7 +95,8 @@ private:
 	void PrepareTrackFileView();
 	void SetProgressVisible(bool Visible);
     bool CanDeleteHistory();
-	void CompareEvidence(bool Sandboxed);
+	void CompareEvidence(bool Sandboxed, int Reference = 0);
+	QString GetComparisonReference(QTreeWidgetItem* Item, bool SandboxedCopy) const;
 	QStringList GetSelectedEvidencePaths(int* PendingCount = NULL,
 		bool SortByCaptureTime = false) const;
 	bool ConfirmSharedEvidenceAccess(const QStringList& Paths, bool* Detach);
@@ -102,6 +107,7 @@ private:
 	CFinder* m_pFinder;
 	QCheckBox* m_pHighlightSame;
 	QCheckBox* m_pShowModify;
+	QCheckBox* m_pShowClose;
 	QCheckBox* m_pShowDeleteOnClose;
 	QCheckBox* m_pShowDelete;
 	QCheckBox* m_pShowReplace;
@@ -123,6 +129,10 @@ private:
 	QLabel* m_pCacheStatus;
 	QLabel* m_pSelectionStatus;
 	QPushButton* m_pRefreshButton;
+	QIcon m_RefreshIcon;
+	QIcon m_WarningIcon;
+	QIcon m_StopIcon;
+	QPointer<QMessageBox> m_pRefreshPrompt;
 	QPushButton* m_pOpenFolder;
 	QPushButton* m_pRemoveHistory;
 	QToolButton* m_pViewOptionsButton;
@@ -139,6 +149,7 @@ private:
 	bool m_CacheChecking;
 	bool m_CacheDirty;
 	bool m_RefreshPromptShown;
+	bool m_LoadRequested;
 	QString m_CacheFingerprint;
 	QFutureWatcher<QString>* m_pCacheValidationWatcher;
 	QFutureWatcher<SRetainedVersionsScanResult>* m_pScanWatcher;
@@ -148,6 +159,7 @@ private:
 	bool m_ReloadStartedWithDirty;
 	QTimer* m_pReloadProgressTimer;
 	QTimer* m_pCacheAttentionTimer;
+	QTimer* m_pAutoLoadTimer;
 	bool m_CacheAttentionPhase;
 	std::shared_ptr<std::atomic_bool> m_ReloadCancel;
 	std::shared_ptr<std::atomic_bool> m_CacheValidationCancel;

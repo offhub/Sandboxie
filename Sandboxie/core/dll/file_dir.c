@@ -2292,6 +2292,7 @@ _FX NTSTATUS File_NtCloseImpl(HANDLE FileHandle)
     BOOLEAN DeleteOnClose = FALSE;
     UNICODE_STRING uni;
     WCHAR *DeletePath = NULL;
+    FILE_HISTORY_CLOSE *HistoryClose = NULL;
 
     P_NtClose pSysNtClose = __sys_NtClose;
 
@@ -2328,6 +2329,7 @@ _FX NTSTATUS File_NtCloseImpl(HANDLE FileHandle)
     // and prepare the DeleteOnClose if its set
     //
 
+    HistoryClose = File_HistoryPrepareClose(FileHandle);
     Handle_ExecuteCloseHandler(FileHandle, &DeleteOnClose);
 
     //
@@ -2378,6 +2380,8 @@ _FX NTSTATUS File_NtCloseImpl(HANDLE FileHandle)
     //
 
     status = pSysNtClose ? pSysNtClose(FileHandle) : NtClose(FileHandle);
+
+    File_HistoryCompleteClose(HistoryClose, NT_SUCCESS(status) && !DeleteOnClose);
 
     //
     // finish

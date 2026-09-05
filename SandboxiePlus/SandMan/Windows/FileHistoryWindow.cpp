@@ -12,6 +12,7 @@
 #include <QItemSelectionModel>
 #include <QStackedLayout>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <QtConcurrent>
 #include <windows.h>
 
@@ -28,8 +29,11 @@ public:
 	{
 		Terminate();
 		quint64 Generation = m_Generation.fetch_add(1) + 1;
-		if (QDir(Path).exists())
-			AddDirectory((LPCWSTR)Path.utf16(), TRUE,
+		// Watch outside the sandbox so archive and sandbox deletion can release their directories.
+		QString WatchPath = QFileInfo(QFileInfo(Path).absolutePath()).absolutePath();
+		m_RelativePath = QDir::fromNativeSeparators(QDir(WatchPath).relativeFilePath(Path));
+		if (QDir(WatchPath).exists())
+			AddDirectory((LPCWSTR)WatchPath.utf16(), TRUE,
 				FILE_NOTIFY_CHANGE_FILE_NAME |
 				FILE_NOTIFY_CHANGE_DIR_NAME |
 				FILE_NOTIFY_CHANGE_SIZE |
@@ -55,6 +59,36 @@ public:
 	}
 
 protected:
+	void NotifyChanges(const std::wstring& Directory, const BYTE* Data, DWORD Size) override
+	{
+		const DWORD HeaderSize = offsetof(FILE_NOTIFY_INFORMATION, FileName);
+		DWORD Offset = 0;
+		while (Size - Offset >= HeaderSize) {
+			const FILE_NOTIFY_INFORMATION* Entry =
+				reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(Data + Offset);
+			DWORD Remaining = Size - Offset;
+			if (Entry->FileNameLength > Remaining - HeaderSize ||
+					Entry->FileNameLength % sizeof(WCHAR))
+				break;
+			QString Name = QDir::fromNativeSeparators(QString::fromWCharArray(
+				Entry->FileName, Entry->FileNameLength / sizeof(WCHAR)));
+			if (Name.compare(m_RelativePath, Qt::CaseInsensitive) == 0 ||
+					Name.startsWith(m_RelativePath + '/', Qt::CaseInsensitive) ||
+					(Entry->Action != FILE_ACTION_MODIFIED &&
+					m_RelativePath.startsWith(Name + '/', Qt::CaseInsensitive))) {
+				Notify(Directory);
+				return;
+			}
+			if (!Entry->NextEntryOffset)
+				return;
+			if (Entry->NextEntryOffset < HeaderSize + Entry->FileNameLength ||
+					Entry->NextEntryOffset > Remaining || Entry->NextEntryOffset % sizeof(DWORD))
+				break;
+			Offset += Entry->NextEntryOffset;
+		}
+		Notify(Directory);
+	}
+
 	void Notify(const std::wstring&) override
 	{
 		if (m_NotificationsSuppressed->load())
@@ -69,6 +103,7 @@ protected:
 
 private:
 	CFileHistoryWindow* m_pWindow;
+	QString m_RelativePath;
 	std::atomic<quint64> m_Generation;
 	std::shared_ptr<std::atomic<quint64>> m_ChangeSequence;
 	std::shared_ptr<std::atomic_bool> m_NotificationsSuppressed;
@@ -875,10 +910,11 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	: QDialog(parent), m_pBox(pBox), m_LastTab(0), m_Loading(false),
 	  m_AbortRequested(false), m_Loaded(false), m_CacheChecking(false),
 	  m_CacheDirty(false), m_RefreshPromptShown(false),
+	  m_LoadRequested(false),
 	  m_pCacheValidationWatcher(NULL), m_pScanWatcher(NULL),
 	  m_pHistoryWatcher(NULL), m_HistoryGeneration(0),
 	  m_HistoryChangeSequenceFloor(0), m_ReloadStartedWithDirty(false),
-	  m_pReloadProgressTimer(NULL), m_pCacheAttentionTimer(NULL),
+	  m_pReloadProgressTimer(NULL), m_pCacheAttentionTimer(NULL), m_pAutoLoadTimer(NULL),
 	  m_CacheAttentionPhase(false),
 	  m_TrackFileViewAdjusting(false),
 	  m_TrackFileHideEmptyOverride(false),
@@ -948,6 +984,10 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 		theConf->GetBool("FileHistoryWindow/ShowModify", true));
 	m_pShowModify->setToolTip(
 		tr("Show retained versions captured before a file modification."));
+	m_pShowClose = new QCheckBox(tr("Post-close"), this);
+	m_pShowClose->setChecked(theConf->GetBool("FileHistoryWindow/ShowClose", true));
+	m_pShowClose->setToolTip(tr("Show best-effort checkpoints captured after a writable handle closes. "
+		"A checkpoint does not guarantee an application-complete file."));
 	m_pShowDeleteOnClose = new QCheckBox(tr("Delete-on-close"), this);
 	m_pShowDeleteOnClose->setChecked(
 		theConf->GetBool("FileHistoryWindow/ShowDeleteOnClose", true));
@@ -1017,6 +1057,7 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	QHBoxLayout* TopOptionsLayout = new QHBoxLayout(TopOptionsRow);
 	TopOptionsLayout->setContentsMargins(0, 0, 0, 0);
 	TopOptionsLayout->addWidget(m_pShowModify);
+	TopOptionsLayout->addWidget(m_pShowClose);
 	TopOptionsLayout->addWidget(m_pShowDeleteOnClose);
 	TopOptionsLayout->addWidget(m_pShowDelete);
 	TopOptionsLayout->addWidget(m_pShowReplace);
@@ -1054,7 +1095,8 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pAutoLoad->setChecked(
 		theConf->GetBool("FileHistoryWindow/AutoLoad", true));
 	m_pAutoLoad->setToolTip(
-		tr("Automatically load retained versions when this window opens."));
+		tr("Automatically load retained versions when this window opens, "
+			"and refresh the list when retained history changes."));
 	m_pLoadIndicator = new QLabel(LoadControl);
 	m_pLoadIndicator->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	m_pLoadIndicator->setMinimumWidth(
@@ -1065,9 +1107,10 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pLoadStack->addWidget(m_pAutoLoad);
 	m_pLoadStack->addWidget(m_pLoadIndicator);
 	m_pLoadStack->setCurrentWidget(m_pAutoLoad);
-	m_pRefreshButton = new QPushButton(
-		CSandMan::GetIcon("Refresh"), tr("Refresh"), this);
-	m_pRefreshButton->setEnabled(false);
+	m_RefreshIcon = CSandMan::GetIcon("Refresh");
+	m_WarningIcon = CSandMan::GetIcon("Warning");
+	m_StopIcon = CSandMan::GetIcon("Stop");
+	m_pRefreshButton = new QPushButton(m_RefreshIcon, tr("Refresh"), this);
 
 	ToolLayout->addWidget(SearchButton);
 	ToolLayout->addWidget(m_pFilterScope);
@@ -1139,7 +1182,7 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 		});
 	connect(m_pHighlightSame, &QCheckBox::toggled,
 		this, [this](bool) { UpdateSelection(); });
-	for (QCheckBox* Check : { m_pShowModify, m_pShowDeleteOnClose,
+	for (QCheckBox* Check : { m_pShowModify, m_pShowClose, m_pShowDeleteOnClose,
 			m_pShowDelete, m_pShowReplace, m_pShowMigrate,
 			m_pShowAvailable, m_pShowPending, m_pShowFinalized })
 		connect(Check, &QCheckBox::toggled,
@@ -1180,6 +1223,20 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	connect(m_pScanWatcher,
 		&QFutureWatcher<SRetainedVersionsScanResult>::finished,
 		this, &CFileHistoryWindow::ScanFinished);
+	m_pAutoLoadTimer = new QTimer(this);
+	m_pAutoLoadTimer->setSingleShot(true);
+	m_pAutoLoadTimer->setInterval(1000);
+	connect(m_pAutoLoadTimer, &QTimer::timeout, this, [this]() {
+		if (m_pAutoLoad->isChecked() && !isMinimized() && !m_Loading && !m_CacheChecking
+				&& (!m_Loaded || m_CacheDirty))
+			Reload();
+	});
+	connect(m_pAutoLoad, &QCheckBox::toggled, this, [this](bool Checked) {
+		if (Checked && (!m_Loaded || m_CacheDirty))
+			m_pAutoLoadTimer->start();
+		else if (!Checked)
+			m_pAutoLoadTimer->stop();
+	});
 	m_pHistoryWatcher = new CRetainedVersionsWatcher(this);
 	RestartHistoryWatcher();
 	m_pReloadProgressTimer = new QTimer(this);
@@ -1190,8 +1247,8 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 	m_pCacheAttentionTimer->setInterval(500);
 	connect(m_pCacheAttentionTimer, &QTimer::timeout, this, [this]() {
 		m_CacheAttentionPhase = !m_CacheAttentionPhase;
-		m_pRefreshButton->setIcon(CSandMan::GetIcon(
-			m_CacheAttentionPhase ? "Warning" : "Refresh"));
+		m_pRefreshButton->setIcon(
+			m_CacheAttentionPhase ? m_WarningIcon : m_RefreshIcon);
 	});
 
 	m_pCopyCell = new QAction(CPanelView::m_CopyCell, this);
@@ -1275,8 +1332,12 @@ CFileHistoryWindow::CFileHistoryWindow(const CSandBoxPtr& pBox, QWidget* parent)
 		});
 
 	m_pFinder->Open();
-	if (m_pAutoLoad->isChecked())
-		QTimer::singleShot(100, this, SLOT(Reload()));
+	QTimer::singleShot(100, this, [this]() {
+		if (m_pAutoLoad->isChecked() && !isMinimized() && !m_LoadRequested && !m_Loaded
+				&& !m_Loading && !m_CacheChecking) {
+			Reload();
+		}
+	});
 }
 
 
@@ -1312,6 +1373,7 @@ CFileHistoryWindow::~CFileHistoryWindow()
 		"FileHistoryWindow/HighlightSameHash", m_pHighlightSame->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/ShowModify", m_pShowModify->isChecked());
+	theConf->SetValue("FileHistoryWindow/ShowClose", m_pShowClose->isChecked());
 	theConf->SetValue(
 		"FileHistoryWindow/ShowDeleteOnClose",
 		m_pShowDeleteOnClose->isChecked());
@@ -1355,10 +1417,22 @@ void CFileHistoryWindow::closeEvent(QCloseEvent* e)
 }
 
 
+void CFileHistoryWindow::changeEvent(QEvent* e)
+{
+	QDialog::changeEvent(e);
+	if (e->type() != QEvent::WindowStateChange || !m_pAutoLoadTimer)
+		return;
+	if (isMinimized())
+		m_pAutoLoadTimer->stop();
+	else if (m_pAutoLoad->isChecked() && (!m_Loaded || m_CacheDirty))
+		m_pAutoLoadTimer->start();
+}
+
+
 void CFileHistoryWindow::SetLoadingState(bool Loading)
 {
 	if (Loading) {
-		m_pRefreshButton->setIcon(CSandMan::GetIcon("Stop"));
+		m_pRefreshButton->setIcon(m_StopIcon);
 		m_pRefreshButton->setText(tr("Abort"));
 		m_pRefreshButton->setEnabled(true);
 		m_pViewOptionsButton->setEnabled(false);
@@ -1371,7 +1445,7 @@ void CFileHistoryWindow::SetLoadingState(bool Loading)
 			m_pReloadProgressTimer->start();
 	}
 	else {
-		m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+		m_pRefreshButton->setIcon(m_RefreshIcon);
 		m_pRefreshButton->setText(tr("Refresh"));
 		m_pRefreshButton->setEnabled(true);
 		m_pViewOptionsButton->setEnabled(true);
@@ -1411,14 +1485,14 @@ void CFileHistoryWindow::SetCacheAttention(bool Attention)
 			"Refresh retained versions because the cache is stale."));
 		if (!m_pCacheAttentionTimer->isActive()) {
 			m_CacheAttentionPhase = false;
-			m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+			m_pRefreshButton->setIcon(m_RefreshIcon);
 			m_pCacheAttentionTimer->start();
 		}
 	}
 	else {
 		m_pCacheAttentionTimer->stop();
 		m_CacheAttentionPhase = false;
-		m_pRefreshButton->setIcon(CSandMan::GetIcon("Refresh"));
+		m_pRefreshButton->setIcon(m_RefreshIcon);
 		m_pRefreshButton->setToolTip(QString());
 	}
 }
@@ -1591,6 +1665,8 @@ void CFileHistoryWindow::ApplyLoadedData(
 
 void CFileHistoryWindow::Reload()
 {
+	m_LoadRequested = true;
+	m_pAutoLoadTimer->stop();
 	if (m_Loading) {
 		m_AbortRequested = true;
 		if (m_ReloadCancel)
@@ -1643,6 +1719,7 @@ void CFileHistoryWindow::CacheValidationFinished()
 	if (!m_CacheChecking)
 		return;
 	QString Fingerprint = m_pCacheValidationWatcher->result();
+	bool AutoLoad = m_pAutoLoad->isChecked();
 	m_CacheChecking = false;
 	SetProgressVisible(false);
 	if (!Fingerprint.isEmpty() &&
@@ -1655,6 +1732,11 @@ void CFileHistoryWindow::CacheValidationFinished()
 	}
 
 	m_CacheDirty = true;
+	if (AutoLoad) {
+		if (!isMinimized())
+			StartFullReload();
+		return;
+	}
 	SetCacheAttention(true);
 	SetCacheStatus(tr("Cache: stale"), tr(
 		"Retained file history changed; the cached list is stale."));
@@ -1664,6 +1746,9 @@ void CFileHistoryWindow::CacheValidationFinished()
 
 void CFileHistoryWindow::StartFullReload()
 {
+	m_pAutoLoadTimer->stop();
+	if (m_pRefreshPrompt)
+		m_pRefreshPrompt->close();
 	m_ReloadStartedWithDirty = m_CacheDirty;
 	if (m_CacheValidationCancel)
 		m_CacheValidationCancel->store(true);
@@ -1712,6 +1797,10 @@ void CFileHistoryWindow::HistoryChanged(quint64 Generation, quint64 Sequence)
 	m_CacheDirty = true;
 	if (m_Loading || m_CacheChecking)
 		return;
+	if (m_pAutoLoad->isChecked()) {
+		m_pAutoLoadTimer->start();
+		return;
+	}
 	SetCacheAttention(true);
 	SetCacheStatus(tr("Cache: stale"), tr(
 		"Retained file history changed; the cached list is stale."));
@@ -1721,17 +1810,30 @@ void CFileHistoryWindow::HistoryChanged(quint64 Generation, quint64 Sequence)
 
 void CFileHistoryWindow::PromptForRefresh()
 {
+	if (m_pAutoLoad->isChecked()) {
+		if (m_CacheDirty && !m_Loading && !m_CacheChecking)
+			m_pAutoLoadTimer->start();
+		return;
+	}
 	if (m_RefreshPromptShown || !m_CacheDirty || m_Loading ||
 			m_CacheChecking)
 		return;
 	m_RefreshPromptShown = true;
-	if (QMessageBox::question(this, "Sandboxie-Plus",
+	QMessageBox* Prompt = new QMessageBox(QMessageBox::Question, "Sandboxie-Plus",
 			tr("The retained file history changed since the cached list was "
 				"saved. Refresh it now?"),
-			QMessageBox::Yes,
-			QMessageBox::No | QMessageBox::Default | QMessageBox::Escape,
-			QMessageBox::NoButton) == QMessageBox::Yes)
-		StartFullReload();
+			QMessageBox::Yes | QMessageBox::No, this);
+	m_pRefreshPrompt = Prompt;
+	Prompt->setDefaultButton(QMessageBox::No);
+	Prompt->setEscapeButton(QMessageBox::No);
+	Prompt->setAttribute(Qt::WA_DeleteOnClose);
+	Prompt->setWindowModality(Qt::NonModal);
+	connect(Prompt, &QDialog::finished, this, [this](int Result) {
+		m_pRefreshPrompt.clear();
+		if (Result == QMessageBox::Yes && m_CacheDirty && !m_Loading && !m_CacheChecking)
+			StartFullReload();
+	});
+	Prompt->show();
 }
 
 
@@ -1770,6 +1872,9 @@ void CFileHistoryWindow::ScanFinished()
 		SetCacheAttention(true);
 		SetCacheStatus(tr("Cache: refresh required"), tr(
 			"File history changed during refresh; refresh again to retry."));
+		if (m_pAutoLoad->isChecked() && Result.Complete
+				&& (ChangedDuringReload || !Result.Stable))
+			m_pAutoLoadTimer->start();
 		return;
 	}
 
@@ -2179,6 +2284,8 @@ void CFileHistoryWindow::ApplyFilter()
 			bool OperationMatches = true;
 			if (Operation.compare("modify", Qt::CaseInsensitive) == 0)
 				OperationMatches = m_pShowModify->isChecked();
+			else if (Operation.compare("close", Qt::CaseInsensitive) == 0)
+				OperationMatches = m_pShowClose->isChecked();
 			else if (Operation.compare("delete-on-close",
 					Qt::CaseInsensitive) == 0)
 				OperationMatches = m_pShowDeleteOnClose->isChecked();
@@ -2345,17 +2452,46 @@ void CFileHistoryWindow::ShowContextMenu(const QPoint& Pos)
 		int SelectedCount = (int)m_pTree->selectedItems().count();
 		bool AllSelectedEvidence = PendingCount == 0
 			&& EvidenceCount == SelectedCount;
-		if (AllSelectedEvidence && EvidenceCount > 1
-				&& EvidenceCount <= CompareArguments) {
+		if (AllSelectedEvidence && EvidenceCount > 0 && CompareArguments >= 2) {
 			QMenu* CompareMenu = Menu.addMenu(tr("Compare"));
-			QAction* CompareUnsandboxed = CompareMenu->addAction(
-				tr("Unsandboxed"));
-			QAction* CompareSandboxed = CompareMenu->addAction(
-				CSandMan::GetIcon("Run"), tr("Sandboxed"));
-			connect(CompareUnsandboxed, &QAction::triggered, this,
-				[this]() { CompareEvidence(false); });
-			connect(CompareSandboxed, &QAction::triggered, this,
-				[this]() { CompareEvidence(true); });
+			CompareMenu->setToolTipsVisible(true);
+			if (EvidenceCount > 1 && EvidenceCount <= CompareArguments) {
+				QAction* CompareUnsandboxed = CompareMenu->addAction(tr("Unsandboxed"));
+				QAction* CompareSandboxed = CompareMenu->addAction(
+					CSandMan::GetIcon("Run"), tr("Sandboxed"));
+				connect(CompareUnsandboxed, &QAction::triggered, this,
+					[this]() { CompareEvidence(false); });
+				connect(CompareSandboxed, &QAction::triggered, this,
+					[this]() { CompareEvidence(true); });
+				CompareMenu->addSeparator();
+			}
+			for (int Reference = 1; Reference <= 2; ++Reference) {
+				bool Available = true;
+				foreach(QTreeWidgetItem* Selected, m_pTree->selectedItems()) {
+					QString Path = GetComparisonReference(Selected, Reference == 2);
+					if (Path.isEmpty() || !QFileInfo(Path).isFile()) {
+						Available = false;
+						break;
+					}
+				}
+				QMenu* ReferenceMenu = CompareMenu->addMenu(Reference == 1
+					? tr("With Current Host File") : tr("With Current Sandbox Copy"));
+				ReferenceMenu->setToolTipsVisible(true);
+				ReferenceMenu->menuAction()->setToolTip(Available
+					? tr("Compare each selected version separately, with the current file as argument 1.")
+					: tr("A current comparison file is unavailable for one or more selected versions."));
+				ReferenceMenu->setEnabled(Available);
+				QAction* Outside = ReferenceMenu->addAction(tr("Unsandboxed"));
+				QAction* Inside = ReferenceMenu->addAction(
+					CSandMan::GetIcon("Run"), tr("Sandboxed"));
+				if (Reference == 1)
+					Inside->setToolTip(tr("Copies the current host file into the sandbox for comparison. "
+						"The temporary copy remains until the sandbox contents are deleted."));
+				connect(Outside, &QAction::triggered, this,
+					[this, Reference]() { CompareEvidence(false, Reference); });
+				connect(Inside, &QAction::triggered, this,
+					[this, Reference]() { CompareEvidence(true, Reference); });
+			}
 		}
 	}
 
@@ -2746,7 +2882,23 @@ void CFileHistoryWindow::OpenEvidenceInSandboxedEditor()
 }
 
 
-void CFileHistoryWindow::CompareEvidence(bool Sandboxed)
+QString CFileHistoryWindow::GetComparisonReference(QTreeWidgetItem* Item, bool SandboxedCopy) const
+{
+	if (Item->isHidden() || !Item->data(0, eIsEvidence).toBool()
+			|| Item->data(0, eIsPending).toBool())
+		return QString();
+	QString Path = Item->data(0, eLogicalPath).toString();
+	if (Path.startsWith(QStringLiteral("\\Device\\"), Qt::CaseInsensitive))
+		Path = theAPI->Nt2DosPath(Path);
+	if (!QDir::isAbsolutePath(Path))
+		return QString();
+	Path = QDir::cleanPath(Path);
+	return SandboxedCopy
+		? theAPI->GetBoxedPath(m_pBox.data(), QDir::toNativeSeparators(Path)) : Path;
+}
+
+
+void CFileHistoryWindow::CompareEvidence(bool Sandboxed, int Reference)
 {
 	int PendingCount = 0;
 	QStringList Paths = GetSelectedEvidencePaths(&PendingCount, true);
@@ -2755,9 +2907,27 @@ void CFileHistoryWindow::CompareEvidence(bool Sandboxed)
 	int ArgumentCount = CompareArgumentCount(Command);
 	int PathCount = (int)Paths.count();
 	int SelectedCount = (int)m_pTree->selectedItems().count();
-	if (PendingCount != 0 || PathCount <= 1 || PathCount > ArgumentCount
+	int ReferenceCount = Reference == 0 ? 0 : 1;
+	if (PendingCount != 0 || PathCount < (ReferenceCount ? 1 : 2)
+			|| (ReferenceCount ? ArgumentCount < 2 : PathCount > ArgumentCount)
 			|| PathCount != SelectedCount)
 		return;
+	QHash<QString, QString> References;
+	if (ReferenceCount) {
+		foreach(QTreeWidgetItem* Item, m_pTree->selectedItems()) {
+			QString Path = GetComparisonReference(Item, Reference == 2);
+			if (Path.isEmpty() || !QFileInfo(Path).isFile()) {
+				QMessageBox::warning(this, "Sandboxie-Plus",
+					tr("The current comparison file is no longer available."));
+				return;
+			}
+			References.insert(Item->data(0, eBinaryPath).toString(), Path);
+		}
+		if (PathCount > 1 && QMessageBox::question(this, "Sandboxie-Plus",
+				tr("Start %1 separate comparisons with the current files?").arg(PathCount),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+			return;
+	}
 	bool Detach = false;
 	if (!ConfirmSharedEvidenceAccess(Paths, &Detach))
 		return;
@@ -2776,22 +2946,62 @@ void CFileHistoryWindow::CompareEvidence(bool Sandboxed)
 		return;
 	}
 
-	Command = BuildCompareCommand(Command, Paths);
-	if (Command.isEmpty())
-		return;
+	QList<QStringList> Comparisons;
+	if (ReferenceCount) {
+		foreach(const QString& Path, Paths) {
+			if (Reference == 2)
+				Comparisons.append(QStringList() << Path << References.value(Path));
+			else
+				Comparisons.append(QStringList() << References.value(Path) << Path);
+		}
+	}
+	else
+		Comparisons.append(Paths);
+	QList<SB_STATUS> Results;
+	foreach(QStringList Comparison, Comparisons) {
+		std::unique_ptr<QTemporaryDir> HostSnapshot;
+		if (Reference == 1 && Sandboxed) {
+			QString ReferencePath = Comparison.first();
+			QString TempRoot = theAPI->GetBoxedPath(m_pBox.data(),
+				QDir::toNativeSeparators(QDir::tempPath()));
+			if (TempRoot.isEmpty() || !QDir().mkpath(TempRoot)) {
+				QMessageBox::warning(this, "Sandboxie-Plus",
+					tr("The sandbox temporary directory could not be prepared for comparison."));
+				break;
+			}
+			HostSnapshot.reset(new QTemporaryDir(
+				QDir(TempRoot).filePath("RetainedCompare-XXXXXX")));
+			QString SnapshotPath = HostSnapshot->filePath(QFileInfo(ReferencePath).fileName());
+			if (!HostSnapshot->isValid() || !QFile::copy(ReferencePath, SnapshotPath)) {
+				QMessageBox::warning(this, "Sandboxie-Plus",
+					tr("The current host file could not be copied for sandboxed comparison."));
+				break;
+			}
+			Comparison[0] = SnapshotPath;
+		}
+		for (QString& Path : Comparison)
+			Path = QDir::toNativeSeparators(Path);
+		QString CompareCommand = BuildCompareCommand(Command, Comparison);
+		if (CompareCommand.isEmpty())
+			break;
 
-	if (Sandboxed) {
-		QList<SB_STATUS> Results;
-		Results.append(m_pBox->RunStart(Command));
+		if (Sandboxed) {
+			SB_STATUS Status = m_pBox->RunStart(CompareCommand);
+			if (!Status.IsError() && HostSnapshot)
+				HostSnapshot->setAutoRemove(false);
+			Results.append(Status);
+			continue;
+		}
+
+		if (!StartExternalCommand(CompareCommand)) {
+			QMessageBox::warning(this, "Sandboxie-Plus",
+				tr("The external comparison tool could not be started.\n\n%1")
+					.arg(CompareCommand));
+			break;
+		}
+	}
+	if (!Results.isEmpty())
 		theGUI->CheckResults(Results, this);
-		return;
-	}
-
-	if (!StartExternalCommand(Command)) {
-		QMessageBox::warning(this, "Sandboxie-Plus",
-			tr("The external comparison tool could not be started.\n\n%1")
-				.arg(Command));
-	}
 }
 
 
@@ -3047,7 +3257,7 @@ void CFileHistoryWindow::ConfigureLimits()
 
 	QVBoxLayout* MainLayout = new QVBoxLayout(&Dialog);
 	QLabel* Info = new QLabel(
-		tr("Enter 0 for unlimited. Leave a field empty to inherit its "
+		tr("Enter 0 for unlimited size or version limits. Leave a field empty to inherit its "
 			"global or template value, or the built-in default. Changes "
 			"apply to newly started sandboxed processes. Migrated-file "
 			"capture retains the host-derived baseline. The rule tabs edit "
@@ -3071,6 +3281,12 @@ void CFileHistoryWindow::ConfigureLimits()
 		m_pBox->GetText("FileHistoryMaxSizeTotalKB"), &Dialog);
 	QLineEdit* MaxFileSizeKB = new QLineEdit(
 		m_pBox->GetText("FileHistoryMaxFileSizeKB"), &Dialog);
+	QLineEdit* CoalesceMs = new QLineEdit(
+		m_pBox->GetText("FileHistoryCoalesceMs"), &Dialog);
+	CoalesceMs->setToolTip(tr("FileHistoryCoalesceMs: quiet interval from 0 to 5000 ms "
+		"(default 1000). Use 0 for synchronous post-close capture. Delayed captures "
+		"can be lost on process exit; a quiet interval does not guarantee complete "
+		"contents. Restart sandboxed programs to apply."));
 	QComboBox* CaptureMigrated = new QComboBox(&Dialog);
 	QComboBox* LogWarnings = new QComboBox(&Dialog);
 	QLineEdit* Editor = new QLineEdit(
@@ -3122,6 +3338,9 @@ void CFileHistoryWindow::ConfigureLimits()
 		.arg(InheritedMaxSizeKB));
 	MaxFileSizeKB->setPlaceholderText(tr("Inherited (currently %1)")
 		.arg(InheritedMaxFileSizeKB));
+	CoalesceMs->setPlaceholderText(tr("Inherited (currently %1)")
+		.arg(qBound<qint64>(qint64(0), qint64(m_pBox->GetNum64(
+			"FileHistoryCoalesceMs", 1000, true, true)), qint64(5000))));
 	bool EffectiveCaptureMigrated = m_pBox->GetBool(
 		"FileHistoryCaptureMigrated", false, true, true);
 	CaptureMigrated->addItem(
@@ -3200,6 +3419,7 @@ void CFileHistoryWindow::ConfigureLimits()
 		MaxSizeKB, TotalSize);
 	AddLimitRow(tr("Maximum capture size (KiB):"),
 		MaxFileSizeKB, CaptureSize);
+	AddOptionRow(tr("Capture coalescing interval (ms):"), CoalesceMs);
 	AddOptionRow(
 		tr("Capture migrated-file baseline:"), CaptureMigrated);
 	AddOptionRow(
@@ -3313,7 +3533,7 @@ void CFileHistoryWindow::ConfigureLimits()
 
 	QList<QLineEdit*> LimitEdits;
 	LimitEdits << MaxVersions << MaxVersionsPerFile
-		<< MaxSizeKB << MaxFileSizeKB;
+		<< MaxSizeKB << MaxFileSizeKB << CoalesceMs;
 	const qreal DpiScale = Dialog.logicalDpiX() / 96.0;
 	const int TextPadding = qRound(24 * DpiScale);
 	const int ColumnSpacing = FormLayout->horizontalSpacing();
@@ -3361,7 +3581,7 @@ void CFileHistoryWindow::ConfigureLimits()
 
 	connect(Buttons, &QDialogButtonBox::accepted, &Dialog,
 		[this, &Dialog, MaxVersions, MaxVersionsPerFile,
-			MaxSizeKB, MaxFileSizeKB, Editor, CompareCommand]() {
+			MaxSizeKB, MaxFileSizeKB, CoalesceMs, Editor, CompareCommand]() {
 		QStringList Invalid;
 		auto Validate = [&Invalid](QLineEdit* Edit, quint64 Maximum,
 			const QString& Name) {
@@ -3380,6 +3600,7 @@ void CFileHistoryWindow::ConfigureLimits()
 		Validate(MaxSizeKB, 0x7FFFFFFFFFFFFFFFULL, tr("Maximum total size"));
 		Validate(MaxFileSizeKB, 0x7FFFFFFFFFFFFFFFULL,
 			tr("Maximum capture size"));
+		Validate(CoalesceMs, 5000, tr("Capture coalescing interval (0-5000 ms)"));
 		if (CompareArgumentCount(CompareCommand->text()) < 0) {
 			QMessageBox::warning(&Dialog, "Sandboxie-Plus",
 				tr("The external compare command must contain two to five "
@@ -3419,6 +3640,7 @@ void CFileHistoryWindow::ConfigureLimits()
 	Save("FileHistoryMaxVersionsPerFile", MaxVersionsPerFile);
 	Save("FileHistoryMaxSizeTotalKB", MaxSizeKB);
 	Save("FileHistoryMaxFileSizeKB", MaxFileSizeKB);
+	Save("FileHistoryCoalesceMs", CoalesceMs);
 	theConf->SetValue("FileHistoryWindow/Editor", Editor->text().trimmed());
 	theConf->SetValue("FileHistoryWindow/CompareCommand",
 		CompareCommand->text().trimmed());

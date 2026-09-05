@@ -622,6 +622,15 @@ _FX NTSTATUS File_MigrateFile(
     const WCHAR* TruePath, const WCHAR* CopyPath,
     BOOLEAN IsWritePath, BOOLEAN WithContents)
 {
+    return File_MigrateFileEx(
+        TruePath, CopyPath, IsWritePath, WithContents, NULL);
+}
+
+
+_FX NTSTATUS File_MigrateFileEx(
+    const WCHAR* TruePath, const WCHAR* CopyPath,
+    BOOLEAN IsWritePath, BOOLEAN WithContents, BOOLEAN *ContentMigrated)
+{
     NTSTATUS status;
     HANDLE TrueHandle, CopyHandle;
     OBJECT_ATTRIBUTES objattrs;
@@ -632,6 +641,9 @@ _FX NTSTATUS File_MigrateFile(
     ACCESS_MASK DesiredAccess;
     ULONG CreateOptions;
     PSECURITY_DESCRIPTOR pSecurityDescriptor = NULL;
+
+    if (ContentMigrated)
+        *ContentMigrated = FALSE;
 
     InitializeObjectAttributes(
         &objattrs, &objname, OBJ_CASE_INSENSITIVE, NULL, Secure_NormalSD);
@@ -690,8 +702,10 @@ _FX NTSTATUS File_MigrateFile(
 
         ULONG mode = File_MigrateFile_GetMode(TruePath, file_size);
 
-        if (mode == FILE_COPY_EMPTY)
+        if (mode == FILE_COPY_EMPTY) {
             file_size = 0;
+            WithContents = FALSE;
+        }
         else if (mode == FILE_DONT_COPY)
         {
             NtClose(TrueHandle);
@@ -928,6 +942,9 @@ _FX NTSTATUS File_MigrateFile(
     if(pSecurityDescriptor)
         Dll_Free(pSecurityDescriptor);
     NtClose(CopyHandle);
+
+    if (NT_SUCCESS(status) && ContentMigrated)
+        *ContentMigrated = WithContents;
 
     return status;
 }

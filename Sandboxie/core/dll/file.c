@@ -97,6 +97,10 @@
 
 
 struct _FILE_DRIVE;
+
+typedef struct _FILE_HISTORY_CLOSE FILE_HISTORY_CLOSE;
+static FILE_HISTORY_CLOSE *File_HistoryPrepareClose(HANDLE Handle);
+static void File_HistoryCompleteClose(FILE_HISTORY_CLOSE *Entry, BOOLEAN Capture);
 struct _FILE_LINK;
 struct _FILE_GUID;
 typedef struct _FILE_LINK FILE_LINK;
@@ -273,6 +277,10 @@ static NTSTATUS File_CreatePath(WCHAR *TruePath, WCHAR *CopyPath);
 static NTSTATUS File_MigrateFile(
     const WCHAR *TruePath, const WCHAR *CopyPath,
     BOOLEAN IsWritePath, BOOLEAN WithContents);
+
+static NTSTATUS File_MigrateFileEx(
+    const WCHAR *TruePath, const WCHAR *CopyPath,
+    BOOLEAN IsWritePath, BOOLEAN WithContents, BOOLEAN *ContentMigrated);
 
 static BOOLEAN File_RefreshNewerCopy(
     const WCHAR *TruePath, const WCHAR *CopyPath);
@@ -4183,7 +4191,8 @@ ReparseLoop:
 
         if (DeleteOnClose)
             File_HistoryCapture(TruePath, CopyPath, L"delete-on-close");
-        else if (content_write || destructive_open)
+        else if (destructive_open ||
+                (content_write && !File_HistoryShouldCoalesce(TruePath, CopyPath)))
             File_HistoryCapture(TruePath, CopyPath, L"modify");
     }
 
@@ -4280,6 +4289,7 @@ ReparseLoop:
             TruePathColon) {
 
             BOOLEAN WithContents = TRUE;
+            BOOLEAN ContentMigrated = FALSE;
 
             if (FileType & TYPE_FILE) {
 
@@ -4312,10 +4322,11 @@ ReparseLoop:
                 WithContents = FALSE;
             }
 
-            status = File_MigrateFile(
-                            TruePath, CopyPath, IsWritePath, WithContents);
+            status = File_MigrateFileEx(
+                            TruePath, CopyPath, IsWritePath, WithContents,
+                            &ContentMigrated);
             if (NT_SUCCESS(status) && WithContents)
-                File_HistoryTrackMigrated(TruePath, CopyPath);
+                File_HistoryTrackMigrated(TruePath, CopyPath, ContentMigrated);
 
         //
         // if the file is to be overwritten, as opposed to superseded,

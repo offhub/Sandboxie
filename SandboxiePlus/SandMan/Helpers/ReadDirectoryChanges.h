@@ -120,6 +120,10 @@ public:
 	void DetachDirectory( LPCWSTR wszDirectory );
 
 	virtual void Notify( const std::wstring& strDirectory ) {}
+	virtual void NotifyChanges(const std::wstring& strDirectory, const BYTE* Data, DWORD Size)
+	{
+		Notify(strDirectory);
+	}
 
 	/// <summary>
 	/// Return a handle for the Win32 Wait... functions that will be
