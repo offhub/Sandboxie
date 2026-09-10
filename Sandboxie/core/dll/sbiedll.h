@@ -165,6 +165,10 @@ SBIEDLL_EXPORT  ULONG SbieDll_QueueGetRpl(
 SBIEDLL_EXPORT  void *SbieDll_CallProxySvr(
     WCHAR *QueueName, void *req, ULONG req_len, ULONG rpl_min_len, DWORD timeout_sec);
 
+SBIEDLL_EXPORT  void *SbieDll_CallProxySvrEx(
+    WCHAR *QueueName, void *req, ULONG req_len, ULONG rpl_min_len,
+    DWORD timeout_sec, ULONG *out_rpl_len);
+
 SBIEDLL_EXPORT  ULONG SbieDll_UpdateConf(
     WCHAR OpCode, const WCHAR *Password, const WCHAR *Section,
     const WCHAR *Setting, const WCHAR *Value);

@@ -184,6 +184,10 @@ static int Process_RuntimeMatchImage(
 static BOOLEAN Process_RuntimeCompileEntry(
     POOL *pool, SBIE_RT_RULESET *ruleset, const FORCE_ENTRY *entry, const WCHAR *setting);
 
+static BOOLEAN Process_RuntimeCompileLists(
+    POOL *pool, SBIE_RT_RULESET *ruleset,
+    LIST **lists, const WCHAR **settings, ULONG list_count);
+
 static BOOLEAN Process_RuntimeGetBreakoutMatches(
     FORCE_BOX *box, const WCHAR *processName, const WCHAR *folderScopeName, const WCHAR *path,
     SBIE_RT_MATCH *outProcessMatch, SBIE_RT_MATCH *outFolderMatch);
@@ -1161,6 +1165,7 @@ _FX void Process_AddForceFolders(
         WCHAR *expnd, *buf;
         ULONG buf_len;
         WCHAR *value_copy;
+        ULONG value_copy_len;
         WCHAR *value_part;
         WCHAR *scope = NULL;
         WCHAR *value_norm;
@@ -1174,6 +1179,7 @@ _FX void Process_AddForceFolders(
             break;
         ++index2;
 
+        value_copy_len = (ULONG)((wcslen(value) + 1) * sizeof(WCHAR));
         value_copy = Mem_AllocString(Driver_Pool, value);
         if (!value_copy)
             continue;
@@ -1190,7 +1196,7 @@ _FX void Process_AddForceFolders(
 
         if (!value_part ||
             !ProgramControl_ParseRuleExtensionsInPlace(value_part, &normalized, use_rule_extensions)) {
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             continue;
         }
 
@@ -1208,7 +1214,7 @@ _FX void Process_AddForceFolders(
             (wcschr(value, L'*') || wcschr(value, L'?')) &&
             !ProgramControl_RuleLooksLikePath(value) &&
             ProgramControl_IsBroadWildcardImageRule(value)) {
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             continue;
         }
 
@@ -1293,14 +1299,14 @@ _FX void Process_AddForceFolders(
             Mem_Free(value_norm, value_norm_len);
 
         if (! buf) {
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             continue;
         }
 
         folder = Mem_Alloc(Driver_Pool, sizeof(FORCE_ENTRY));
         if (! folder) {
             Mem_Free(buf, buf_len);
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             break;
         }
 
@@ -1319,7 +1325,7 @@ _FX void Process_AddForceFolders(
             if (!folder->scope) {
                 Mem_Free(buf, buf_len);
                 Mem_Free(folder, sizeof(FORCE_ENTRY));
-                Mem_FreeString(value_copy);
+                Mem_Free(value_copy, value_copy_len);
                 break;
             }
         }
@@ -1334,7 +1340,7 @@ _FX void Process_AddForceFolders(
                     Mem_FreeString(folder->scope);
                 Mem_Free(buf, buf_len);
                 Mem_Free(folder, sizeof(FORCE_ENTRY));
-                Mem_FreeString(value_copy);
+                Mem_Free(value_copy, value_copy_len);
                 break;
             }
 
@@ -1358,7 +1364,7 @@ _FX void Process_AddForceFolders(
         }
 
         List_Insert_After(Folders, NULL, folder);
-        Mem_FreeString(value_copy);
+        Mem_Free(value_copy, value_copy_len);
     }
 }
 
@@ -1521,6 +1527,27 @@ static BOOLEAN Process_RuntimeCompileEntry(
         setting,
         value_buf,
         TRUE) ? TRUE : FALSE;
+}
+
+static BOOLEAN Process_RuntimeCompileLists(
+    POOL *pool, SBIE_RT_RULESET *ruleset,
+    LIST **lists, const WCHAR **settings, ULONG list_count)
+{
+    ULONG list_index;
+
+    for (list_index = 0; list_index < list_count; ++list_index) {
+        FORCE_ENTRY *entry;
+
+        entry = List_Head(lists[list_index]);
+        while (entry) {
+            if (!Process_RuntimeCompileEntry(
+                    pool, ruleset, entry, settings[list_index]))
+                return FALSE;
+            entry = List_Next(entry);
+        }
+    }
+
+    return TRUE;
 }
 
 static BOOLEAN Process_RuntimeGetBreakoutMatches(
@@ -1758,6 +1785,7 @@ static void Process_AddBreakoutEntries(
 
     while (1) {
         WCHAR *value_copy;
+        ULONG value_copy_len;
         WCHAR *rule;
         WCHAR *scope = NULL;
         WCHAR *value_norm = NULL;
@@ -1773,6 +1801,7 @@ static void Process_AddBreakoutEntries(
             break;
         ++index;
 
+        value_copy_len = (ULONG)((wcslen(value) + 1) * sizeof(WCHAR));
         value_copy = Mem_AllocString(Driver_Pool, value);
         if (!value_copy)
             continue;
@@ -1796,7 +1825,7 @@ static void Process_AddBreakoutEntries(
         }
 
         if (!*rule || !ProgramControl_ParseRuleExtensionsInPlace(rule, &normalized, use_rule_extensions)) {
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             continue;
         }
 
@@ -1830,14 +1859,14 @@ static void Process_AddBreakoutEntries(
             Mem_Free(value_norm, value_norm_len);
 
         if (!buf) {
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             continue;
         }
 
         entry = Mem_Alloc(Driver_Pool, sizeof(FORCE_ENTRY));
         if (!entry) {
             Mem_Free(buf, buf_len);
-            Mem_FreeString(value_copy);
+            Mem_Free(value_copy, value_copy_len);
             break;
         }
 
@@ -1857,7 +1886,7 @@ static void Process_AddBreakoutEntries(
             if (!entry->scope) {
                 Mem_Free(buf, buf_len);
                 Mem_Free(entry, sizeof(FORCE_ENTRY));
-                Mem_FreeString(value_copy);
+                Mem_Free(value_copy, value_copy_len);
                 break;
             }
 
@@ -1876,7 +1905,7 @@ static void Process_AddBreakoutEntries(
                     Mem_Free(entry->scope, (scope_len + 1) * sizeof(WCHAR));
                 Mem_Free(buf, buf_len);
                 Mem_Free(entry, sizeof(FORCE_ENTRY));
-                Mem_FreeString(value_copy);
+                Mem_Free(value_copy, value_copy_len);
                 break;
             }
         } else {
@@ -1890,7 +1919,7 @@ static void Process_AddBreakoutEntries(
         entry->buf = buf;
 
         List_Insert_After(entries, NULL, entry);
-        Mem_FreeString(value_copy);
+        Mem_Free(value_copy, value_copy_len);
     }
 }
 
@@ -2015,111 +2044,65 @@ _FX void Process_CreateForceData(
         Process_AddBreakoutEntries(&box->BreakoutProcess, L"BreakoutProcess", box->box, section);
         Process_AddBreakoutEntries(&box->BreakoutDocument, L"BreakoutDocument", box->box, section);
 
-        box->RuntimePool = Pool_Create();
-        if (box->RuntimePool) {
-            FORCE_ENTRY *entry;
-            ProgramControl_RuntimeInitRuleset(&box->RuntimeRuleset, box->RuntimePool);
+        {
+            LIST *runtime_lists[6] = {
+                &box->ForceProcess,
+                &box->ForceFolder,
+                &box->ForceChildren,
+                &box->BreakoutProcess,
+                &box->BreakoutFolder,
+                &box->BreakoutDocument
+            };
+            const WCHAR *runtime_settings[6] = {
+                L"ForceProcess",
+                L"ForceFolder",
+                L"ForceChildren",
+                L"BreakoutProcess",
+                L"BreakoutFolder",
+                L"BreakoutDocument"
+            };
 
-            entry = List_Head(&box->ForceProcess);
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"ForceProcess")) {
+            box->RuntimePool = Pool_Create();
+            if (box->RuntimePool) {
+                ProgramControl_RuntimeInitRuleset(&box->RuntimeRuleset, box->RuntimePool);
+                if (!Process_RuntimeCompileLists(
+                        box->RuntimePool,
+                        &box->RuntimeRuleset,
+                        runtime_lists,
+                        runtime_settings,
+                        ARRAYSIZE(runtime_lists))) {
                     ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
                     Pool_Delete(box->RuntimePool);
                     box->RuntimePool = NULL;
                     memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
                 }
-                entry = List_Next(entry);
-            }
-
-            entry = box->RuntimePool ? List_Head(&box->ForceFolder) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"ForceFolder")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
-                    Pool_Delete(box->RuntimePool);
-                    box->RuntimePool = NULL;
-                    memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
-            }
-
-            entry = box->RuntimePool ? List_Head(&box->ForceChildren) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"ForceChildren")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
-                    Pool_Delete(box->RuntimePool);
-                    box->RuntimePool = NULL;
-                    memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
-            }
-
-            entry = box->RuntimePool ? List_Head(&box->BreakoutProcess) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"BreakoutProcess")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
-                    Pool_Delete(box->RuntimePool);
-                    box->RuntimePool = NULL;
-                    memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
-            }
-
-            entry = box->RuntimePool ? List_Head(&box->BreakoutFolder) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"BreakoutFolder")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
-                    Pool_Delete(box->RuntimePool);
-                    box->RuntimePool = NULL;
-                    memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
-            }
-
-            entry = box->RuntimePool ? List_Head(&box->BreakoutDocument) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->RuntimePool, &box->RuntimeRuleset, entry, L"BreakoutDocument")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->RuntimeRuleset);
-                    Pool_Delete(box->RuntimePool);
-                    box->RuntimePool = NULL;
-                    memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
             }
         }
 
-        box->AlertRuntimePool = Pool_Create();
-        if (box->AlertRuntimePool) {
-            FORCE_ENTRY *entry;
-            ProgramControl_RuntimeInitRuleset(&box->AlertRuntimeRuleset, box->AlertRuntimePool);
+        {
+            LIST *alert_lists[2] = {
+                &box->AlertProcess,
+                &box->AlertFolder
+            };
+            const WCHAR *alert_settings[2] = {
+                L"ForceProcess",
+                L"ForceFolder"
+            };
 
-            entry = List_Head(&box->AlertProcess);
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->AlertRuntimePool, &box->AlertRuntimeRuleset, entry, L"ForceProcess")) {
+            box->AlertRuntimePool = Pool_Create();
+            if (box->AlertRuntimePool) {
+                ProgramControl_RuntimeInitRuleset(&box->AlertRuntimeRuleset, box->AlertRuntimePool);
+                if (!Process_RuntimeCompileLists(
+                        box->AlertRuntimePool,
+                        &box->AlertRuntimeRuleset,
+                        alert_lists,
+                        alert_settings,
+                        ARRAYSIZE(alert_lists))) {
                     ProgramControl_RuntimeFreeRuleset(&box->AlertRuntimeRuleset);
                     Pool_Delete(box->AlertRuntimePool);
                     box->AlertRuntimePool = NULL;
                     memzero(&box->AlertRuntimeRuleset, sizeof(box->AlertRuntimeRuleset));
-                    break;
                 }
-                entry = List_Next(entry);
-            }
-
-            entry = box->AlertRuntimePool ? List_Head(&box->AlertFolder) : NULL;
-            while (entry) {
-                if (!Process_RuntimeCompileEntry(box->AlertRuntimePool, &box->AlertRuntimeRuleset, entry, L"ForceFolder")) {
-                    ProgramControl_RuntimeFreeRuleset(&box->AlertRuntimeRuleset);
-                    Pool_Delete(box->AlertRuntimePool);
-                    box->AlertRuntimePool = NULL;
-                    memzero(&box->AlertRuntimeRuleset, sizeof(box->AlertRuntimeRuleset));
-                    break;
-                }
-                entry = List_Next(entry);
             }
         }
     }
@@ -3137,24 +3120,15 @@ static BOOLEAN Process_GetMatchedBreakoutTarget(
         }
     }
 
-    if (use_process_target) {
+    {
+        const SBIE_RT_MATCH *selected_match = use_process_target ? &process_match : &folder_match;
         const WCHAR *target_box = NULL;
-        if (!ProgramControl_RuntimeGetApplicableTargetBox(&process_match, &target_box))
+        if (!ProgramControl_RuntimeGetApplicableTargetBox(selected_match, &target_box))
             return FALSE;
 
         wcsncpy(outTarget, target_box, outTargetCch - 1);
         outTarget[outTargetCch - 1] = L'\0';
         return TRUE;
-    }
-
-    {
-    const WCHAR *target_box = NULL;
-    if (!ProgramControl_RuntimeGetApplicableTargetBox(&folder_match, &target_box))
-        return FALSE;
-
-    wcsncpy(outTarget, target_box, outTargetCch - 1);
-    outTarget[outTargetCch - 1] = L'\0';
-    return TRUE;
     }
 }
 

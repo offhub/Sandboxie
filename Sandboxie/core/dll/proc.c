@@ -1868,13 +1868,13 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     }
 
-    // Evaluate BreakoutDocument before breakout-candidate checks as well.
-    // Shell-style document opens still use unified UserServer arbitration when
-    // extensions are enabled. Explicit executable launches enter this path only
-    // when the first argument matches a BreakoutDocument rule, otherwise normal
-    // options or operands would be misinterpreted as documents.
+    // Evaluate BreakoutDocument through UserServer only for shell-like callers
+    // that do not request process information. Ordinary CreateProcess calls
+    // continue through ProcessServer so their full command line and process
+    // result contract are preserved.
     if (!ignore_breakout && breakout_rules_enabled && doc_start && doc_len > 0 &&
-            ((!has_explicit_executable && use_rule_extensions) || has_breakout_document_arg)) {
+            !has_explicit_executable && !lpProcessInformation &&
+            (use_rule_extensions || has_breakout_document_arg)) {
         ULONG fallback_flags = 0;
         if (SH32_BreakoutDocumentEx(doc_start, doc_len, created_image, lpApplicationName, &fallback_flags)) {
             ok = TRUE;
@@ -1883,11 +1883,8 @@ _FX BOOL Proc_CreateProcessInternalW(
         }
         if (fallback_flags & USER_DOCUMENT_FALLBACK_DENY_BREAKOUT)
             bd_fallback = TRUE;
-        // UserServer no-match/fallback normally must not suppress explicit
-        // executable breakout flow. Host-missing document fallback is final:
-        // the document exists only in the source box, so do not try *UNBOXED*.
-        if (!has_explicit_executable)
-            bd_fallback = TRUE;
+        // UserServer no-match/fallback uses the normal source-box document path.
+        bd_fallback = TRUE;
     }
 
     if (!ignore_breakout && breakout_rules_enabled && lpApplicationName) {
@@ -1980,6 +1977,8 @@ _FX BOOL Proc_CreateProcessInternalW(
                         *mybuff2 = L'\0';
                     }
 
+                    const WCHAR* breakout_current_directory = lpCurrentDirectory;
+                    WCHAR* breakout_dir = NULL;
                     BOOLEAN caller_has_explicit_dir = FALSE;
                     if (SaveCurrentDirectory && ((const WCHAR*)SaveCurrentDirectory)[0] != L'\0')
                         caller_has_explicit_dir = TRUE;
@@ -1991,7 +1990,7 @@ _FX BOOL Proc_CreateProcessInternalW(
 
                     if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
                         // lpCurrentDirectory must not be NULL
-                        WCHAR* breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
+                        breakout_dir = Dll_Alloc(sizeof(WCHAR) * 8192);
                         if (breakout_dir) {
                             breakout_dir[0] = L'\0';
 
@@ -2010,7 +2009,7 @@ _FX BOOL Proc_CreateProcessInternalW(
                             if (breakout_dir[0] == L'\0')
                                 RtlGetCurrentDirectory_U(sizeof(WCHAR) * 8190, breakout_dir);
 
-                            lpCurrentDirectory = breakout_dir;
+                            breakout_current_directory = breakout_dir;
                         }
                     }
 
@@ -2020,20 +2019,12 @@ _FX BOOL Proc_CreateProcessInternalW(
                         |   CREATE_UNICODE_ENVIRONMENT);
 
                     if (!bd_fallback) {
-                        ok = SbieDll_RunSandboxed(L"*UNBOXED*", mybuf, lpCurrentDirectory, crflags2, lpStartupInfo, lpProcessInformation);
+                        ok = SbieDll_RunSandboxed(L"*UNBOXED*", mybuf, breakout_current_directory, crflags2, lpStartupInfo, lpProcessInformation);
                         err = GetLastError();
-
-                        // If explicit exe+document breakout was denied by ProcessServer
-                        // (ERROR_NOT_SUPPORTED), try UserServer's document breakout path
-                        // before falling back to normal source-box CreateProcess.
-                        if (!ok && err == ERROR_NOT_SUPPORTED && has_explicit_executable && has_breakout_document_arg && doc_start && doc_len > 0) {
-                            if (SH32_BreakoutDocument(doc_start, doc_len, created_image, lpApplicationName)) {
-                                ok = TRUE;
-                                err = 0;
-                            }
-                        }
                     }
 
+                    if (breakout_dir)
+                        Dll_Free(breakout_dir);
                     Dll_Free(mybuf);
 
                     //
@@ -2051,7 +2042,10 @@ _FX BOOL Proc_CreateProcessInternalW(
     // in the Templates.ini and check whenever explorer wants to start a process
     //
 
+    // Keep this legacy Explorer compatibility path limited to shell-like
+    // callers. Ordinary CreateProcess calls continue through ProcessServer.
     if (!ignore_breakout && breakout_rules_enabled && lpCommandLine &&
+            !has_explicit_executable && !lpProcessInformation &&
             !TlsData->sh32_shell_execute &&
             Config_GetSettingsForImageName_bool(L"BreakoutDocumentProcess", FALSE)) {
 

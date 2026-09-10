@@ -188,7 +188,8 @@ static __inline SBIE_POLICY_DECISION SbiePolicy_ResolveDecision(
     if (!has_force && !has_breakout)
         return SBIE_DECISION_NO_MATCH;
 
-    if (in->context_kind == SBIE_CTX_SANDBOXED_PROCESS_START &&
+    if ((in->context_kind == SBIE_CTX_SANDBOXED_PROCESS_START ||
+         in->context_kind == SBIE_CTX_SANDBOXED_DOCUMENT_OPEN) &&
         in->caller_forced_by_children &&
         !in->prioritize_breakout_over_force &&
         has_breakout)

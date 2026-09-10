@@ -48,6 +48,7 @@
     <ClCompile Include="iphlpserver.cpp" />
     <ClCompile Include="namedpipeserver.cpp" />
     <ClCompile Include="ProcessServer.cpp" />
+    <ClCompile Include="RuntimeRuleHelpers.cpp" />
     <ClCompile Include="pstoreserver.cpp" />
     <ClCompile Include="queueserver.cpp" />
     <ClCompile Include="sbieiniserver.cpp" />
@@ -137,6 +138,7 @@
     <ClInclude Include="namedpipeserver.h" />
     <ClInclude Include="namedpipewire.h" />
     <ClInclude Include="ProcessServer.h" />
+    <ClInclude Include="RuntimeRuleHelpers.h" />
     <ClInclude Include="pstoreserver.h" />
     <ClInclude Include="pstorewire.h" />
     <ClInclude Include="queueserver.h" />

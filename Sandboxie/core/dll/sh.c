@@ -518,7 +518,9 @@ _FX BOOL SH32_BreakoutDocumentEx(const WCHAR* path, ULONG len, const WCHAR *crea
             req->LaunchPathOffset = launch_pos;
         }
 
-        ULONG* rpl = SbieDll_CallProxySvr(_QueueName, req, req_len, 2 * sizeof(*rpl), 100);
+        ULONG rpl_len = 0;
+        ULONG* rpl = SbieDll_CallProxySvrEx(
+            _QueueName, req, req_len, sizeof(*rpl), 100, &rpl_len);
 
         Dll_Free(req);
 
@@ -528,10 +530,9 @@ _FX BOOL SH32_BreakoutDocumentEx(const WCHAR* path, ULONG len, const WCHAR *crea
             return FALSE;
         }
 
-        // rpl[1] contains fallback flags: non-zero means the service could not open
-        // the document (e.g., target box invalid) and the DLL should fall back to
-        // letting the normal path handle it (opens in source box).
-        ULONG fallback = rpl[1];
+        // The legacy service returns only the status ULONG. The extended
+        // service appends fallback flags as a second ULONG.
+        ULONG fallback = (rpl_len >= 2 * sizeof(*rpl)) ? rpl[1] : 0;
         if (fallbackFlags)
             *fallbackFlags = fallback;
         Dll_Free(rpl);
