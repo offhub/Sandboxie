@@ -236,10 +236,15 @@ static int ProgramControl_RuntimeMatchProcessRule(
     const SBIE_RT_RULE *rule,
     const WCHAR *imageName,
     const WCHAR *imagePath,
-    unsigned long imagePathLen)
+    unsigned long imagePathLen,
+    BreakoutMatchImageFn matchImage,
+    void *matchContext)
 {
     if (!rule || !rule->normalized.base_rule || !imageName || !*imageName || !imagePath || !*imagePath)
         return 0;
+
+    if (matchImage && rule->normalized.base_rule[0] == L'<')
+        return matchImage(rule->normalized.base_rule, imageName, matchContext) ? 1 : 0;
 
     if (!imagePathLen)
         imagePathLen = (unsigned long)wcslen(imagePath);
@@ -374,6 +379,56 @@ static void ProgramControl_RuntimeStoreTargetMatch(
     match->target_level = (long)level;
 }
 
+typedef struct _PROGRAM_CONTROL_RUNTIME_MATCH_STATE
+{
+    int has_match;
+    int has_priority;
+    long priority;
+    unsigned long level;
+} PROGRAM_CONTROL_RUNTIME_MATCH_STATE;
+
+static void ProgramControl_RuntimeUpdateBestMatch(
+    const SBIE_RT_RULE *rule,
+    unsigned long level,
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE *overall,
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE *targeted,
+    SBIE_RT_MATCH *outMatch)
+{
+    if (rule->normalized.has_target_box &&
+        ProgramControl_ShouldReplaceTargetMatch(
+            targeted->has_match,
+            targeted->has_priority,
+            targeted->priority,
+            targeted->level,
+            rule->normalized.has_priority,
+            rule->normalized.priority,
+            level)) {
+        targeted->has_match = 1;
+        targeted->has_priority = rule->normalized.has_priority;
+        targeted->priority = rule->normalized.has_priority ? rule->normalized.priority : -1;
+        targeted->level = level;
+        if (outMatch)
+            ProgramControl_RuntimeStoreTargetMatch(outMatch, rule, level);
+    }
+
+    if (!ProgramControl_ShouldReplaceTargetMatch(
+            overall->has_match,
+            overall->has_priority,
+            overall->priority,
+            overall->level,
+            rule->normalized.has_priority,
+            rule->normalized.priority,
+            level))
+        return;
+
+    overall->has_match = 1;
+    overall->has_priority = rule->normalized.has_priority;
+    overall->priority = rule->normalized.has_priority ? rule->normalized.priority : -1;
+    overall->level = level;
+    if (outMatch)
+        ProgramControl_RuntimeStoreMatch(outMatch, rule, level);
+}
+
 static int ProgramControl_RuntimeFindBestProcessMatch(
     const SBIE_RT_RULESET *ruleset,
     const SBIE_RT_RULE_LIST *list,
@@ -384,14 +439,8 @@ static int ProgramControl_RuntimeFindBestProcessMatch(
     SBIE_RT_MATCH *outMatch)
 {
     ULONG i;
-    int hasMatch = 0;
-    int bestHasPriority = 0;
-    long bestPriority = -1;
-    int hasTargetMatch = 0;
-    int bestTargetHasPriority = 0;
-    long bestTargetPriority = -1;
-    unsigned long bestLevel = (unsigned long)-1;
-    unsigned long bestTargetLevel = (unsigned long)-1;
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE overall = {0, 0, -1, (unsigned long)-1};
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE targeted = {0, 0, -1, (unsigned long)-1};
 
     if (outMatch)
         ProgramControl_RuntimeInitMatch(outMatch);
@@ -403,51 +452,17 @@ static int ProgramControl_RuntimeFindBestProcessMatch(
         const SBIE_RT_RULE *rule = &list->rules[i];
         unsigned long level = 2;
 
-        if (!ProgramControl_RuntimeMatchProcessRule(ruleset, rule, imageName, imagePath, 0))
+        if (!ProgramControl_RuntimeMatchProcessRule(ruleset, rule, imageName, imagePath, 0, matchImage, matchContext))
             continue;
 
         if (!ProgramControl_RuntimeMatchScope(
                 rule, imageName, matchImage, matchContext, &level))
             continue;
 
-        if (rule->normalized.has_target_box &&
-            ProgramControl_ShouldReplaceTargetMatch(
-                hasTargetMatch,
-                bestTargetHasPriority,
-                bestTargetPriority,
-                bestTargetLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            hasTargetMatch = 1;
-            bestTargetHasPriority = rule->normalized.has_priority;
-            bestTargetPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-            bestTargetLevel = level;
-            if (outMatch)
-                ProgramControl_RuntimeStoreTargetMatch(outMatch, rule, level);
-        }
-
-        if (!ProgramControl_ShouldReplaceTargetMatch(
-                hasMatch,
-                bestHasPriority,
-                bestPriority,
-                bestLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            continue;
-        }
-
-        hasMatch = 1;
-        bestHasPriority = rule->normalized.has_priority;
-        bestPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-        bestLevel = level;
-
-        if (outMatch)
-            ProgramControl_RuntimeStoreMatch(outMatch, rule, level);
+        ProgramControl_RuntimeUpdateBestMatch(rule, level, &overall, &targeted, outMatch);
     }
 
-    return hasMatch;
+    return overall.has_match;
 }
 
 static int ProgramControl_RuntimeFindBestFolderMatch(
@@ -461,14 +476,8 @@ static int ProgramControl_RuntimeFindBestFolderMatch(
     SBIE_RT_MATCH *outMatch)
 {
     ULONG i;
-    int hasMatch = 0;
-    int bestHasPriority = 0;
-    long bestPriority = -1;
-    unsigned long bestLevel = (unsigned long)-1;
-    int hasTargetMatch = 0;
-    int bestTargetHasPriority = 0;
-    long bestTargetPriority = -1;
-    unsigned long bestTargetLevel = (unsigned long)-1;
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE overall = {0, 0, -1, (unsigned long)-1};
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE targeted = {0, 0, -1, (unsigned long)-1};
 
     if (outMatch)
         ProgramControl_RuntimeInitMatch(outMatch);
@@ -486,44 +495,10 @@ static int ProgramControl_RuntimeFindBestFolderMatch(
         if (!ProgramControl_RuntimeMatchFolderRule(ruleset, rule, path, pathLen))
             continue;
 
-        if (rule->normalized.has_target_box &&
-            ProgramControl_ShouldReplaceTargetMatch(
-                hasTargetMatch,
-                bestTargetHasPriority,
-                bestTargetPriority,
-                bestTargetLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            hasTargetMatch = 1;
-            bestTargetHasPriority = rule->normalized.has_priority;
-            bestTargetPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-            bestTargetLevel = level;
-            if (outMatch)
-                ProgramControl_RuntimeStoreTargetMatch(outMatch, rule, level);
-        }
-
-        if (!ProgramControl_ShouldReplaceTargetMatch(
-                hasMatch,
-                bestHasPriority,
-                bestPriority,
-                bestLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            continue;
-        }
-
-        hasMatch = 1;
-        bestHasPriority = rule->normalized.has_priority;
-        bestPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-        bestLevel = level;
-
-        if (outMatch)
-            ProgramControl_RuntimeStoreMatch(outMatch, rule, level);
+        ProgramControl_RuntimeUpdateBestMatch(rule, level, &overall, &targeted, outMatch);
     }
 
-    return hasMatch;
+    return overall.has_match;
 }
 
 static int ProgramControl_RuntimeFindBestDocumentMatch(
@@ -537,14 +512,8 @@ static int ProgramControl_RuntimeFindBestDocumentMatch(
     SBIE_RT_MATCH *outMatch)
 {
     ULONG i;
-    int hasMatch = 0;
-    int bestHasPriority = 0;
-    long bestPriority = -1;
-    unsigned long bestLevel = (unsigned long)-1;
-    int hasTargetMatch = 0;
-    int bestTargetHasPriority = 0;
-    long bestTargetPriority = -1;
-    unsigned long bestTargetLevel = (unsigned long)-1;
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE overall = {0, 0, -1, (unsigned long)-1};
+    PROGRAM_CONTROL_RUNTIME_MATCH_STATE targeted = {0, 0, -1, (unsigned long)-1};
 
     if (outMatch)
         ProgramControl_RuntimeInitMatch(outMatch);
@@ -562,44 +531,10 @@ static int ProgramControl_RuntimeFindBestDocumentMatch(
         if (!ProgramControl_RuntimeMatchDocumentRule(ruleset, rule, path, pathLen))
             continue;
 
-        if (rule->normalized.has_target_box &&
-            ProgramControl_ShouldReplaceTargetMatch(
-                hasTargetMatch,
-                bestTargetHasPriority,
-                bestTargetPriority,
-                bestTargetLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            hasTargetMatch = 1;
-            bestTargetHasPriority = rule->normalized.has_priority;
-            bestTargetPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-            bestTargetLevel = level;
-            if (outMatch)
-                ProgramControl_RuntimeStoreTargetMatch(outMatch, rule, level);
-        }
-
-        if (!ProgramControl_ShouldReplaceTargetMatch(
-                hasMatch,
-                bestHasPriority,
-                bestPriority,
-                bestLevel,
-                rule->normalized.has_priority,
-                rule->normalized.priority,
-                level)) {
-            continue;
-        }
-
-        hasMatch = 1;
-        bestHasPriority = rule->normalized.has_priority;
-        bestPriority = rule->normalized.has_priority ? rule->normalized.priority : -1;
-        bestLevel = level;
-
-        if (outMatch)
-            ProgramControl_RuntimeStoreMatch(outMatch, rule, level);
+        ProgramControl_RuntimeUpdateBestMatch(rule, level, &overall, &targeted, outMatch);
     }
 
-    return hasMatch;
+    return overall.has_match;
 }
 
 void ProgramControl_RuntimeInitMatch(SBIE_RT_MATCH *match)
