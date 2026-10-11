@@ -2347,8 +2347,24 @@ Enabling this option uses a LOW integrity token instead, which may improve compa
                  </property>
                 </widget>
                </item>
+               <item row="8" column="1">
+                <widget class="QPushButton" name="btnForcePriorities">
+                 <property name="toolTip">
+                  <string>Open the combined Force/Breakout priority manager.</string>
+                 </property>
+                 <property name="text">
+                  <string>Priorities</string>
+                 </property>
+                </widget>
+               </item>
                <item row="9" column="0" colspan="2">
                 <widget class="QCheckBox" name="chkUseForceBreakoutRuleExtensions">
+                 <property name="sizePolicy">
+                  <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+                   <horstretch>0</horstretch>
+                   <verstretch>0</verstretch>
+                  </sizepolicy>
+                 </property>
                  <property name="toolTip">
                   <string>Enable Force/Breakout rule extensions (Priority, Recursive, TargetBox).
 When enabled, sandboxed and unsandboxed launch paths parse these extensions.</string>
@@ -2558,21 +2574,42 @@ When enabled, sandboxed and unsandboxed launch paths parse these extensions.</st
                  </property>
                 </widget>
                </item>
-               <item row="8" column="0" colspan="2">
+               <item row="8" column="0">
                 <widget class="QCheckBox" name="chkDisableBreakout">
                  <property name="text">
                   <string>Disable all Breakout rules for this sandbox</string>
                  </property>
                 </widget>
                </item>
+               <item row="8" column="1">
+                <widget class="QPushButton" name="btnBreakoutPriorities">
+                 <property name="toolTip">
+                  <string>Open the combined Force/Breakout priority manager.</string>
+                 </property>
+                 <property name="text">
+                  <string>Priorities</string>
+                 </property>
+                </widget>
+               </item>
                <item row="9" column="0" colspan="2">
                 <widget class="QCheckBox" name="chkBreakoutUseTargetDir">
+                 <property name="sizePolicy">
+                  <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+                   <horstretch>0</horstretch>
+                   <verstretch>0</verstretch>
+                  </sizepolicy>
+                 </property>
                  <property name="toolTip">
                   <string>When breakout is allowed and no working directory is provided by the caller, use the target executable's folder as working directory.
-This helps prevent ForceFolder rules from re-forcing breakout child processes that inherit sandbox working directory.</string>
+This helps prevent ForceFolder rules from re-forcing breakout child processes that inherit sandbox working directory.
+
+A partially checked state removes the unscoped box value and uses the inherited value (Template -&gt; Global -&gt; Default).</string>
                  </property>
                  <property name="text">
                   <string>Use breakout target directory as working directory</string>
+                 </property>
+                 <property name="tristate">
+                  <bool>true</bool>
                  </property>
                 </widget>
                </item>
@@ -6464,12 +6501,14 @@ Please note that this values are currently user specific and saved globally for 
   <tabstop>chkShowForceTmpl</tabstop>
   <tabstop>btnDelForce</tabstop>
   <tabstop>chkDisableForced</tabstop>
+  <tabstop>btnForcePriorities</tabstop>
   <tabstop>chkUseForceBreakoutRuleExtensions</tabstop>
   <tabstop>treeBreakout</tabstop>
   <tabstop>btnBreakoutProg</tabstop>
   <tabstop>btnBreakoutDir</tabstop>
   <tabstop>chkShowBreakoutTmpl</tabstop>
   <tabstop>chkDisableBreakout</tabstop>
+  <tabstop>btnBreakoutPriorities</tabstop>
   <tabstop>chkBreakoutUseTargetDir</tabstop>
   <tabstop>btnDelBreakout</tabstop>
   <tabstop>tabsStop</tabstop>

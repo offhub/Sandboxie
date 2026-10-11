@@ -7,6 +7,8 @@
 #include "../MiscHelpers/Common/ComboInputDialog.h"
 #include "../MiscHelpers/Common/SettingsWidgets.h"
 #include "Helpers/WinAdmin.h"
+#include <QDialogButtonBox>
+#include <QSignalBlocker>
 #include <limits>
 
 int COptionsWindow__GetBoolConfig(const QString& Value);
@@ -14,6 +16,8 @@ int COptionsWindow__GetBoolConfig(const QString& Value);
 namespace {
 
 const char kRuleExtensionsPrevStateProperty[] = "SbiePrevCheckState";
+const char kBreakoutUseTargetDirPrevStateProperty[] = "SbieBreakoutUseTargetDirPrevState";
+const char kBreakoutUseTargetDirInheritedStateProperty[] = "SbieBreakoutUseTargetDirInheritedState";
 
 const int kRulePriorityColumn = 2;
 const int kRuleRecursiveColumn = 3;
@@ -94,6 +98,50 @@ static bool ParseLongValue(const QString& value, qlonglong* out)
 	return true;
 }
 
+static int GetUnscopedBoolConfig(const QStringList& values)
+{
+	foreach(const QString& value, values) {
+		if (value.contains(","))
+			continue;
+
+		int result = COptionsWindow__GetBoolConfig(value);
+		if (result != -1)
+			return result;
+	}
+	return -1;
+}
+
+static int GetTemplateBoolConfig(const QSharedPointer<CSbieIni>& pBox, const QString& setting)
+{
+	if (pBox.isNull())
+		return -1;
+
+	foreach(const QString& Template, pBox->GetTemplates()) {
+		if (Template.compare("GlobalSettings", Qt::CaseInsensitive) == 0)
+			continue;
+
+		int result = GetUnscopedBoolConfig(pBox->GetTextListTmpl(setting, Template));
+		if (result != -1)
+			return result;
+	}
+	return -1;
+}
+
+static int GetGlobalBoolConfig(const QSharedPointer<CSbieIni>& pBox, const QString& setting)
+{
+	if (pBox.isNull() || !pBox->GetAPI())
+		return -1;
+	QSharedPointer<CSbieIni> pGlobal = pBox->GetAPI()->GetGlobalSettings();
+	return pGlobal.isNull() ? -1 : GetUnscopedBoolConfig(pGlobal->GetTextList(setting, false));
+}
+
+static int GetEffectiveBoolConfig(const QSharedPointer<CSbieIni>& pBox, const QString& setting)
+{
+	if (pBox.isNull())
+		return -1;
+	return GetUnscopedBoolConfig(pBox->GetTextList(setting, true, false, true));
+}
+
 static bool ParseRulePriorityValue(const QString& value, qlonglong* out)
 {
 	qlonglong parsed = -1;
@@ -117,11 +165,36 @@ static Qt::CheckState EffectiveBoolToCheckState(int value, bool defaultValue)
 	return defaultValue ? Qt::Checked : Qt::Unchecked;
 }
 
+static Qt::CheckState GetInheritedBreakoutUseTargetDirState(const QSharedPointer<CSbieIni>& pBox, bool defaultValue)
+{
+	return EffectiveBoolToCheckState(GetEffectiveBoolConfig(pBox, "BreakoutUseTargetDir"), defaultValue);
+}
+
+static SB_STATUS ClearUnscopedBoolConfig(const QSharedPointer<CSbieIni>& pBox, const QString& setting)
+{
+	if (pBox.isNull())
+		return SB_ERR(SB_ConfigFailed);
+
+	QStringList values = pBox->GetTextList(setting, false);
+	foreach(const QString& value, values) {
+		if (value.contains(","))
+			continue;
+		SB_STATUS status = pBox->DelValue(setting, value);
+		if (!status) {
+			pBox->RestoreTextList(setting, values);
+			return status;
+		}
+	}
+	return SB_OK;
+}
+
 static Qt::CheckState GetInheritedRuleExtensionsCheckState(const QSharedPointer<CSbieIni>& pBox, bool defaultValue)
 {
-	int iTemplate = COptionsWindow__GetBoolConfig(pBox->GetText("UseForceBreakoutRuleExtensions", QString(), false, true, true));
-	int iGlobal = COptionsWindow__GetBoolConfig(pBox->GetText("UseForceBreakoutRuleExtensions", QString(), true));
-	return EffectiveBoolToCheckState(iTemplate != -1 ? iTemplate : iGlobal, defaultValue);
+	// Direct box values precede inherited values in the driver's merged list.
+	const QString setting = "UseForceBreakoutRuleExtensions";
+	const auto localCount = pBox->GetTextList(setting, false).size();
+	const QStringList inheritedValues = pBox->GetTextList(setting, true, false, true).mid(localCount);
+	return EffectiveBoolToCheckState(GetUnscopedBoolConfig(inheritedValues), defaultValue);
 }
 
 static QString GetRuleKey(const QString& token)
@@ -680,10 +753,11 @@ void COptionsWindow::LoadForced()
 		QSignalBlocker blocker(ui.chkUseForceBreakoutRuleExtensions);
 		ui.chkUseForceBreakoutRuleExtensions->setTristate(true);
 		int iLocal = COptionsWindow__GetBoolConfig(m_pBox->GetText("UseForceBreakoutRuleExtensions"));
-		int iTemplate = COptionsWindow__GetBoolConfig(m_pBox->GetText("UseForceBreakoutRuleExtensions", QString(), false, true, true));
-		int iGlobal = COptionsWindow__GetBoolConfig(m_pBox->GetText("UseForceBreakoutRuleExtensions", QString(), true));
+		const auto localCount = m_pBox->GetTextList("UseForceBreakoutRuleExtensions", false).size();
+		int iTemplate = GetUnscopedBoolConfig(m_pBox->GetTextList("UseForceBreakoutRuleExtensions", true).mid(localCount));
+		int iGlobal = GetUnscopedBoolConfig(m_pBox->GetTextListTmpl("UseForceBreakoutRuleExtensions", "GlobalSettings"));
 		bool bDefault = false;
-		Qt::CheckState effectiveState = EffectiveBoolToCheckState(iTemplate != -1 ? iTemplate : iGlobal, bDefault);
+		Qt::CheckState effectiveState = GetInheritedRuleExtensionsCheckState(m_pBox, bDefault);
 
 		if (iLocal == -1)
 			ui.chkUseForceBreakoutRuleExtensions->setCheckState(Qt::PartiallyChecked);
@@ -695,14 +769,47 @@ void COptionsWindow::LoadForced()
 		if (iTemplate != -1)
 			info.append(tr("Template: %1").arg(iTemplate == 1 ? "y" : "n"));
 		if (iGlobal != -1)
-			info.append(tr("Global: %1").arg(iGlobal == 1 ? "y" : "n"));
+			info.append(tr("Global (including templates): %1").arg(iGlobal == 1 ? "y" : "n"));
 		info.append(tr("Default: %1").arg(bDefault ? "y" : "n"));
 		info.append(tr("Partial state means: use inherited value (Template -> Global -> Default)."));
 		info.append(tr("Effective inherited value: %1").arg(effectiveState == Qt::Checked ? "y" : "n"));
 		ui.chkUseForceBreakoutRuleExtensions->setToolTip(info.join("\r\n"));
 		ui.chkUseForceBreakoutRuleExtensions->setProperty(kRuleExtensionsPrevStateProperty, (int)ui.chkUseForceBreakoutRuleExtensions->checkState());
 	}
-	ui.chkBreakoutUseTargetDir->setChecked(m_pBox->GetBool("BreakoutUseTargetDir", false, true, true));
+	{
+		QSignalBlocker blocker(ui.chkBreakoutUseTargetDir);
+		ui.chkBreakoutUseTargetDir->setTristate(true);
+		int iLocal = GetUnscopedBoolConfig(m_pBox->GetTextList("BreakoutUseTargetDir", false));
+		int iTemplate = GetTemplateBoolConfig(m_pBox, "BreakoutUseTargetDir");
+		int iGlobal = GetGlobalBoolConfig(m_pBox, "BreakoutUseTargetDir");
+		bool bDefault = false;
+		int iEffective = iLocal == -1
+			? GetEffectiveBoolConfig(m_pBox, "BreakoutUseTargetDir")
+			: (iTemplate != -1 ? iTemplate : iGlobal);
+		Qt::CheckState effectiveState = EffectiveBoolToCheckState(iEffective, bDefault);
+
+		if (iLocal == -1)
+			ui.chkBreakoutUseTargetDir->setCheckState(Qt::PartiallyChecked);
+		else
+			ui.chkBreakoutUseTargetDir->setCheckState(iLocal == 1 ? Qt::Checked : Qt::Unchecked);
+
+		QStringList info;
+		info.append(tr("Box: %1").arg(iLocal == -1 ? tr("use inherited") : (iLocal == 1 ? "y" : "n")));
+		if (iTemplate != -1)
+			info.append(tr("Template: %1").arg(iTemplate == 1 ? "y" : "n"));
+		if (iGlobal != -1)
+			info.append(tr("Global: %1").arg(iGlobal == 1 ? "y" : "n"));
+		info.append(tr("Default: %1").arg(bDefault ? "y" : "n"));
+		info.append(tr("Partial state means: use inherited value (Template -> Global -> Default)."));
+		if (iTemplate == -1 && iGlobal == -1 && iEffective != -1)
+			info.append(tr("Effective value includes applicable global and default templates."));
+		info.append(tr("Effective inherited value: %1").arg(effectiveState == Qt::Checked ? "y" : "n"));
+		ui.chkBreakoutUseTargetDir->setToolTip(info.join("\r\n"));
+		ui.chkBreakoutUseTargetDir->setProperty(kBreakoutUseTargetDirPrevStateProperty,
+			(int)ui.chkBreakoutUseTargetDir->checkState());
+		ui.chkBreakoutUseTargetDir->setProperty(kBreakoutUseTargetDirInheritedStateProperty,
+			(int)effectiveState);
+	}
 	ui.chkDisableBreakout->setChecked(m_pBox->GetBool("DisableBreakoutRules", false));
 
 	LoadForcedTmpl();
@@ -830,16 +937,7 @@ void COptionsWindow::AddBreakoutEntry(const QString& Name, int type, bool disabl
 
 void COptionsWindow::SaveForced()
 {
-	bool useRuleExtensions = false;
-	{
-		Qt::CheckState state = ui.chkUseForceBreakoutRuleExtensions->checkState();
-		if (state == Qt::Checked)
-			useRuleExtensions = true;
-		else if (state == Qt::Unchecked)
-			useRuleExtensions = false;
-		else
-			useRuleExtensions = m_pBox->GetBool("UseForceBreakoutRuleExtensions", false, true, true);
-	}
+	bool useRuleExtensions = IsRuleExtensionsEnabled();
 
 	QStringList ForceProcess;
 	QStringList ForceProcessDisabled;
@@ -922,7 +1020,15 @@ void COptionsWindow::SaveForced()
 	WriteTextList("BreakoutDocument", BreakoutDocument);
 	WriteTextList("BreakoutDocumentDisabled", BreakoutDocumentDisabled);
 	WriteAdvancedCheck(ui.chkDisableBreakout, "DisableBreakoutRules", "y", "");
-	WriteAdvancedCheck(ui.chkBreakoutUseTargetDir, "BreakoutUseTargetDir", "y", "n");
+	if (ui.chkBreakoutUseTargetDir->isEnabled()) {
+		SB_STATUS status;
+		if (ui.chkBreakoutUseTargetDir->checkState() == Qt::PartiallyChecked)
+			status = ClearUnscopedBoolConfig(m_pBox, "BreakoutUseTargetDir");
+		else
+			status = m_pBox->SetBoolSafe("BreakoutUseTargetDir", ui.chkBreakoutUseTargetDir->checkState() == Qt::Checked);
+		if (!status)
+			throw status;
+	}
 	{
 		SB_STATUS status;
 		if (ui.chkUseForceBreakoutRuleExtensions->checkState() == Qt::PartiallyChecked)
@@ -934,6 +1040,16 @@ void COptionsWindow::SaveForced()
 	}
 
 	m_ForcedChanged = false;
+}
+
+bool COptionsWindow::IsRuleExtensionsEnabled() const
+{
+	Qt::CheckState state = ui.chkUseForceBreakoutRuleExtensions->checkState();
+	if (state == Qt::Checked)
+		return true;
+	if (state == Qt::Unchecked)
+		return false;
+	return GetInheritedRuleExtensionsCheckState(m_pBox, false) == Qt::Checked;
 }
 
 void COptionsWindow::OnRuleExtensionsToggled(int state)
@@ -991,6 +1107,31 @@ void COptionsWindow::OnRuleExtensionsToggled(int state)
 	}
 
 	ui.chkUseForceBreakoutRuleExtensions->setProperty(kRuleExtensionsPrevStateProperty, (int)ui.chkUseForceBreakoutRuleExtensions->checkState());
+}
+
+void COptionsWindow::OnBreakoutUseTargetDirToggled(int state)
+{
+	Qt::CheckState checkState = static_cast<Qt::CheckState>(state);
+	QVariant previousValue = ui.chkBreakoutUseTargetDir->property(kBreakoutUseTargetDirPrevStateProperty);
+	Qt::CheckState previousState = static_cast<Qt::CheckState>(previousValue.toInt());
+	if (!previousValue.isValid())
+		previousState = checkState;
+	QVariant inheritedValue = ui.chkBreakoutUseTargetDir->property(kBreakoutUseTargetDirInheritedStateProperty);
+	Qt::CheckState inheritedState = static_cast<Qt::CheckState>(inheritedValue.toInt());
+	if (!inheritedValue.isValid())
+		inheritedState = GetInheritedBreakoutUseTargetDirState(m_pBox, false);
+
+	if (previousState == Qt::PartiallyChecked && checkState == Qt::Checked
+		&& inheritedState == Qt::Checked) {
+		QSignalBlocker blocker(ui.chkBreakoutUseTargetDir);
+		ui.chkBreakoutUseTargetDir->setCheckState(Qt::Unchecked);
+		ui.chkBreakoutUseTargetDir->setProperty(kBreakoutUseTargetDirPrevStateProperty, (int)Qt::Unchecked);
+		OnForcedChanged();
+		return;
+	}
+
+	OnForcedChanged();
+	ui.chkBreakoutUseTargetDir->setProperty(kBreakoutUseTargetDirPrevStateProperty, (int)checkState);
 }
 
 void COptionsWindow::OnForceProg()

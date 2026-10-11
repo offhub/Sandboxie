@@ -18,6 +18,7 @@
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QStandardItemModel>
+#include <functional>
 
 static const int kRulePriorityMax = 9999;
 
@@ -549,7 +550,17 @@ public:
 				QString boxName = it.value()->GetName();
 				if (boxName.isEmpty())
 					continue;
-				pBox->addItem(boxName, boxName);
+				QString displayName = boxName;
+				QSharedPointer<CSandBoxPlus> pBoxPlus = it.value().objectCast<CSandBoxPlus>();
+				if (!pBoxPlus.isNull()) {
+					QString alias = pBoxPlus->GetText("BoxAlias").trimmed();
+					displayName = alias.isEmpty()
+						? pBoxPlus->GetDisplayName(CSandBoxPlus::eDisplayCompact)
+						: CSandBoxPlus::FormatDisplayName(boxName, alias, 0, CSandBoxPlus::eDisplayCompact);
+				}
+				int index = pBox->count();
+				pBox->addItem(displayName, boxName);
+				pBox->setItemData(index, boxName, Qt::ToolTipRole);
 			}
 			setupWideDropdown(pBox);
 			connectEditable(pBox);
@@ -1143,6 +1154,7 @@ COptionsWindow::COptionsWindow(const QSharedPointer<CSbieIni>& pBox, const QStri
 	ui.treeForced->setItemDelegateForColumn(3, new RuleExtensionsDelegate(this, ui.treeForced, false, 3, this));
 	connect(ui.treeForced, SIGNAL(itemChanged(QTreeWidgetItem *, int)), this, SLOT(OnForcedChanged(QTreeWidgetItem *, int)));
 	connect(ui.chkDisableForced, SIGNAL(clicked(bool)), this, SLOT(OnForcedChanged()));
+	connect(ui.btnForcePriorities, SIGNAL(clicked(bool)), this, SLOT(OnManageForceBreakoutPriority()));
 
 	connect(ui.btnBreakoutProg, SIGNAL(clicked(bool)), this, SLOT(OnBreakoutProg()));
 	QMenu* pFileBtnMenu2 = new QMenu(ui.btnBreakoutProg);
@@ -1154,7 +1166,8 @@ COptionsWindow::COptionsWindow(const QSharedPointer<CSbieIni>& pBox, const QStri
 	connect(ui.btnDelBreakout, SIGNAL(clicked(bool)), this, SLOT(OnDelBreakout()));
 	connect(ui.chkShowBreakoutTmpl, SIGNAL(clicked(bool)), this, SLOT(OnShowBreakoutTmpl()));
 	connect(ui.chkDisableBreakout, SIGNAL(clicked(bool)), this, SLOT(OnForcedChanged()));
-	connect(ui.chkBreakoutUseTargetDir, SIGNAL(clicked(bool)), this, SLOT(OnForcedChanged()));
+	connect(ui.chkBreakoutUseTargetDir, SIGNAL(stateChanged(int)), this, SLOT(OnBreakoutUseTargetDirToggled(int)));
+	connect(ui.btnBreakoutPriorities, SIGNAL(clicked(bool)), this, SLOT(OnManageForceBreakoutPriority()));
 	connect(ui.chkUseForceBreakoutRuleExtensions, SIGNAL(stateChanged(int)), this, SLOT(OnRuleExtensionsToggled(int)));
 	//ui.treeBreakout->setEditTriggers(QAbstractItemView::DoubleClicked);
 	ui.treeBreakout->setItemDelegateForColumn(0, new NoEditDelegate(this));
@@ -1278,6 +1291,8 @@ COptionsWindow::COptionsWindow(const QSharedPointer<CSbieIni>& pBox, const QStri
 	{
 		ui.btnEditIni->setEnabled(false);
 		ui.buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
+		ui.btnForcePriorities->setEnabled(false);
+		ui.btnBreakoutPriorities->setEnabled(false);
 	}
 
 	if (theAPI->IsRunningAsAdmin())
@@ -2004,6 +2019,49 @@ void COptionsWindow::showTab(const QString& Name)
 	CSandMan::SafeShow(this);
 }
 
+void COptionsWindow::showForceBreakoutTab(bool breakout)
+{
+	QWidget* pWidget = breakout ? ui.tabBreakout : ui.tabForceProgs;
+	if (ui.tabs) {
+		ui.tabs->setCurrentWidget(ui.tabForce);
+		ui.tabsForce->setCurrentWidget(pWidget);
+	}
+	else if (m_pStack) {
+		int stackIndex = -1;
+		for (int i = 0; i < m_pStack->count(); ++i) {
+			if (m_pStack->widget(i) == pWidget) {
+				stackIndex = i;
+				break;
+			}
+		}
+		if (stackIndex >= 0)
+			m_pStack->setCurrentIndex(stackIndex);
+		if (m_pTree && stackIndex >= 0) {
+			QTreeWidgetItem* pSelected = NULL;
+			std::function<void(QTreeWidgetItem*)> findItem;
+			findItem = [&findItem, &pSelected, stackIndex](QTreeWidgetItem* pItem) {
+				if (!pItem || pSelected)
+					return;
+				if (pItem->data(0, Qt::UserRole).toInt() == stackIndex) {
+					pSelected = pItem;
+					return;
+				}
+				for (int i = 0; i < pItem->childCount(); ++i)
+					findItem(pItem->child(i));
+			};
+			for (int i = 0; i < m_pTree->topLevelItemCount() && !pSelected; ++i)
+				findItem(m_pTree->topLevelItem(i));
+			if (pSelected) {
+				m_pTree->setCurrentItem(pSelected);
+				m_pTree->scrollToItem(pSelected);
+			}
+		}
+		OnTab(pWidget);
+	}
+
+	CSandMan::SafeShow(this);
+}
+
 void COptionsWindow::SetProgramItem(QString Program, QTreeWidgetItem* pItem, int Column, const QString& Suffix, bool bList)
 {
 	pItem->setData(Column, Qt::UserRole, Program);
@@ -2014,16 +2072,6 @@ void COptionsWindow::SetProgramItem(QString Program, QTreeWidgetItem* pItem, int
 	else if(bList)
 		m_Programs.insert(Program);
 	pItem->setText(Column, Program + Suffix);
-}
-
-bool COptionsWindow::IsRuleExtensionsEnabled() const
-{
-	Qt::CheckState state = ui.chkUseForceBreakoutRuleExtensions->checkState();
-	if (state == Qt::Checked)
-		return true;
-	if (state == Qt::Unchecked)
-		return false;
-	return m_pBox->GetBool("UseForceBreakoutRuleExtensions", false, true, true);
 }
 
 QSet<int> COptionsWindow::GetUsedRulePriorities(const QTreeWidgetItem* pExclude) const
@@ -2666,6 +2714,7 @@ void COptionsWindow::SaveIniSection()
 #include "OptionsAccess.cpp"
 #include "OptionsAdvanced.cpp"
 #include "OptionsForce.cpp"
+#include "OptionsForceBreakoutPriority.cpp"
 #include "OptionsGeneral.cpp"
 #include "OptionsGrouping.cpp"
 #include "OptionsNetwork.cpp"

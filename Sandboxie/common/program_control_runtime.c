@@ -276,11 +276,13 @@ static int ProgramControl_RuntimeMatchFolderRule(
     case SBIE_RT_BACKEND_EXACT_STRING:
         return ProgramControl_MatchFolderRuleNormalized(&rule->normalized, path, pathLen);
     case SBIE_RT_BACKEND_PATH_PATTERN:
+        // ForceFolder uses only the caller-supplied directory prefix.
         if (!ProgramControl_RuntimeMatchPatternLower(
                 ruleset,
                 (XPATTERN *)rule->backend_state,
                 path,
-                (path[pathLen] == L'\\') ? (unsigned long)wcslen(path) : pathLen) &&
+                (_wcsicmp(rule->setting_name, L"BreakoutFolder") == 0 && path[pathLen] == L'\\')
+                    ? (unsigned long)wcslen(path) : pathLen) &&
             !ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, path, pathLen))
             return 0;
         if (rule->normalized.has_recursive)
