@@ -2,6 +2,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDialog>
 #include <QDropEvent>
 #include <QHeaderView>
@@ -25,6 +26,7 @@
 #include <QSignalBlocker>
 #include <QStyledItemDelegate>
 #include <QTreeWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include "../Views/SbieView.h"
 #include <algorithm>
@@ -36,6 +38,8 @@ const char kPriorityManagerBackupKey[] = "OptionsWindow/ForceBreakoutPriorityBac
 const char kPriorityManagerShowDisabledKey[] = "OptionsWindow/ForceBreakoutPriorityShowDisabled";
 const char kPriorityManagerShowGlobalKey[] = "OptionsWindow/ForceBreakoutPriorityShowGlobal";
 const char kPriorityManagerShowTemplatesKey[] = "OptionsWindow/ForceBreakoutPriorityShowTemplates";
+const char kPriorityManagerShowOtherBoxesKey[] = "OptionsWindow/ForceBreakoutPriorityShowOtherBoxes";
+const char kPriorityManagerOptionsExpandedKey[] = "OptionsWindow/ForceBreakoutPriorityOptionsExpanded";
 const char kPriorityManagerNumberingModeKey[] = "OptionsWindow/ForceBreakoutPriorityNumberingMode";
 const char kPriorityManagerGeometryKey[] = "OptionsWindow/ForceBreakoutPriority_Geometry";
 const char kPriorityManagerColumnsKey[] = "OptionsWindow/ForceBreakoutPriority_Columns";
@@ -406,6 +410,7 @@ class CForceBreakoutPriorityTree : public QTreeWidget
 {
 public:
 	using QTreeWidget::QTreeWidget;
+	using QTreeWidget::itemFromIndex;
 
 	bool HasOrderChanged() const { return m_OrderChanged; }
 	void ClearOrderChanged() { m_OrderChanged = false; }
@@ -498,41 +503,73 @@ public:
 class CForceBreakoutPriorityDelegate : public QStyledItemDelegate
 {
 public:
-	using QStyledItemDelegate::QStyledItemDelegate;
+	explicit CForceBreakoutPriorityDelegate(
+		const std::function<QMap<int, QStringList>(const QModelIndex&)>& getUsedPriorities,
+		QObject* parent = NULL)
+		: QStyledItemDelegate(parent), m_GetUsedPriorities(getUsedPriorities)
+	{
+	}
 
 	QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
 		const QModelIndex& index) const override
 	{
 		Q_UNUSED(option);
-		Q_UNUSED(index);
 
-		QLineEdit* pEdit = new QLineEdit(parent);
+		QComboBox* pBox = new QComboBox(parent);
+		pBox->setEditable(true);
+		pBox->setInsertPolicy(QComboBox::NoInsert);
+		pBox->addItem(COptionsWindow::tr("Not set"), QString());
+		QMap<int, QStringList> usedSources = m_GetUsedPriorities
+			? m_GetUsedPriorities(index) : QMap<int, QStringList>();
+		QSet<int> usedPriorities;
+		for (auto it = usedSources.constBegin(); it != usedSources.constEnd(); ++it)
+			usedPriorities.insert(it.key());
+		int currentPriority = -1;
+		ParseRulePriorityValue(index.data(Qt::UserRole).toString(), &currentPriority);
+		for (int priority : BuildRulePriorityValues(usedPriorities, currentPriority)) {
+			QString value = QString::number(priority);
+			pBox->addItem(value, value);
+		}
+		MarkUsedRulePriorityItems(pBox, usedSources, COptionsWindow::tr("(in use)"),
+			COptionsWindow::tr("%1 (in use)"), COptionsWindow::tr("Used by:\n%1"));
+		SetupWideDropdown(pBox);
 		QRegularExpression expression("^[0-9]{0,4}$");
-		pEdit->setValidator(new QRegularExpressionValidator(expression, pEdit));
-		return pEdit;
+		pBox->lineEdit()->setValidator(new QRegularExpressionValidator(expression, pBox));
+		return pBox;
 	}
 
 	void setEditorData(QWidget* editor, const QModelIndex& index) const override
 	{
-		QLineEdit* pEdit = qobject_cast<QLineEdit*>(editor);
-		if (pEdit)
-			pEdit->setText(index.data(Qt::UserRole).toString());
+		QComboBox* pBox = qobject_cast<QComboBox*>(editor);
+		if (!pBox)
+			return;
+
+		QString value = index.data(Qt::UserRole).toString().trimmed();
+		int itemIndex = pBox->findData(value);
+		if (itemIndex < 0 && !value.isEmpty()) {
+			itemIndex = pBox->count();
+			pBox->addItem(value, value);
+		}
+		pBox->setCurrentIndex(itemIndex < 0 ? 0 : itemIndex);
+		if (!value.isEmpty())
+			pBox->setEditText(value);
 	}
 
 	void setModelData(QWidget* editor, QAbstractItemModel* model,
 		const QModelIndex& index) const override
 	{
-		QLineEdit* pEdit = qobject_cast<QLineEdit*>(editor);
-		if (!pEdit)
+		QComboBox* pBox = qobject_cast<QComboBox*>(editor);
+		if (!pBox)
 			return;
 
-		QString value = pEdit->text().trimmed();
+		QString value = pBox->currentText().trimmed();
+		if (value.compare(COptionsWindow::tr("Not set"), Qt::CaseInsensitive) == 0)
+			value.clear();
 		if (!value.isEmpty()) {
-			qlonglong priority = -1;
+			int priority = -1;
 			if (!ParseRulePriorityValue(value, &priority))
-				value.clear();
-			else
-				value = QString::number(priority);
+				return;
+			value = QString::number(priority);
 		}
 
 		model->setData(index, value, Qt::UserRole);
@@ -541,6 +578,9 @@ public:
 			? COptionsWindow::tr("No explicit priority.")
 			: COptionsWindow::tr("Priority: %1").arg(value), Qt::ToolTipRole);
 	}
+
+private:
+	std::function<QMap<int, QStringList>(const QModelIndex&)> m_GetUsedPriorities;
 };
 
 class CForceBreakoutPriorityRuleDelegate : public QStyledItemDelegate
@@ -850,14 +890,173 @@ static QString PriorityManagerConflictPrioritySources(const QVector<QTreeWidgetI
 	return entries.join("; ");
 }
 
+static bool BuildPriorityAssignment(const QVector<int>& oldPriorities, QVector<int>* assignedPriorities)
+{
+	if (!assignedPriorities || oldPriorities.size() > static_cast<int>(kPriorityManagerMax) + 1)
+		return false;
+
+	assignedPriorities->fill(-1, oldPriorities.size());
+	if (oldPriorities.isEmpty())
+		return true;
+
+	const int count = oldPriorities.size();
+	QVector<int> lengths(count, 1);
+	QVector<int> previous(count, -1);
+	int bestIndex = -1;
+	for (int index = 0; index < count; ++index) {
+		if (oldPriorities[index] < 0 || oldPriorities[index] > kPriorityManagerMax)
+			continue;
+		for (int before = 0; before < index; ++before) {
+			if (lengths[before] > 0 && oldPriorities[before] >= 0
+				&& oldPriorities[before] <= kPriorityManagerMax
+				&& oldPriorities[before] < oldPriorities[index]
+				&& lengths[before] + 1 > lengths[index]) {
+				lengths[index] = lengths[before] + 1;
+				previous[index] = before;
+			}
+		}
+		if (bestIndex < 0 || lengths[index] > lengths[bestIndex])
+			bestIndex = index;
+	}
+
+	QVector<bool> anchor(count, false);
+	for (int index = bestIndex; index >= 0; index = previous[index])
+		anchor[index] = true;
+
+	auto assignGap = [&](int first, int last, int lower, int upper) {
+		if (first >= last)
+			return true;
+		if (upper < lower || last - first > upper - lower + 1)
+			return false;
+		int previousValue = lower - 1;
+		for (int index = first; index < last; ++index) {
+			int minimum = previousValue + 1;
+			int maximum = upper - (last - index - 1);
+			int value = oldPriorities[index];
+			if (value < minimum)
+				value = minimum;
+			else if (value > maximum)
+				value = maximum;
+			(*assignedPriorities)[index] = value;
+			previousValue = value;
+		}
+		return true;
+	};
+
+	bool gapsFit = true;
+	int previousAnchor = -1;
+	for (int index = 0; index <= count; ++index) {
+		if (index < count && !anchor[index])
+			continue;
+		int nextAnchor = index < count ? index : -1;
+		if (nextAnchor >= 0)
+			(*assignedPriorities)[nextAnchor] = oldPriorities[nextAnchor];
+		int lower = previousAnchor >= 0 ? (*assignedPriorities)[previousAnchor] + 1 : 0;
+		int upper = nextAnchor >= 0 ? (*assignedPriorities)[nextAnchor] - 1
+			: static_cast<int>(kPriorityManagerMax);
+		int first = previousAnchor + 1;
+		if (!assignGap(first, index, lower, upper)) {
+			gapsFit = false;
+			break;
+		}
+		if (nextAnchor >= 0)
+			previousAnchor = nextAnchor;
+	}
+	if (gapsFit)
+		return true;
+
+	int previousValue = -1;
+	for (int index = 0; index < count; ++index) {
+		int minimum = previousValue + 1;
+		int maximum = static_cast<int>(kPriorityManagerMax) - (count - index - 1);
+		int value = oldPriorities[index];
+		if (value < minimum)
+			value = minimum;
+		else if (value > maximum)
+			value = maximum;
+		(*assignedPriorities)[index] = value;
+		previousValue = value;
+	}
+	return true;
+}
+
+static bool BuildPriorityAssignmentInRange(const QVector<int>& oldPriorities,
+	int lower, int upper, QVector<int>* assignedPriorities)
+{
+	if (!assignedPriorities)
+		return false;
+	assignedPriorities->fill(-1, oldPriorities.size());
+	if (oldPriorities.isEmpty())
+		return true;
+	if (lower < 0 || upper > kPriorityManagerMax || lower > upper
+		|| oldPriorities.size() > upper - lower + 1)
+		return false;
+
+	int previous = lower - 1;
+	for (int index = 0; index < oldPriorities.size(); ++index) {
+		int minimum = previous + 1;
+		int maximum = upper - (oldPriorities.size() - index - 1);
+		int priority = oldPriorities[index];
+		if (priority < minimum)
+			priority = minimum;
+		else if (priority > maximum)
+			priority = maximum;
+		(*assignedPriorities)[index] = priority;
+		previous = priority;
+	}
+	return true;
+}
+
+static bool BuildPriorityAssignmentInAvailableSlots(const QVector<int>& oldPriorities,
+	int lower, int upper, const QSet<int>& occupied, QVector<int>* assignedPriorities)
+{
+	if (!assignedPriorities)
+		return false;
+	assignedPriorities->fill(-1, oldPriorities.size());
+	if (oldPriorities.isEmpty())
+		return true;
+	if (lower < 0 || upper > kPriorityManagerMax || lower > upper)
+		return false;
+
+	QVector<int> available;
+	for (int priority = lower; priority <= upper; ++priority) {
+		if (!occupied.contains(priority))
+			available.append(priority);
+	}
+	if (available.size() < oldPriorities.size())
+		return false;
+
+	int previousSlot = -1;
+	for (int index = 0; index < oldPriorities.size(); ++index) {
+		int firstSlot = previousSlot + 1;
+		int lastSlot = available.size() - (oldPriorities.size() - index);
+		int slot = firstSlot;
+		while (slot <= lastSlot && available[slot] < oldPriorities[index])
+			++slot;
+		if (slot > lastSlot)
+			slot = lastSlot;
+		else if (slot > firstSlot) {
+			int previousDistance = oldPriorities[index] - available[slot - 1];
+			int currentDistance = available[slot] - oldPriorities[index];
+			if (previousDistance <= currentDistance)
+				--slot;
+		}
+		(*assignedPriorities)[index] = available[slot];
+		previousSlot = slot;
+	}
+	return true;
+}
+
 class CForceBreakoutPriorityDialog : public QDialog
 {
 public:
 	CForceBreakoutPriorityDialog(CSbieAPI* pAPI, QWidget* parent,
 		const std::function<bool()>& hasPendingChanges,
-		const std::function<void()>& refreshMain)
+		const std::function<void()>& refreshMain, const QString& originBoxKey,
+		const QString& originTemplateKey)
 		: QDialog(parent), m_pAPI(pAPI), m_HasPendingChanges(hasPendingChanges),
-		m_RefreshMain(refreshMain)
+		m_RefreshMain(refreshMain), m_OriginBoxKey(originBoxKey),
+		m_OriginTemplateKey(originTemplateKey)
 	{
 		setWindowTitle(COptionsWindow::tr("Force/Breakout Priority Manager"));
 		setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowSystemMenuHint
@@ -869,6 +1068,7 @@ public:
 		setWindowModality(Qt::NonModal);
 		if (theConf)
 			restoreGeometry(theConf->GetBlob(kPriorityManagerGeometryKey));
+		m_Sources = BuildPriorityManagerSources(m_pAPI);
 
 		QVBoxLayout* pLayout = new QVBoxLayout(this);
 
@@ -886,6 +1086,36 @@ public:
 		m_InfoText = m_pInfo->text();
 
 		QHBoxLayout* pFilterLayout = new QHBoxLayout();
+		pFilterLayout->addWidget(new QLabel(COptionsWindow::tr("Source:"), this));
+		m_pSourceFilter = new QComboBox(this);
+		m_pSourceFilter->setEditable(true);
+		m_pSourceFilter->setInsertPolicy(QComboBox::NoInsert);
+		m_pSourceFilter->lineEdit()->setPlaceholderText(COptionsWindow::tr("Search sources"));
+		m_pSourceFilter->lineEdit()->setClearButtonEnabled(true);
+		if (m_pSourceFilter->completer()) {
+			m_pSourceFilter->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+			m_pSourceFilter->completer()->setFilterMode(Qt::MatchContains);
+		}
+		m_pSourceFilter->setMinimumWidth(190);
+		PopulateSourceFilter(QString());
+		pFilterLayout->addWidget(m_pSourceFilter, 2);
+		pFilterLayout->addWidget(new QLabel(COptionsWindow::tr("Setting:"), this));
+		m_pSettingFilter = new QComboBox(this);
+		m_pSettingFilter->addItem(COptionsWindow::tr("All settings"), QStringLiteral("all"));
+		m_pSettingFilter->addItem(COptionsWindow::tr("Force"), QStringLiteral("force"));
+		m_pSettingFilter->addItem(COptionsWindow::tr("Breakout"), QStringLiteral("breakout"));
+		QSet<QString> settingNames;
+		for (const PriorityManagerSetting& settingInfo : kPriorityManagerSettings) {
+			QString setting = QString::fromLatin1(settingInfo.name);
+			if (setting.endsWith("Disabled", Qt::CaseInsensitive))
+				continue;
+			if (!settingNames.contains(setting)) {
+				settingNames.insert(setting);
+				m_pSettingFilter->addItem(setting, setting);
+			}
+		}
+		m_pSettingFilter->setMinimumWidth(175);
+		pFilterLayout->addWidget(m_pSettingFilter, 1);
 		pFilterLayout->addWidget(new QLabel(COptionsWindow::tr("Search:"), this));
 		m_pSearch = new QLineEdit(this);
 		m_pSearch->setClearButtonEnabled(true);
@@ -893,20 +1123,43 @@ public:
 		m_pSearch->setPlaceholderText(COptionsWindow::tr("Rule, source, type, or priority"));
 		m_pSearch->setToolTip(COptionsWindow::tr(
 			"Filter rows by rule, source, type, priority, scope, state, or conflict. Press Ctrl+F to focus the search field."));
-		pFilterLayout->addWidget(m_pSearch);
-		pFilterLayout->addWidget(new QLabel(COptionsWindow::tr("Show:"), this));
-		m_pShowDisabled = new QCheckBox(COptionsWindow::tr("Disabled"), this);
-		m_pShowGlobal = new QCheckBox(COptionsWindow::tr("Global"), this);
-		m_pShowTemplates = new QCheckBox(COptionsWindow::tr("Templates"), this);
+		pFilterLayout->addWidget(m_pSearch, 2);
+		m_pRefresh = new QPushButton(COptionsWindow::tr("Refresh"), this);
+		m_pRefresh->setToolTip(COptionsWindow::tr(
+			"Reload Force/Breakout rules from global settings, all boxes, and their referenced templates."));
+		pFilterLayout->addWidget(m_pRefresh);
+		m_pOptions = new QToolButton(this);
+		m_pOptions->setIcon(CSandMan::GetIcon("List"));
+		m_pOptions->setText(COptionsWindow::tr("Options"));
+		m_pOptions->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		m_pOptions->setCheckable(true);
+		m_pOptions->setAutoRaise(true);
+		m_pOptions->setToolTip(COptionsWindow::tr("Show or hide Force/Breakout Priority Manager options."));
+		pFilterLayout->addWidget(m_pOptions);
+		pLayout->addLayout(pFilterLayout);
+
+		QWidget* pOptionsWidget = new QWidget(this);
+		QHBoxLayout* pOptionsLayout = new QHBoxLayout(pOptionsWidget);
+		pOptionsLayout->setContentsMargins(0, 0, 0, 0);
+		m_pShowDisabled = new QCheckBox(COptionsWindow::tr("Disabled"), pOptionsWidget);
+		m_pShowGlobal = new QCheckBox(COptionsWindow::tr("Global"), pOptionsWidget);
+		m_pShowTemplates = new QCheckBox(COptionsWindow::tr("Templates"), pOptionsWidget);
+		m_pShowOtherBoxes = new QCheckBox(COptionsWindow::tr("Other boxes"), pOptionsWidget);
 		m_pShowDisabled->setChecked(!theConf || theConf->GetBool(kPriorityManagerShowDisabledKey, true));
 		m_pShowGlobal->setChecked(!theConf || theConf->GetBool(kPriorityManagerShowGlobalKey, true));
 		m_pShowTemplates->setChecked(!theConf || theConf->GetBool(kPriorityManagerShowTemplatesKey, true));
-		pFilterLayout->addWidget(m_pShowDisabled);
-		pFilterLayout->addWidget(m_pShowGlobal);
-		pFilterLayout->addWidget(m_pShowTemplates);
-		pFilterLayout->addStretch(1);
-		pFilterLayout->addWidget(new QLabel(COptionsWindow::tr("Numbering mode:"), this));
-		m_pNumberingMode = new QComboBox(this);
+		m_pShowOtherBoxes->setChecked(!theConf || theConf->GetBool(kPriorityManagerShowOtherBoxesKey, true));
+		m_pShowOtherBoxes->setEnabled(!m_OriginBoxKey.isEmpty());
+		m_pShowOtherBoxes->setToolTip(m_OriginBoxKey.isEmpty()
+			? COptionsWindow::tr("Available only when opened from a sandbox; all box rules remain visible.")
+			: COptionsWindow::tr("Show rules from other boxes. Global and Template rows are unaffected."));
+		pOptionsLayout->addWidget(m_pShowDisabled);
+		pOptionsLayout->addWidget(m_pShowGlobal);
+		pOptionsLayout->addWidget(m_pShowTemplates);
+		pOptionsLayout->addWidget(m_pShowOtherBoxes);
+		pOptionsLayout->addStretch(1);
+		pOptionsLayout->addWidget(new QLabel(COptionsWindow::tr("Numbering mode:"), pOptionsWidget));
+		m_pNumberingMode = new QComboBox(pOptionsWidget);
 		m_pNumberingMode->addItem(COptionsWindow::tr("Keep existing priorities and fill gaps when possible"), 0);
 		m_pNumberingMode->addItem(COptionsWindow::tr(
 			"Use consecutive priorities, starting at 1 (maximum 9999)"), 1);
@@ -917,12 +1170,12 @@ public:
 			"Keep existing priority numbers where possible and use empty gaps before renumbering. "
 			"Compact mode assigns consecutive priorities starting at 1, with a maximum of 9999."));
 		SetPriorityManagerComboPopupWidth(m_pNumberingMode);
-		pFilterLayout->addWidget(m_pNumberingMode);
-		m_pRefresh = new QPushButton(COptionsWindow::tr("Refresh"), this);
-		m_pRefresh->setToolTip(COptionsWindow::tr(
-			"Reload Force/Breakout rules from global settings, all boxes, and their referenced templates."));
-		pFilterLayout->addWidget(m_pRefresh);
-		pLayout->addLayout(pFilterLayout);
+		pOptionsLayout->addWidget(m_pNumberingMode);
+		const bool optionsExpanded = !theConf
+			|| theConf->GetBool(kPriorityManagerOptionsExpandedKey, true);
+		m_pOptions->setChecked(optionsExpanded);
+		pOptionsWidget->setVisible(optionsExpanded);
+		pLayout->addWidget(pOptionsWidget);
 
 		m_pConflictLabel = new QLabel(this);
 		m_pConflictLabel->setWordWrap(true);
@@ -954,7 +1207,9 @@ public:
 		m_pTree->setEditTriggers(QAbstractItemView::DoubleClicked
 			| QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
 		m_pTree->setItemDelegateForColumn(kPriorityManagerPriorityColumn,
-			new CForceBreakoutPriorityDelegate(m_pTree));
+			new CForceBreakoutPriorityDelegate([this](const QModelIndex& index) {
+				return GetUsedRulePrioritySources(m_pTree->itemFromIndex(index));
+			}, m_pTree));
 		m_pTree->setItemDelegateForColumn(kPriorityManagerRuleColumn,
 			new CForceBreakoutPriorityRuleDelegate(m_pTree));
 		m_pTree->setItemDelegateForColumn(kPriorityManagerRecursiveColumn,
@@ -985,6 +1240,11 @@ public:
 			}
 		}
 		pLayout->addWidget(m_pTree, 1);
+		QHBoxLayout* pRuleCountLayout = new QHBoxLayout();
+		m_pRuleCount = new QLabel(COptionsWindow::tr("Rules: 0 / 0"), this);
+		pRuleCountLayout->addWidget(m_pRuleCount);
+		pRuleCountLayout->addStretch(1);
+		pLayout->addLayout(pRuleCountLayout);
 
 		QHBoxLayout* pButtonLayout = new QHBoxLayout();
 		m_pRevert = new QPushButton(COptionsWindow::tr("Revert..."), this);
@@ -1041,7 +1301,6 @@ public:
 				m_pTree->resizeColumnToContents(column);
 		});
 
-		m_Sources = BuildPriorityManagerSources(m_pAPI);
 		Populate();
 		UpdateRevertButton();
 		UpdateApplyButton();
@@ -1061,9 +1320,25 @@ public:
 				theConf->SetValue(kPriorityManagerShowTemplatesKey, checked);
 			ApplyVisibility();
 		});
+		connect(m_pShowOtherBoxes, &QCheckBox::toggled, this, [this](bool checked) {
+			if (theConf)
+				theConf->SetValue(kPriorityManagerShowOtherBoxesKey, checked);
+			ApplyVisibility();
+		});
+		connect(m_pSourceFilter, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+			this, [this](int) { ApplyVisibility(); });
+		connect(m_pSourceFilter->lineEdit(), &QLineEdit::textEdited, this,
+			[this](const QString&) { ApplyVisibility(); });
+		connect(m_pSettingFilter, qOverload<int>(&QComboBox::currentIndexChanged),
+			this, [this](int) { ApplyVisibility(); });
 		connect(m_pSearch, &QLineEdit::textChanged, this, [this, pClearSearchAction](const QString& text) {
 			pClearSearchAction->setEnabled(!text.isEmpty());
 			ApplyVisibility();
+		});
+		connect(m_pOptions, &QToolButton::toggled, this, [pOptionsWidget](bool expanded) {
+			if (theConf)
+				theConf->SetValue(kPriorityManagerOptionsExpandedKey, expanded);
+			pOptionsWidget->setVisible(expanded);
 		});
 		connect(m_pNumberingMode, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
 			if (!IsReorderView()) {
@@ -1096,9 +1371,21 @@ public:
 				UpdateScopeItem(pItem);
 			else if (column == kPriorityManagerStateColumn)
 				UpdateStateItem(pItem);
+			if (column == kPriorityManagerRuleColumn || column == kPriorityManagerRecursiveColumn) {
+				int type = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerTypeRole).toInt();
+				QString originalRule = pItem->data(kPriorityManagerPriorityColumn,
+					kPriorityManagerOriginalRuleRole).toString();
+				QString baseRule = pItem->data(kPriorityManagerRuleColumn, Qt::UserRole).toString();
+				QString recursive = pItem->data(kPriorityManagerRecursiveColumn, Qt::UserRole).toString();
+				if (type == COptionsWindow::ePath
+					&& HasRecursiveRuleEdits(originalRule, baseRule, recursive)
+					&& IsRecursiveFolderRuleMissingTerminalWildcard(baseRule, recursive))
+					WarnRecursiveFolderRuleEdit(this, baseRule);
+			}
 			if (column == kPriorityManagerRuleColumn || column == kPriorityManagerPriorityColumn || column == kPriorityManagerRecursiveColumn
 				|| column == kPriorityManagerScopeColumn || column == kPriorityManagerStateColumn)
 				RecomputeConflicts();
+			ApplyVisibility();
 			UpdateApplyButton();
 		});
 		connect(m_pTree, &QTreeWidget::itemDoubleClicked, this,
@@ -1128,6 +1415,17 @@ public:
 		m_RefreshMain = refreshMain;
 	}
 
+	void SetOriginContext(const QString& originBoxKey, const QString& originTemplateKey)
+	{
+		m_OriginBoxKey = originBoxKey;
+		m_OriginTemplateKey = originTemplateKey;
+		m_pShowOtherBoxes->setEnabled(!m_OriginBoxKey.isEmpty());
+		m_pShowOtherBoxes->setToolTip(m_OriginBoxKey.isEmpty()
+			? COptionsWindow::tr("Available only when opened from a sandbox; all box rules remain visible.")
+			: COptionsWindow::tr("Show rules from other boxes. Global and Template rows are unaffected."));
+		ApplyVisibility();
+	}
+
 	~CForceBreakoutPriorityDialog() override
 	{
 		if (theConf) {
@@ -1155,6 +1453,60 @@ public:
 	}
 
 	private:
+	QString SelectedSourceFilterKey() const
+	{
+		if (!m_pSourceFilter)
+			return QString();
+		int index = m_pSourceFilter->currentIndex();
+		if (index < 0 || m_pSourceFilter->currentText().compare(
+			m_pSourceFilter->itemText(index), Qt::CaseInsensitive) != 0)
+			return QString();
+		return m_pSourceFilter->currentData().toString();
+	}
+
+	void PopulateSourceFilter(const QString& selectedKey)
+	{
+		if (!m_pSourceFilter)
+			return;
+		QSignalBlocker blocker(m_pSourceFilter);
+		m_pSourceFilter->clear();
+		m_pSourceFilter->addItem(COptionsWindow::tr("All sources"), QString());
+		int selectedIndex = 0;
+		for (int i = 0; i < m_Sources.size(); ++i) {
+			m_pSourceFilter->addItem(m_Sources[i].label, m_Sources[i].key);
+			if (!selectedKey.isEmpty()
+				&& m_Sources[i].key.compare(selectedKey, Qt::CaseInsensitive) == 0)
+				selectedIndex = i + 1;
+		}
+		m_pSourceFilter->setCurrentIndex(selectedIndex);
+	}
+
+	void RefreshSources()
+	{
+		QString selectedKey = SelectedSourceFilterKey();
+		m_Sources = BuildPriorityManagerSources(m_pAPI);
+		PopulateSourceFilter(selectedKey);
+	}
+
+	bool IsSourceFilterSelectionValid() const
+	{
+		int index = m_pSourceFilter ? m_pSourceFilter->currentIndex() : -1;
+		return index >= 0 && m_pSourceFilter->currentText().compare(
+			m_pSourceFilter->itemText(index), Qt::CaseInsensitive) == 0;
+	}
+
+	bool IsAllSourceFilter() const
+	{
+		return IsSourceFilterSelectionValid()
+			&& m_pSourceFilter->currentData().toString().isEmpty();
+	}
+
+	bool IsAllSettingFilter() const
+	{
+		return m_pSettingFilter
+			&& m_pSettingFilter->currentData().toString() == QStringLiteral("all");
+	}
+
 	void CancelChanges()
 	{
 		if (!HasPendingManagerChanges())
@@ -1162,7 +1514,7 @@ public:
 		if (!RestorePendingRevert())
 			return;
 
-		m_Sources = BuildPriorityManagerSources(m_pAPI);
+		RefreshSources();
 		Populate();
 		UpdateRevertButton();
 		UpdateApplyButton();
@@ -1315,7 +1667,8 @@ public:
 	{
 		return m_CanReorder && m_SortColumn == kPriorityManagerPriorityColumn
 			&& m_SortOrder == Qt::AscendingOrder
-			&& (!m_pSearch || m_pSearch->text().trimmed().isEmpty());
+			&& (!m_pSearch || m_pSearch->text().trimmed().isEmpty())
+			&& IsAllSourceFilter() && IsAllSettingFilter();
 	}
 
 	void UpdateReorderingState()
@@ -1336,7 +1689,8 @@ public:
 				"Numbering is unavailable while a read-only template has an explicit priority."));
 		else if (!enabled)
 			m_pNumberingMode->setToolTip(COptionsWindow::tr(
-				"Clear the search and sort by Priority in ascending order to enable drag reordering and numbering."));
+				"Select All sources and All settings, clear the search, and sort by Priority "
+				"in ascending order to enable drag reordering and numbering."));
 		else
 			m_pNumberingMode->setToolTip(COptionsWindow::tr(
 				"Keep existing priority numbers where possible and use empty gaps before renumbering. "
@@ -1358,6 +1712,111 @@ public:
 			kPriorityManagerOriginalRuleRole).toString().contains(search, Qt::CaseInsensitive);
 	}
 
+	QMap<int, QStringList> GetUsedRulePrioritySources(const QTreeWidgetItem* pExclude) const
+	{
+		QMap<int, QSet<QString> > sourceMap;
+		int editedSourceIndex = pExclude
+			? pExclude->data(kPriorityManagerPriorityColumn, kPriorityManagerSourceRole).toInt() : -1;
+		const PriorityManagerSource* editedSource = editedSourceIndex >= 0
+			&& editedSourceIndex < m_Sources.size() ? &m_Sources[editedSourceIndex] : NULL;
+		bool editedTemplateContext = editedSource
+			&& editedSource->kind == kPriorityManagerTemplateSource;
+		bool templateContext = editedTemplateContext
+			|| (!m_OriginTemplateKey.isEmpty()
+				&& (!editedSource || editedSource->kind == kPriorityManagerGlobalSource));
+		QString templateContextKey = editedTemplateContext ? editedSource->key : m_OriginTemplateKey;
+		QString contextBoxKey = editedSource && editedSource->kind == kPriorityManagerBoxSource
+			? editedSource->key : (editedTemplateContext ? QString() : m_OriginBoxKey);
+		QSet<QString> relevantTemplates;
+		auto addTemplates = [&relevantTemplates](const QSharedPointer<CSbieIni>& ini) {
+			QMap<QString, QString> names;
+			CSbieIni::CollectTemplateNames(ini, names);
+			for (auto it = names.constBegin(); it != names.constEnd(); ++it)
+				relevantTemplates.insert("template:" + it.value().toLower());
+		};
+		auto addApplicableTemplates = [&relevantTemplates](const QSharedPointer<CSbieIni>& ini) {
+			if (ini.isNull())
+				return;
+			foreach (const QString& name, ini->GetTemplates()) {
+				if (name.compare("GlobalSettings", Qt::CaseInsensitive) != 0)
+					relevantTemplates.insert("template:" + name.toLower());
+			}
+		};
+		if (m_pAPI && !templateContext)
+			addTemplates(m_pAPI->GetGlobalSettings());
+		if (m_pAPI && !contextBoxKey.isEmpty()) {
+			CSandBoxPtr pContextBox = m_pAPI->GetBoxByName(contextBoxKey.mid(4));
+			if (!pContextBox.isNull()) {
+				QSharedPointer<CSbieIni> contextIni = pContextBox;
+				addTemplates(contextIni);
+			}
+		}
+		if (templateContext) {
+			for (const PriorityManagerSource& source : m_Sources) {
+				if (source.key.compare(templateContextKey, Qt::CaseInsensitive) == 0) {
+					addApplicableTemplates(source.ini);
+					break;
+				}
+			}
+			relevantTemplates.insert(templateContextKey.toLower());
+		}
+		if (editedSource && editedSource->kind == kPriorityManagerTemplateSource)
+			relevantTemplates.insert(editedSource->key.toLower());
+
+		for (int row = 0; m_pTree && row < m_pTree->topLevelItemCount(); ++row) {
+			QTreeWidgetItem* pItem = m_pTree->topLevelItem(row);
+			if (!pItem || pItem == pExclude)
+				continue;
+
+			int type = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerTypeRole).toInt();
+			if (type != COptionsWindow::eProcess && type != COptionsWindow::ePath
+				&& type != COptionsWindow::eText && type != COptionsWindow::eParent)
+				continue;
+
+			int sourceIndex = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerSourceRole).toInt();
+			if (sourceIndex < 0 || sourceIndex >= m_Sources.size())
+				continue;
+			const PriorityManagerSource& source = m_Sources[sourceIndex];
+			bool includeSource = source.kind == kPriorityManagerGlobalSource;
+			if (source.kind == kPriorityManagerTemplateSource)
+				includeSource = relevantTemplates.contains(source.key.toLower());
+			else if (source.kind == kPriorityManagerBoxSource) {
+				bool currentBox = !contextBoxKey.isEmpty()
+					&& source.key.compare(contextBoxKey, Qt::CaseInsensitive) == 0;
+				if (currentBox)
+					includeSource = true;
+				else if (!templateContext && m_pAPI) {
+					CSandBoxPtr pSourceBox = m_pAPI->GetBoxByName(source.ini->GetName());
+					includeSource = !pSourceBox.isNull() && pSourceBox->IsEnabled();
+				}
+			}
+			if (!includeSource)
+				continue;
+
+			int priority = -1;
+			if (!ParseRulePriorityValue(
+				pItem->data(kPriorityManagerPriorityColumn, Qt::UserRole).toString(), &priority))
+				continue;
+			QString sourceName = source.kind == kPriorityManagerGlobalSource
+				? COptionsWindow::tr("global settings") : source.toolTip;
+			QString ruleKind = pItem->data(kPriorityManagerPriorityColumn,
+				kPriorityManagerBreakoutRole).toBool()
+				? COptionsWindow::tr("breakout") : COptionsWindow::tr("force");
+			QString state = pItem->data(kPriorityManagerStateColumn, Qt::UserRole).toBool()
+				? COptionsWindow::tr("disabled") : COptionsWindow::tr("enabled");
+			sourceMap[priority].insert(COptionsWindow::tr("%1, %2, %3")
+				.arg(sourceName).arg(ruleKind).arg(state));
+		}
+
+		QMap<int, QStringList> result;
+		for (auto it = sourceMap.constBegin(); it != sourceMap.constEnd(); ++it) {
+			QStringList sources = it.value().values();
+			sources.sort(Qt::CaseInsensitive);
+			result.insert(it.key(), sources);
+		}
+		return result;
+	}
+
 	void ApplyVisibility()
 	{
 		if (!m_pTree)
@@ -1365,16 +1824,57 @@ public:
 		bool showDisabled = m_pShowDisabled->isChecked();
 		bool showGlobal = m_pShowGlobal->isChecked();
 		bool showTemplates = m_pShowTemplates->isChecked();
-		for (int row = 0; row < m_pTree->topLevelItemCount(); ++row) {
+		bool showOtherBoxes = m_pShowOtherBoxes->isChecked();
+		bool sourceFilterValid = IsSourceFilterSelectionValid();
+		QString sourceFilterKey = sourceFilterValid
+			? m_pSourceFilter->currentData().toString() : QString();
+		QString settingFilter = m_pSettingFilter->currentData().toString();
+		int disabledCount = 0;
+		int globalCount = 0;
+		int templateCount = 0;
+		int visibleCount = 0;
+		int totalCount = m_pTree->topLevelItemCount();
+		for (int row = 0; row < totalCount; ++row) {
 			QTreeWidgetItem* pItem = m_pTree->topLevelItem(row);
 			int sourceKind = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerSourceKindRole).toInt();
+			int sourceIndex = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerSourceRole).toInt();
 			bool disabled = pItem->data(kPriorityManagerStateColumn, Qt::UserRole).toBool();
+			bool sourceMatch = sourceFilterValid;
+			if (sourceMatch && !sourceFilterKey.isEmpty())
+				sourceMatch = sourceIndex >= 0 && sourceIndex < m_Sources.size()
+					&& m_Sources[sourceIndex].key.compare(sourceFilterKey, Qt::CaseInsensitive) == 0;
+			bool breakout = pItem->data(kPriorityManagerPriorityColumn,
+				kPriorityManagerBreakoutRole).toBool();
+			QString setting = PriorityManagerBaseSetting(pItem->data(
+				kPriorityManagerPriorityColumn, kPriorityManagerSettingRole).toString());
+			bool settingMatch = settingFilter == QStringLiteral("all")
+				|| (settingFilter == QStringLiteral("force") && !breakout)
+				|| (settingFilter == QStringLiteral("breakout") && breakout)
+				|| setting.compare(settingFilter, Qt::CaseInsensitive) == 0;
 			bool hidden = (disabled && !showDisabled)
 				|| (sourceKind == kPriorityManagerGlobalSource && !showGlobal)
 				|| (sourceKind == kPriorityManagerTemplateSource && !showTemplates)
+				|| (!m_OriginBoxKey.isEmpty() && !showOtherBoxes
+					&& sourceKind == kPriorityManagerBoxSource
+					&& sourceIndex >= 0 && sourceIndex < m_Sources.size()
+					&& m_Sources[sourceIndex].key.compare(m_OriginBoxKey, Qt::CaseInsensitive) != 0)
+				|| !sourceMatch || !settingMatch
 				|| !MatchesSearch(pItem);
 			pItem->setHidden(hidden);
+			if (!hidden) {
+				++visibleCount;
+				if (disabled)
+					++disabledCount;
+				if (sourceKind == kPriorityManagerGlobalSource)
+					++globalCount;
+				if (sourceKind == kPriorityManagerTemplateSource)
+					++templateCount;
+			}
 		}
+		m_pShowDisabled->setText(COptionsWindow::tr("Disabled (%1)").arg(disabledCount));
+		m_pShowGlobal->setText(COptionsWindow::tr("Global (%1)").arg(globalCount));
+		m_pShowTemplates->setText(COptionsWindow::tr("Templates (%1)").arg(templateCount));
+		m_pRuleCount->setText(COptionsWindow::tr("Rules: %1 / %2").arg(visibleCount).arg(totalCount));
 		UpdateReorderingState();
 	}
 
@@ -1392,7 +1892,7 @@ public:
 		if (!RestorePendingRevert())
 			return;
 
-		m_Sources = BuildPriorityManagerSources(m_pAPI);
+		RefreshSources();
 		Populate();
 		UpdateRevertButton();
 		UpdateApplyButton();
@@ -1400,16 +1900,21 @@ public:
 
 	void OpenSource(QTreeWidgetItem* pItem)
 	{
-		if (!pItem || !m_pAPI || !theGUI)
+		if (!pItem)
 			return;
 		int sourceIndex = pItem->data(kPriorityManagerPriorityColumn,
 			kPriorityManagerSourceRole).toInt();
 		if (sourceIndex < 0 || sourceIndex >= m_Sources.size())
 			return;
 
-		const PriorityManagerSource& source = m_Sources[sourceIndex];
-		bool breakout = pItem->data(kPriorityManagerPriorityColumn,
-			kPriorityManagerBreakoutRole).toBool();
+		OpenSource(m_Sources[sourceIndex], pItem->data(kPriorityManagerPriorityColumn,
+			kPriorityManagerBreakoutRole).toBool());
+	}
+
+	void OpenSource(const PriorityManagerSource& source, bool breakout)
+	{
+		if (!m_pAPI || !theGUI || source.ini.isNull())
+			return;
 
 		if (source.kind == kPriorityManagerBoxSource) {
 			CSandBoxPtr pBox = m_pAPI->GetBoxByName(source.ini->GetName());
@@ -1432,6 +1937,21 @@ public:
 		theGUI->OpenSettings("Edit");
 	}
 
+	void OpenTargetBoxOptions(const QString& targetBoxName, bool breakout)
+	{
+		if (!m_pAPI || !theGUI || targetBoxName.trimmed().isEmpty())
+			return;
+
+		CSandBoxPtr pBox = m_pAPI->GetBoxByName(targetBoxName.trimmed());
+		if (pBox.isNull() || !theGUI->GetBoxView())
+			return;
+
+		theGUI->GetBoxView()->ShowOptions(pBox);
+		QSharedPointer<CSandBoxPlus> pBoxPlus = pBox.objectCast<CSandBoxPlus>();
+		if (!pBoxPlus.isNull() && pBoxPlus->m_pOptionsWnd)
+			pBoxPlus->m_pOptionsWnd->showForceBreakoutTab(breakout);
+	}
+
 	void ShowContextMenu(const QPoint& pos)
 	{
 		QTreeWidgetItem* pItem = m_pTree->itemAt(pos);
@@ -1445,6 +1965,17 @@ public:
 		if (column < 0)
 			column = kPriorityManagerPriorityColumn;
 		m_pTree->setCurrentItem(pItem, column, QItemSelectionModel::NoUpdate);
+		int clickedSourceIndex = pItem->data(kPriorityManagerPriorityColumn,
+			kPriorityManagerSourceRole).toInt();
+		PriorityManagerSource clickedSource;
+		bool hasClickedSource = clickedSourceIndex >= 0 && clickedSourceIndex < m_Sources.size();
+		if (hasClickedSource)
+			clickedSource = m_Sources[clickedSourceIndex];
+		bool clickedBreakout = pItem->data(kPriorityManagerPriorityColumn,
+			kPriorityManagerBreakoutRole).toBool();
+		QString targetBoxName = pItem->data(kPriorityManagerScopeColumn, Qt::UserRole).toString().trimmed();
+		CSandBoxPtr pTargetBox = targetBoxName.isEmpty() || !m_pAPI
+			? CSandBoxPtr() : m_pAPI->GetBoxByName(targetBoxName);
 
 		bool hasWritable = false;
 		bool hasPriority = false;
@@ -1513,7 +2044,333 @@ public:
 		connect(pUnsetScope, &QAction::triggered, this,
 			[this]() { ApplyContextAction(kPriorityManagerUnsetScope); });
 
+		QMenu* pPrioritize = menu.addMenu(COptionsWindow::tr("Prioritize over"));
+		QAction* pPrioritizeForce = pPrioritize->addAction(COptionsWindow::tr("Force"));
+		QAction* pPrioritizeBreakout = pPrioritize->addAction(COptionsWindow::tr("Breakout"));
+		pPrioritizeForce->setEnabled(CanPrioritizeSelection(false));
+		pPrioritizeBreakout->setEnabled(CanPrioritizeSelection(true));
+		pPrioritize->setToolTip(COptionsWindow::tr(
+			"Prioritize selected enabled box-local rules over the chosen rule class in the same box."));
+		connect(pPrioritizeForce, &QAction::triggered, this,
+			[this]() { PrioritizeSelection(false); });
+		connect(pPrioritizeBreakout, &QAction::triggered, this,
+			[this]() { PrioritizeSelection(true); });
+
+		menu.addSeparator();
+		QAction* pAddRemoveRule = menu.addAction(COptionsWindow::tr("Add/Remove rule"));
+		pAddRemoveRule->setEnabled(hasClickedSource);
+		pAddRemoveRule->setToolTip(COptionsWindow::tr(
+			"Open the rule's owning source, as when double-clicking the Source cell."));
+		connect(pAddRemoveRule, &QAction::triggered, this,
+			[this, clickedSource, clickedBreakout, hasClickedSource]() {
+				if (hasClickedSource)
+					OpenSource(clickedSource, clickedBreakout);
+			});
+
+		if (column == kPriorityManagerScopeColumn) {
+			QAction* pOpenSandbox = menu.addAction(COptionsWindow::tr("Open sandbox"));
+			pOpenSandbox->setEnabled(!pTargetBox.isNull());
+			pOpenSandbox->setToolTip(COptionsWindow::tr(
+				"Open the TargetBox sandbox on the matching Force or Breakout rule page."));
+			connect(pOpenSandbox, &QAction::triggered, this,
+				[this, targetBoxName, clickedBreakout]() {
+					OpenTargetBoxOptions(targetBoxName, clickedBreakout);
+				});
+		}
+
 		menu.exec(m_pTree->viewport()->mapToGlobal(pos));
+	}
+
+	bool SourceExtensionsEnabledForBox(int sourceIndex, bool breakout) const
+	{
+		if (sourceIndex < 0 || sourceIndex >= m_Sources.size())
+			return false;
+		const PriorityManagerSource& source = m_Sources[sourceIndex];
+		if (source.kind != kPriorityManagerBoxSource || !source.writable
+			|| !source.key.startsWith("box:", Qt::CaseInsensitive))
+			return false;
+		QString boxScope = source.key.mid(4).toLower();
+		const QSet<QString>& scopes = breakout ? source.breakoutScopes : source.forceScopes;
+		const QSet<QString>& disabledScopes = breakout
+			? source.breakoutExtensionDisabledScopes : source.forceExtensionDisabledScopes;
+		return scopes.contains(boxScope) && !disabledScopes.contains(boxScope);
+	}
+
+	bool CanPrioritizeSelection(bool overBreakout) const
+	{
+		QVector<QTreeWidgetItem*> selected = m_pTree->selectedItems();
+		for (QTreeWidgetItem* pItem : selected) {
+			int sourceIndex = pItem->data(kPriorityManagerPriorityColumn,
+				kPriorityManagerSourceRole).toInt();
+			if (pItem->isHidden()
+				|| !RuleTypeSupportsPriority(pItem->data(kPriorityManagerPriorityColumn,
+					kPriorityManagerTypeRole).toInt())
+				|| !SourceExtensionsEnabledForBox(sourceIndex,
+					pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerBreakoutRole).toBool())
+				|| !SourceExtensionsEnabledForBox(sourceIndex, overBreakout))
+				continue;
+
+			for (int row = 0; row < m_pTree->topLevelItemCount(); ++row) {
+				QTreeWidgetItem* pTarget = m_pTree->topLevelItem(row);
+				if ((selected.contains(pTarget) && !pTarget->isHidden())
+					|| pTarget->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerSourceRole).toInt() != sourceIndex
+					|| pTarget->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerBreakoutRole).toBool() != overBreakout
+					|| !RuleTypeSupportsPriority(pTarget->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerTypeRole).toInt()))
+					continue;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void PrioritizeSelection(bool overBreakout)
+	{
+		struct PriorityGroup
+		{
+			int priority = -1;
+			QVector<QTreeWidgetItem*> items;
+		};
+		struct PlannedPriority
+		{
+			QTreeWidgetItem* item = NULL;
+			int priority = -1;
+		};
+
+		QVector<QTreeWidgetItem*> selected = m_pTree->selectedItems();
+		QVector<QTreeWidgetItem*> actionSelected;
+		QMap<int, QVector<QTreeWidgetItem*> > selectedBySource;
+		for (QTreeWidgetItem* pItem : selected) {
+			int sourceIndex = pItem->data(kPriorityManagerPriorityColumn,
+				kPriorityManagerSourceRole).toInt();
+			if (pItem->isHidden()
+				|| !RuleTypeSupportsPriority(pItem->data(kPriorityManagerPriorityColumn,
+					kPriorityManagerTypeRole).toInt())
+				|| !SourceExtensionsEnabledForBox(sourceIndex,
+					pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerBreakoutRole).toBool())
+				|| !SourceExtensionsEnabledForBox(sourceIndex, overBreakout))
+				continue;
+			actionSelected.append(pItem);
+			selectedBySource[sourceIndex].append(pItem);
+		}
+
+		QVector<PlannedPriority> plan;
+		for (auto selectedGroup = selectedBySource.constBegin();
+			selectedGroup != selectedBySource.constEnd(); ++selectedGroup) {
+			const int sourceIndex = selectedGroup.key();
+			QVector<QTreeWidgetItem*> selectedItems = selectedGroup.value();
+			QVector<QTreeWidgetItem*> targetItems;
+
+			auto priorityValue = [](QTreeWidgetItem* pItem, bool* valid) {
+				QString value = pItem->data(kPriorityManagerPriorityColumn, Qt::UserRole).toString().trimmed();
+				if (value.isEmpty())
+					return -1;
+				qlonglong parsed = -1;
+				if (!ParseRulePriorityValue(value, &parsed)) {
+					*valid = false;
+					return -1;
+				}
+				return static_cast<int>(parsed);
+			};
+			bool valuesValid = true;
+			auto priorityLess = [&](QTreeWidgetItem* pLeft, QTreeWidgetItem* pRight) {
+				int leftPriority = priorityValue(pLeft, &valuesValid);
+				int rightPriority = priorityValue(pRight, &valuesValid);
+				if (leftPriority < 0 || rightPriority < 0) {
+					if ((leftPriority < 0) != (rightPriority < 0))
+						return leftPriority >= 0;
+				}
+				else if (leftPriority != rightPriority)
+					return leftPriority < rightPriority;
+				return pLeft->data(kPriorityManagerPriorityColumn,
+					kPriorityManagerSequenceRole).toInt()
+					< pRight->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerSequenceRole).toInt();
+			};
+			std::stable_sort(selectedItems.begin(), selectedItems.end(), priorityLess);
+			if (!valuesValid) {
+				QMessageBox::warning(this, COptionsWindow::tr("Sandboxie-Plus"),
+					COptionsWindow::tr("A selected rule has an invalid priority. No priorities were changed."));
+				return;
+			}
+
+			QMap<int, QVector<QTreeWidgetItem*> > unselectedByPriority;
+			for (int row = 0; row < m_pTree->topLevelItemCount(); ++row) {
+				QTreeWidgetItem* pItem = m_pTree->topLevelItem(row);
+				if (pItem->data(kPriorityManagerPriorityColumn,
+					kPriorityManagerSourceRole).toInt() != sourceIndex
+					|| !RuleTypeSupportsPriority(pItem->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerTypeRole).toInt()))
+					continue;
+
+				if (!actionSelected.contains(pItem)
+					&& pItem->data(kPriorityManagerPriorityColumn,
+						kPriorityManagerBreakoutRole).toBool() == overBreakout)
+					targetItems.append(pItem);
+
+				if (actionSelected.contains(pItem))
+					continue;
+				int priority = priorityValue(pItem, &valuesValid);
+				if (priority >= 0)
+					unselectedByPriority[priority].append(pItem);
+			}
+			if (!valuesValid) {
+				QMessageBox::warning(this, COptionsWindow::tr("Sandboxie-Plus"),
+					COptionsWindow::tr("A local rule has an invalid priority. No priorities were changed."));
+				return;
+			}
+			if (targetItems.isEmpty())
+				continue;
+
+			bool allSelectedExplicit = true;
+			int selectedMaximum = -1;
+			for (QTreeWidgetItem* pItem : selectedItems) {
+				int priority = priorityValue(pItem, &valuesValid);
+				if (priority < 0)
+					allSelectedExplicit = false;
+				else
+					selectedMaximum = qMax(selectedMaximum, priority);
+			}
+			int targetMinimum = static_cast<int>(kPriorityManagerMax) + 1;
+			for (QTreeWidgetItem* pItem : targetItems) {
+				int priority = priorityValue(pItem, &valuesValid);
+				if (priority >= 0)
+					targetMinimum = qMin(targetMinimum, priority);
+			}
+			if (allSelectedExplicit && selectedMaximum < targetMinimum)
+				continue;
+
+			QVector<PriorityGroup> priorityGroups;
+			auto appendGroup = [](QVector<PriorityGroup>& groups, QTreeWidgetItem* pItem,
+				int priority) {
+				if (groups.isEmpty() || groups.last().priority != priority) {
+					PriorityGroup group;
+					group.priority = priority;
+					groups.append(group);
+				}
+				groups.last().items.append(pItem);
+			};
+			int lastSelectedPriority = -1;
+			for (QTreeWidgetItem* pItem : selectedItems) {
+				int priority = priorityValue(pItem, &valuesValid);
+				if (priority < 0) {
+					int unsetPriority = lastSelectedPriority < 0 ? 0
+						: lastSelectedPriority < kPriorityManagerMax
+							? lastSelectedPriority + 1
+							: static_cast<int>(kPriorityManagerMax) + 1;
+					appendGroup(priorityGroups, pItem, unsetPriority);
+				}
+				else {
+					appendGroup(priorityGroups, pItem, priority);
+					lastSelectedPriority = priority;
+				}
+			}
+			if (!valuesValid) {
+				QMessageBox::warning(this, COptionsWindow::tr("Sandboxie-Plus"),
+					COptionsWindow::tr("A selected rule has an invalid priority. No priorities were changed."));
+				return;
+			}
+
+			QVector<int> selectedPriorities;
+			for (const PriorityGroup& group : priorityGroups)
+				selectedPriorities.append(group.priority);
+			QVector<int> assignedPriorities;
+			int selectedUpper = qMin(static_cast<int>(kPriorityManagerMax), targetMinimum - 1);
+			QSet<int> occupiedPriorities;
+			for (auto it = unselectedByPriority.constBegin();
+				it != unselectedByPriority.constEnd(); ++it)
+				occupiedPriorities.insert(it.key());
+			if (BuildPriorityAssignmentInAvailableSlots(selectedPriorities, 0,
+				selectedUpper, occupiedPriorities, &assignedPriorities)) {
+				for (int groupIndex = 0; groupIndex < priorityGroups.size(); ++groupIndex) {
+					for (QTreeWidgetItem* pItem : priorityGroups[groupIndex].items) {
+						int oldPriority = priorityValue(pItem, &valuesValid);
+						if (oldPriority == assignedPriorities[groupIndex])
+							continue;
+						PlannedPriority change;
+						change.item = pItem;
+						change.priority = assignedPriorities[groupIndex];
+						plan.append(change);
+					}
+				}
+				continue;
+			}
+
+			if (targetMinimum > kPriorityManagerMax) {
+				QMessageBox::warning(this, COptionsWindow::tr("Sandboxie-Plus"),
+					COptionsWindow::tr("The selected rules cannot be prioritized ahead of this class within the 0 to 9999 range. No priorities were changed."));
+				return;
+			}
+
+			QVector<int> prefixPriorities;
+			QVector<int> suffixPriorities;
+			QSet<int> prefixPrioritySet;
+			for (auto it = unselectedByPriority.constBegin();
+				it != unselectedByPriority.constEnd(); ++it) {
+				if (it.key() < targetMinimum) {
+					prefixPriorities.append(it.key());
+					prefixPrioritySet.insert(it.key());
+				}
+				else
+					suffixPriorities.append(it.key());
+			}
+
+			int targetFloor = qMax(targetMinimum,
+				prefixPriorities.size() + selectedPriorities.size());
+			QVector<int> suffixAssignments;
+			if (targetFloor > kPriorityManagerMax
+				|| !BuildPriorityAssignmentInAvailableSlots(selectedPriorities, 0,
+					targetFloor - 1, prefixPrioritySet, &assignedPriorities)
+				|| !BuildPriorityAssignmentInRange(suffixPriorities, targetFloor,
+					static_cast<int>(kPriorityManagerMax), &suffixAssignments)) {
+				QMessageBox::warning(this, COptionsWindow::tr("Sandboxie-Plus"),
+					COptionsWindow::tr("The selected rules cannot be prioritized ahead of this class within the 0 to 9999 range. No priorities were changed."));
+				return;
+			}
+			for (int groupIndex = 0; groupIndex < priorityGroups.size(); ++groupIndex) {
+				for (QTreeWidgetItem* pItem : priorityGroups[groupIndex].items) {
+					int oldPriority = priorityValue(pItem, &valuesValid);
+					if (oldPriority == assignedPriorities[groupIndex])
+						continue;
+					PlannedPriority change;
+					change.item = pItem;
+					change.priority = assignedPriorities[groupIndex];
+					plan.append(change);
+				}
+			}
+			int suffixIndex = 0;
+			for (auto it = unselectedByPriority.constBegin();
+				it != unselectedByPriority.constEnd(); ++it) {
+				if (it.key() < targetMinimum)
+					continue;
+				int assignedPriority = suffixAssignments[suffixIndex];
+				for (QTreeWidgetItem* pItem : it.value()) {
+					if (it.key() == assignedPriority)
+						continue;
+					PlannedPriority change;
+					change.item = pItem;
+					change.priority = assignedPriority;
+					plan.append(change);
+				}
+				++suffixIndex;
+			}
+		}
+
+		if (plan.isEmpty())
+			return;
+		{
+			QSignalBlocker blocker(m_pTree);
+			for (const PlannedPriority& change : plan) {
+				change.item->setData(kPriorityManagerPriorityColumn, Qt::UserRole,
+					QString::number(change.priority));
+				UpdatePriorityItem(change.item);
+			}
+		}
+		RecomputeConflicts();
+		ApplyVisibility();
+		UpdateApplyButton();
 	}
 
 	void ApplyContextAction(PriorityManagerContextAction action)
@@ -1633,6 +2490,9 @@ public:
 			if (ParseRulePriorityValue(priority, &parsed))
 				flags |= Qt::ItemIsDragEnabled;
 		}
+		if (pItem->flags() == flags)
+			return;
+		QSignalBlocker blocker(m_pTree);
 		pItem->setFlags(flags);
 	}
 
@@ -1805,88 +2665,14 @@ public:
 	bool ApplyKeepPriorities(const QVector<QTreeWidgetItem*>& items,
 		const QVector<int>& oldPriorities)
 	{
-		if (items.isEmpty())
-			return true;
-
-		const int count = items.size();
-		QVector<int> lengths(count, 1);
-		QVector<int> previous(count, -1);
-		int bestIndex = 0;
-		for (int index = 0; index < count; ++index) {
-			for (int before = 0; before < index; ++before) {
-				if (oldPriorities[before] < oldPriorities[index]
-					&& lengths[before] + 1 > lengths[index]) {
-					lengths[index] = lengths[before] + 1;
-					previous[index] = before;
-				}
-			}
-			if (lengths[index] > lengths[bestIndex])
-				bestIndex = index;
-		}
-
-		QVector<bool> anchor(count, false);
-		for (int index = bestIndex; index >= 0; index = previous[index])
-			anchor[index] = true;
-
-		QVector<int> assigned(count, -1);
-		for (int index = 0; index < count; ++index) {
-			if (anchor[index])
-				assigned[index] = oldPriorities[index];
-		}
-
-		auto assignGap = [&](int first, int last, int lower, int upper) {
-			if (first >= last)
-				return true;
-			if (upper < lower || last - first > upper - lower + 1)
-				return false;
-			int previousValue = lower - 1;
-			for (int index = first; index < last; ++index) {
-				int minimum = previousValue + 1;
-				int maximum = upper - (last - index - 1);
-				int value = oldPriorities[index];
-				if (value < minimum)
-					value = minimum;
-				else if (value > maximum)
-					value = maximum;
-				assigned[index] = value;
-				previousValue = value;
-			}
-			return true;
-		};
-
-		bool gapsFit = true;
-		int previousAnchor = -1;
-		for (int index = 0; index <= count; ++index) {
-			if (index < count && !anchor[index])
-				continue;
-			int nextAnchor = index < count ? index : -1;
-			int lower = previousAnchor >= 0 ? assigned[previousAnchor] + 1 : 0;
-			int upper = nextAnchor >= 0 ? assigned[nextAnchor] - 1 : static_cast<int>(kPriorityManagerMax);
-			int first = previousAnchor + 1;
-			if (!assignGap(first, index, lower, upper)) {
-				gapsFit = false;
-				break;
-			}
-			if (nextAnchor >= 0)
-				previousAnchor = nextAnchor;
-		}
-		if (!gapsFit) {
-			int previousValue = -1;
-			for (int index = 0; index < count; ++index) {
-				int minimum = previousValue + 1;
-				int maximum = static_cast<int>(kPriorityManagerMax) - (count - index - 1);
-				int value = oldPriorities[index];
-				if (value < minimum)
-					value = minimum;
-				else if (value > maximum)
-					value = maximum;
-				assigned[index] = value;
-				previousValue = value;
-			}
-		}
+		if (items.size() != oldPriorities.size())
+			return false;
+		QVector<int> assigned;
+		if (!BuildPriorityAssignment(oldPriorities, &assigned))
+			return false;
 
 		QSignalBlocker blocker(m_pTree);
-		for (int index = 0; index < count; ++index) {
+		for (int index = 0; index < items.size(); ++index) {
 			QString value = QString::number(assigned[index]);
 			items[index]->setData(kPriorityManagerPriorityColumn, Qt::UserRole, value);
 			items[index]->setText(kPriorityManagerPriorityColumn, value);
@@ -2413,7 +3199,9 @@ public:
 		m_RevertUndoEntries = undoEntries;
 		m_RevertAppliedEntries = entries;
 		m_RevertApplied = true;
+		QString selectedSourceKey = SelectedSourceFilterKey();
 		m_Sources = sources;
+		PopulateSourceFilter(selectedSourceKey);
 		Populate();
 		UpdateRevertButton();
 		if (m_RefreshMain)
@@ -2598,7 +3386,7 @@ public:
 			m_RevertUndoEntries.clear();
 			m_RevertAppliedEntries.clear();
 		}
-		m_Sources = BuildPriorityManagerSources(m_pAPI);
+		RefreshSources();
 		Populate();
 		UpdateRevertButton();
 		UpdateApplyButton();
@@ -2620,17 +3408,24 @@ public:
 	QVector<PriorityManagerSource> m_Sources;
 	QLabel* m_pInfo = NULL;
 	QLabel* m_pConflictLabel = NULL;
+	QLabel* m_pRuleCount = NULL;
+	QComboBox* m_pSourceFilter = NULL;
+	QComboBox* m_pSettingFilter = NULL;
 	QLineEdit* m_pSearch = NULL;
 	QCheckBox* m_pShowDisabled = NULL;
 	QCheckBox* m_pShowGlobal = NULL;
 	QCheckBox* m_pShowTemplates = NULL;
+	QCheckBox* m_pShowOtherBoxes = NULL;
 	QComboBox* m_pNumberingMode = NULL;
 	QPushButton* m_pRevert = NULL;
 	QPushButton* m_pApply = NULL;
 	QPushButton* m_pRefresh = NULL;
+	QToolButton* m_pOptions = NULL;
 	QVector<PriorityManagerBackupEntry> m_RevertUndoEntries;
 	QVector<PriorityManagerBackupEntry> m_RevertAppliedEntries;
 	QString m_InfoText;
+	QString m_OriginBoxKey;
+	QString m_OriginTemplateKey;
 	int m_ConflictCount = 0;
 	int m_WarningCount = 0;
 	int m_NumberingMode = 0;
@@ -2650,6 +3445,16 @@ void COptionsWindow::OnManageForceBreakoutPriority()
 		return;
 
 	CSbieAPI* pAPI = m_pBox->GetAPI();
+	QString originBoxKey;
+	QString originTemplateKey;
+	QSharedPointer<CSandBoxPlus> pOriginBox = m_pBox.objectCast<CSandBoxPlus>();
+	if (!m_Template && !pOriginBox.isNull())
+		originBoxKey = "box:" + pOriginBox->GetName().trimmed().toLower();
+	else if (m_Template) {
+		QString templateName = m_pBox->GetName().mid(9).trimmed();
+		if (!templateName.isEmpty())
+			originTemplateKey = "template:" + templateName.toLower();
+	}
 	QPointer<COptionsWindow> pOwner = this;
 	auto collectOptionsWindows = [pAPI, pOwner]() {
 		QList<COptionsWindow*> options;
@@ -2692,6 +3497,7 @@ void COptionsWindow::OnManageForceBreakoutPriority()
 	}
 	if (g_pForceBreakoutPriorityDialog) {
 		g_pForceBreakoutPriorityDialog->SetCallbacks(hasPendingChanges, refreshMain);
+		g_pForceBreakoutPriorityDialog->SetOriginContext(originBoxKey, originTemplateKey);
 		g_pForceBreakoutPriorityDialog->show();
 		g_pForceBreakoutPriorityDialog->raise();
 		g_pForceBreakoutPriorityDialog->activateWindow();
@@ -2699,7 +3505,7 @@ void COptionsWindow::OnManageForceBreakoutPriority()
 	}
 
 	CForceBreakoutPriorityDialog* pDialog = new CForceBreakoutPriorityDialog(pAPI, NULL,
-		hasPendingChanges, refreshMain);
+		hasPendingChanges, refreshMain, originBoxKey, originTemplateKey);
 	g_pForceBreakoutPriorityDialog = pDialog;
 	pDialog->setAttribute(Qt::WA_DeleteOnClose);
 	if (theGUI)

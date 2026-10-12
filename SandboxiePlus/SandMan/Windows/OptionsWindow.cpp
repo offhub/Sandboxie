@@ -39,6 +39,78 @@ static bool ParseRulePriorityValue(const QString& text, int* outValue)
 	return true;
 }
 
+static QList<int> BuildRulePriorityValues(const QSet<int>& usedPriorities, int currentPriority)
+{
+	QSet<int> values;
+	for (int priority = 0; priority <= 99; ++priority)
+		values.insert(priority);
+
+	auto addNeighborhood = [&values](int priority) {
+		if (priority <= 99 || priority > kRulePriorityMax)
+			return;
+		for (int value = qMax(0, priority - 5);
+			value <= qMin(kRulePriorityMax, priority + 5); ++value)
+			values.insert(value);
+	};
+	for (int priority : usedPriorities)
+		addNeighborhood(priority);
+	addNeighborhood(currentPriority);
+
+	QList<int> result = values.values();
+	std::sort(result.begin(), result.end());
+	return result;
+}
+
+static void MarkUsedRulePriorityItems(QComboBox* combo,
+	const QMap<int, QStringList>& usedPrioritySources, const QString& inUseMarker,
+	const QString& inUseFormat, const QString& usedByFormat)
+{
+	if (!combo)
+		return;
+	QStandardItemModel* model = qobject_cast<QStandardItemModel*>(combo->model());
+	if (!model)
+		return;
+
+	for (int row = 0; row < model->rowCount(); ++row) {
+		QStandardItem* item = model->item(row);
+		if (!item)
+			continue;
+		bool ok = false;
+		int value = item->data(Qt::UserRole).toString().toInt(&ok);
+		if (!ok || value < 0 || !usedPrioritySources.contains(value))
+			continue;
+		if (!item->text().contains(inUseMarker, Qt::CaseInsensitive))
+			item->setText(inUseFormat.arg(item->text()));
+		item->setEnabled(false);
+		QStringList sources = usedPrioritySources.value(value);
+		if (!sources.isEmpty())
+			item->setToolTip(usedByFormat.arg(sources.join("\n")));
+	}
+}
+
+static void SetupWideDropdown(QComboBox* combo)
+{
+	if (!combo)
+		return;
+
+	combo->setSizeAdjustPolicy(QComboBox::AdjustToContentsOnFirstShow);
+	if (combo->view())
+		combo->view()->setTextElideMode(Qt::ElideNone);
+
+	QFontMetrics fm(combo->font());
+	int maxTextWidth = 0;
+	for (int i = 0; i < combo->count(); ++i)
+		maxTextWidth = qMax(maxTextWidth, fm.horizontalAdvance(combo->itemText(i)));
+
+	const int padding = fm.horizontalAdvance(QStringLiteral("WWWW"));
+	const int viewPadding = fm.horizontalAdvance(QStringLiteral("WW"));
+	const int minWidth = qMax(combo->minimumSizeHint().width(), maxTextWidth + padding);
+
+	combo->setMinimumWidth(minWidth);
+	if (combo->view())
+		combo->view()->setMinimumWidth(minWidth + viewPadding);
+}
+
 static bool ParseRecursiveUiSpec(const QString& rawValue, QString* pDepthValue, bool* pAnchorFromLast, bool* pHasExplicitAnchor)
 {
 	QString value = rawValue.trimmed();
@@ -417,28 +489,6 @@ public:
 			});
 		};
 
-		auto setupWideDropdown = [](QComboBox* combo) {
-			if (!combo)
-				return;
-
-			combo->setSizeAdjustPolicy(QComboBox::AdjustToContentsOnFirstShow);
-			if (combo->view())
-				combo->view()->setTextElideMode(Qt::ElideNone);
-
-			QFontMetrics fm(combo->font());
-			int maxTextWidth = 0;
-			for (int i = 0; i < combo->count(); ++i)
-				maxTextWidth = qMax(maxTextWidth, fm.horizontalAdvance(combo->itemText(i)));
-
-			const int padding = fm.horizontalAdvance(QStringLiteral("WWWW"));
-			const int viewPadding = fm.horizontalAdvance(QStringLiteral("WW"));
-			const int minWidth = qMax(combo->minimumSizeHint().width(), maxTextWidth + padding);
-
-			combo->setMinimumWidth(minWidth);
-			if (combo->view())
-				combo->view()->setMinimumWidth(minWidth + viewPadding);
-		};
-
 		if (m_Column == 2) {
 			QComboBox* pBox = new QComboBox(parent);
 			pBox->setEditable(true);
@@ -451,42 +501,22 @@ public:
 			pBox->lineEdit()->setValidator(new QRegularExpressionValidator(rx, pBox));
 
 			QMap<int, QStringList> usedPrioritySources = m_pOptions->GetUsedRulePrioritySources(pItem);
-			QList<int> customPriorityValues;
-			for (auto it = usedPrioritySources.constBegin(); it != usedPrioritySources.constEnd(); ++it) {
-				if (it.key() > 99 && it.key() <= kRulePriorityMax)
-					customPriorityValues.append(it.key());
-			}
-			std::sort(customPriorityValues.begin(), customPriorityValues.end());
-			for (int value : customPriorityValues) {
+			QSet<int> usedPriorityValues;
+			for (auto it = usedPrioritySources.constBegin(); it != usedPrioritySources.constEnd(); ++it)
+				usedPriorityValues.insert(it.key());
+			int currentPriority = -1;
+			if (pItem)
+				ParseRulePriorityValue(pItem->data(2, Qt::UserRole).toString(), &currentPriority);
+			for (int value : BuildRulePriorityValues(usedPriorityValues, currentPriority)) {
 				QString valueText = QString::number(value);
 				if (pBox->findData(valueText) < 0)
 					pBox->addItem(valueText, valueText);
 			}
 
-			QStandardItemModel* pModel = qobject_cast<QStandardItemModel*>(pBox->model());
-			if (pModel) {
-				for (int row = 0; row < pModel->rowCount(); ++row) {
-					QStandardItem* pEntry = pModel->item(row);
-					if (!pEntry)
-						continue;
+			MarkUsedRulePriorityItems(pBox, usedPrioritySources, tr("(in use)"),
+				tr("%1 (in use)"), tr("Used by:\n%1"));
 
-					bool ok = false;
-					int value = pEntry->data(Qt::UserRole).toString().toInt(&ok);
-					if (!ok || value < 0)
-						continue;
-
-					if (usedPrioritySources.contains(value)) {
-						if (!pEntry->text().contains(tr("(in use)"), Qt::CaseInsensitive))
-							pEntry->setText(tr("%1 (in use)").arg(pEntry->text()));
-						pEntry->setEnabled(false);
-						QStringList sources = usedPrioritySources.value(value);
-						if (!sources.isEmpty())
-							pEntry->setToolTip(tr("Used by:\n%1").arg(sources.join("\n")));
-					}
-				}
-			}
-
-			setupWideDropdown(pBox);
+			SetupWideDropdown(pBox);
 			connectEditable(pBox);
 			return pBox;
 		}
@@ -494,7 +524,7 @@ public:
 		if (m_Column == 3) {
 			QComboBox* pBox = new QComboBox(parent);
 			pBox->setEditable(true);
-			setupWideDropdown(pBox);
+			SetupWideDropdown(pBox);
 			pBox->addItem(tr("Not set"), "-");
 			pBox->setItemData(0, tr("unlimited"), Qt::ToolTipRole);
 			pBox->addItem(RecursiveDisplayTextForValue("n"), "n");
@@ -523,7 +553,7 @@ public:
 					pBox->addItem(RecursiveDisplayTextForValue(valueText), valueText);
 			}
 
-			setupWideDropdown(pBox);
+			SetupWideDropdown(pBox);
 			QRegularExpression rx("^(?:-|[yYnN]|[0-9]+(?:\\s*-\\s*[0-9]+)?)(?:\\s*;\\s*(?:[Ff][Ii][Rr][Ss][Tt]|[Ll][Aa][Ss][Tt]))?$");
 			pBox->lineEdit()->setValidator(new QRegularExpressionValidator(rx, pBox));
 			connect(pBox, qOverload<int>(&QComboBox::currentIndexChanged), [pBox](int idx){
@@ -540,7 +570,7 @@ public:
 		if (m_Column == 4) {
 			QComboBox* pBox = new QComboBox(parent);
 			pBox->setEditable(true);
-			setupWideDropdown(pBox);
+			SetupWideDropdown(pBox);
 			pBox->addItem(tr("Not set"), "");
 			pBox->setItemData(0, tr("unsandboxed"), Qt::ToolTipRole);
 			QMap<QString, CSandBoxPtr> allBoxes = theAPI->GetAllBoxes();
@@ -562,7 +592,7 @@ public:
 				pBox->addItem(displayName, boxName);
 				pBox->setItemData(index, boxName, Qt::ToolTipRole);
 			}
-			setupWideDropdown(pBox);
+			SetupWideDropdown(pBox);
 			connectEditable(pBox);
 			return pBox;
 		}

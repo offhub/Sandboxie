@@ -388,6 +388,88 @@ static bool GetWildcardAnchor(const QString& baseRule, bool anchorFromLast, QStr
 	return true;
 }
 
+static QString AnnotateWildcardDepths(const QString& baseRule, bool anchorFromLast)
+{
+	QString rule = baseRule.trimmed();
+	if (rule.contains('/'))
+		return QString();
+	int lastSeparator = -1;
+	int anchorSeparator = -1;
+	int wildcardPosition = -1;
+	for (int index = 0; index < rule.length(); ++index) {
+		QChar ch = rule[index];
+		if (ch == '\\')
+			lastSeparator = index;
+		else if (ch == '*' || ch == '?') {
+			wildcardPosition = index;
+			anchorSeparator = lastSeparator;
+			if (!anchorFromLast)
+				break;
+		}
+	}
+	if (wildcardPosition < 0 || anchorSeparator < 0)
+		return QString();
+
+	QString annotated;
+	int componentStart = anchorSeparator + 1;
+	int depth = 0;
+	for (int index = componentStart; index <= rule.length(); ++index) {
+		if (index < rule.length() && rule[index] != '\\')
+			continue;
+		if (index > componentStart) {
+			annotated += rule.mid(componentStart, index - componentStart);
+			annotated += QString("(%1)").arg(depth++);
+		}
+		if (index < rule.length())
+			annotated += rule[index];
+		componentStart = index + 1;
+	}
+	return annotated.isEmpty() ? QString() : rule.left(anchorSeparator + 1) + annotated;
+}
+
+static bool IsRecursiveFolderRuleMissingTerminalWildcard(const QString& baseRule,
+	const QString& recursiveValue)
+{
+	QString normalized = NormalizeRecursiveExtensionValue(recursiveValue);
+	QString depthValue;
+	if (normalized.isEmpty() || !ParseRecursiveExtensionSpec(normalized,
+		&depthValue, nullptr, nullptr))
+		return false;
+	if (depthValue == "n" || depthValue == "0" || depthValue == "0-0")
+		return false;
+	if (depthValue != "y") {
+		if (depthValue.contains('-')) {
+			QStringList parts = depthValue.split('-', Qt::KeepEmptyParts);
+			if (parts.size() != 2 || parts[1].trimmed() == "0")
+				return false;
+		}
+		else {
+			bool ok = false;
+			int depth = depthValue.toInt(&ok);
+			if (!ok || depth <= 0)
+				return false;
+		}
+	}
+
+	QString rule = baseRule.trimmed();
+	if (rule.isEmpty())
+		return false;
+	while (!rule.isEmpty() && (rule.endsWith('\\') || rule.endsWith('/')))
+		rule.chop(1);
+	int componentStart = rule.length();
+	while (componentStart > 0 && rule[componentStart - 1] != '\\' && rule[componentStart - 1] != '/')
+		--componentStart;
+	QString terminalComponent = rule.mid(componentStart);
+	return !terminalComponent.endsWith('*') && !terminalComponent.endsWith('?');
+}
+
+static QString BuildRecursiveRuleAdvisory(const QString& baseRule)
+{
+	return QObject::tr("Advisory: the recursive folder rule \"%1\" does not end with a wildcard. "
+		"Review whether this pattern should apply to descendant folders. This does not mean the rule cannot match.")
+		.arg(baseRule.trimmed());
+}
+
 static QString BuildRecursiveTooltip(const QString& baseRule, const QString& recursiveValue)
 {
 	QString normalized = NormalizeRecursiveExtensionValue(recursiveValue);
@@ -420,6 +502,12 @@ static QString BuildRecursiveTooltip(const QString& baseRule, const QString& rec
 		if (!modeText.isEmpty())
 			modeText += "\n";
 		modeText += QObject::tr("Wildcard anchor (%1 wildcard): %2 (anchor folder depth is 0)").arg(anchorMode, anchor);
+		QString annotatedRule = AnnotateWildcardDepths(baseRule, anchorFromLast);
+		if (!annotatedRule.isEmpty()) {
+			modeText += "\n" + QObject::tr("Wildcard component offsets from the selected anchor (illustration only, not Recursive depths): %1")
+				.arg(annotatedRule);
+			modeText += "\n" + QObject::tr("Runtime Recursive depth starts at the anchor folder (depth 0); the first matched folder component is depth 1.");
+		}
 		if (hasExplicitAnchor)
 			modeText += "\n" + QObject::tr("Explicit anchor mode: %1").arg(anchorMode);
 		modeText += "\n" + QObject::tr("Wildcard operator: %1").arg(QString(wildcardChar));
@@ -435,6 +523,8 @@ static QString BuildRecursiveTooltip(const QString& baseRule, const QString& rec
 			modeText += "\n";
 		modeText += QObject::tr("Rule ends with '\\*': matching starts beyond the anchor folder, so the anchor folder itself is not matched. This is legacy behavior.");
 	}
+	if (IsRecursiveFolderRuleMissingTerminalWildcard(baseRule, recursiveValue))
+		modeText += "\n" + BuildRecursiveRuleAdvisory(baseRule);
 
 	return modeText;
 }
@@ -594,6 +684,23 @@ static RuleExtensionsUi ParseRuleExtensionsForUi(const QString& rule)
 	}
 
 	return out;
+}
+
+static bool HasRecursiveRuleEdits(const QString& originalRule, const QString& currentBaseRule,
+	const QString& currentRecursive)
+{
+	RuleExtensionsUi original = ParseRuleExtensionsForUi(originalRule);
+	return original.baseRule.trimmed() != currentBaseRule.trimmed()
+		|| NormalizeRecursiveExtensionValue(original.recursive)
+			!= NormalizeRecursiveExtensionValue(currentRecursive);
+}
+
+static void WarnRecursiveFolderRuleEdit(QWidget* parent, const QString& baseRule)
+{
+	QMessageBox::warning(parent, QObject::tr("Sandboxie-Plus"),
+		QObject::tr("The recursive folder rule \"%1\" does not end with a wildcard. "
+			"Review whether this pattern and its recursive setting are intended. This advisory does not mean the rule cannot match.")
+			.arg(baseRule.trimmed()));
 }
 
 static void ApplyRuleExtensionsToItem(QTreeWidgetItem* pItem, bool breakoutTree, int type, const RuleExtensionsUi& ext, bool showValues)
@@ -1331,6 +1438,15 @@ void COptionsWindow::OnForcedChanged(QTreeWidgetItem *pItem, int Column)
 	if (Column == 1 || Column == kRulePriorityColumn || Column == kRuleRecursiveColumn || Column == kRuleTargetBoxColumn) {
 		RefreshRuleExtensionTooltipsForItem(pItem, false, IsRuleExtensionsEnabled());
 	}
+	if ((Column == 1 || Column == kRuleRecursiveColumn)
+		&& GetActualRuleType(pItem) == ePath) {
+		QString originalRule = pItem->data(1, kRuleOriginalRuleRole).toString();
+		QString baseRule = pItem->data(1, Qt::UserRole).toString();
+		QString recursive = pItem->data(kRuleRecursiveColumn, Qt::UserRole).toString();
+		if (HasRecursiveRuleEdits(originalRule, baseRule, recursive)
+			&& IsRecursiveFolderRuleMissingTerminalWildcard(baseRule, recursive))
+			WarnRecursiveFolderRuleEdit(this, baseRule);
+	}
 
 	OnForcedChanged();
 }
@@ -1339,6 +1455,15 @@ void COptionsWindow::OnBreakoutChanged(QTreeWidgetItem *pItem, int Column)
 {
 	if (Column == 1 || Column == kRulePriorityColumn || Column == kRuleRecursiveColumn || Column == kRuleTargetBoxColumn) {
 		RefreshRuleExtensionTooltipsForItem(pItem, true, IsRuleExtensionsEnabled());
+	}
+	if ((Column == 1 || Column == kRuleRecursiveColumn)
+		&& GetActualRuleType(pItem) == ePath) {
+		QString originalRule = pItem->data(1, kRuleOriginalRuleRole).toString();
+		QString baseRule = pItem->data(1, Qt::UserRole).toString();
+		QString recursive = pItem->data(kRuleRecursiveColumn, Qt::UserRole).toString();
+		if (HasRecursiveRuleEdits(originalRule, baseRule, recursive)
+			&& IsRecursiveFolderRuleMissingTerminalWildcard(baseRule, recursive))
+			WarnRecursiveFolderRuleEdit(this, baseRule);
 	}
 
 	// Warn when a rule is edited inline and results in a broad wildcard pattern.
