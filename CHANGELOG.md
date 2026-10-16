@@ -5,8 +5,15 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 
 
-## [1.18.7 / 5.73.7] - 2026-10-16
+## [1.18.8 / 5.73.8] - 2026-10-??
 
+### Added
+- made it easier to choose a sandbox in Set Open and Set Force: select from a list showing sandbox names and aliases, or start typing a name or alias to see suggestions
+- added an option to skip the Set Open and Set Force dialogs when only one sandbox is available. Check "Skip this dialog when only one sandbox is enabled" to use that sandbox automatically. The dialog is shown by default [#5653](https://github.com/sandboxie-plus/Sandboxie/issues/5653)
+
+
+
+## [1.18.7 / 5.73.7] - 2026-10-16
 
 ### Fixed
 - fixed issues with root protect IOCTLs
@@ -15,7 +22,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - fixed issues with base64 decoding
 - fixed issue with API_RENAME_FILE
 - fixed with template handling
-
 
 
 

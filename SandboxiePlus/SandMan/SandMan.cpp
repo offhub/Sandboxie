@@ -5,6 +5,14 @@
 #include "../MiscHelpers/Common/SortFilterProxyModel.h"
 #include "Views/SbieView.h"
 #include "../MiscHelpers/Common/CheckableMessageBox.h"
+#include <QAbstractItemView>
+#include <QComboBox>
+#include <QCompleter>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
+#include <QVBoxLayout>
 #include <QWinEventNotifier>
 #include "../MiscHelpers/Common/MultiErrorDialog.h"
 #include "../QSbieAPI/SbieUtils.h"
@@ -1993,6 +2001,114 @@ int CSandMan::SafeExec(QDialog* pDialog)
 	return ret;
 }
 
+class CShellBoxItemDelegate : public QStyledItemDelegate
+{
+public:
+	explicit CShellBoxItemDelegate(QObject* pParent) : QStyledItemDelegate(pParent) {}
+
+protected:
+	void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
+	{
+		QStyledItemDelegate::initStyleOption(option, index);
+		option->text = index.data(Qt::UserRole + 1).toString();
+	}
+};
+
+class CShellBoxCompleter : public QCompleter
+{
+public:
+	explicit CShellBoxCompleter(QAbstractItemModel* pModel, QObject* pParent) : QCompleter(pModel, pParent) {}
+
+	QString pathFromIndex(const QModelIndex& index) const override
+	{
+		return index.data(Qt::UserRole).toString();
+	}
+};
+
+static CSandBoxPtr SelectBoxForShellAction(QWidget* pParent)
+{
+	QList<CSandBoxPtr> Boxes;
+	foreach(const CSandBoxPtr& pBox, theAPI->GetAllBoxes()) {
+		if (pBox->IsEnabled())
+			Boxes.append(pBox);
+	}
+	if (Boxes.isEmpty()) {
+		QMessageBox::warning(pParent, CSandMan::tr("Sandboxie-Plus Warning"),
+			CSandMan::tr("No enabled sandbox is available. Please create or enable a sandbox and try again."), QMessageBox::Ok, 0);
+		return CSandBoxPtr();
+	}
+	bool skipSingleBox = theConf->GetBool("Options/SkipSingleBoxForShellActions", false);
+	if (Boxes.count() == 1 && skipSingleBox)
+		return Boxes.first();
+
+	QDialog boxDialog(pParent);
+	boxDialog.setWindowTitle(CSandMan::tr("Which box you want to add in?"));
+	boxDialog.setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+	QVBoxLayout* pLayout = new QVBoxLayout(&boxDialog);
+	pLayout->addWidget(new QLabel(CSandMan::tr("Select a sandbox or type its name or alias:"), &boxDialog));
+	QComboBox* pBoxes = new QComboBox(&boxDialog);
+	pBoxes->setEditable(true);
+	pBoxes->setInsertPolicy(QComboBox::NoInsert);
+	pBoxes->setItemDelegate(new CShellBoxItemDelegate(pBoxes));
+	pLayout->addWidget(pBoxes);
+	foreach(const CSandBoxPtr& pBox, Boxes) {
+		QString name = pBox->GetName();
+		QString alias = pBox->GetText("BoxAlias").trimmed();
+		QString label = alias.isEmpty() || alias.compare(name, Qt::CaseInsensitive) == 0
+			? name : CSandBoxPlus::FormatDisplayName(name, alias, 2);
+		// Keep canonical names in the editor; only the popup paints alias labels.
+		pBoxes->addItem(name, name);
+		pBoxes->setItemData(pBoxes->count() - 1, label, Qt::UserRole + 1);
+	}
+	CShellBoxCompleter* pCompleter = new CShellBoxCompleter(pBoxes->model(), pBoxes);
+	pCompleter->setCompletionMode(QCompleter::PopupCompletion);
+	pCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+	pCompleter->setFilterMode(Qt::MatchContains);
+	pCompleter->setCompletionRole(Qt::UserRole + 1);
+	pCompleter->popup()->setItemDelegate(new CShellBoxItemDelegate(pCompleter->popup()));
+	pBoxes->setCompleter(pCompleter);
+	pBoxes->setCurrentIndex(Boxes.count() == 1 ? 0 : -1);
+	QCheckBox* pSkipSingleBox = new QCheckBox(CSandMan::tr("Skip this dialog when only one sandbox is enabled"), &boxDialog);
+	pSkipSingleBox->setChecked(skipSingleBox);
+	pSkipSingleBox->setToolTip(CSandMan::tr("Applies to both Add Open and Add Force. The dialog is always shown when more than one sandbox is enabled."));
+	pLayout->addWidget(pSkipSingleBox);
+	QDialogButtonBox* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &boxDialog);
+	pLayout->addWidget(pButtons);
+	QObject::connect(pButtons, &QDialogButtonBox::accepted, &boxDialog, &QDialog::accept);
+	QObject::connect(pButtons, &QDialogButtonBox::rejected, &boxDialog, &QDialog::reject);
+	pBoxes->setFocus();
+
+	if (theGUI->SafeExec(&boxDialog) != QDialog::Accepted || pBoxes->currentText().trimmed().isEmpty()) {
+		QMessageBox::warning(pParent, CSandMan::tr("Sandboxie-Plus Warning"), CSandMan::tr("User canceled this operation."), QMessageBox::Yes, 0);
+		return CSandBoxPtr();
+	}
+
+	QString response = pBoxes->currentText().trimmed();
+	// Editable text can differ from the item whose data is still selected.
+	int index = pBoxes->currentIndex();
+	if (index >= 0 && response == pBoxes->itemText(index))
+		response = pBoxes->itemData(index).toString();
+
+	CSandBoxPtr pBox = theAPI->GetBoxByName(response);
+	if (!pBox) {
+		foreach(const CSandBoxPtr& pCandidate, theAPI->GetAllBoxes()) {
+			if (pCandidate->GetText("BoxAlias").trimmed().compare(response, Qt::CaseInsensitive) != 0)
+				continue;
+			if (pBox) {
+				QMessageBox::warning(pParent, CSandMan::tr("Sandboxie-Plus Warning"),
+					CSandMan::tr("More than one sandbox has this alias. Select a sandbox from the list or type its actual name. Nothing was changed."), QMessageBox::Ok, 0);
+				return CSandBoxPtr();
+			}
+			pBox = pCandidate;
+		}
+	}
+	if (!pBox)
+		QMessageBox::warning(pParent, CSandMan::tr("Sandboxie-Plus Warning"), CSandMan::tr("You typed a wrong box name! Nothing was changed."), QMessageBox::Ok, 0);
+	else
+		theConf->SetValue("Options/SkipSingleBoxForShellActions", pSkipSingleBox->isChecked());
+	return pBox;
+}
+
 void CSandMan::OnMessage(const QString& MsgData)
 {
 	QStringList Messages = MsgData.split("\n");
@@ -2006,50 +2122,32 @@ void CSandMan::OnMessage(const QString& MsgData)
 	}
 	else if (Message.left(9) == "AddForce:")
 	{
-		QString response = QInputDialog::getText(g_GUIParent, tr("Which box you want to add in?"), tr("Type the box name which you are going to set:"));
-		if (!response.isEmpty())
+		CSandBoxPtr pBox = SelectBoxForShellAction(g_GUIParent);
+		if (pBox)
 		{
-			if (theAPI->GetBoxByName(response) != NULL) {
-				QString dirOrFile = Message.mid(9).replace("\"", "").trimmed();
-				QFileInfo fileInfo(dirOrFile);
-				if (Message.right(1) == "\\" || !Message.contains(".", Qt::CaseInsensitive)) {
-					theAPI->GetBoxByName(response)->AppendText("ForceFolder", dirOrFile);
-				}
-				else {
-					if (fileInfo.exists() && fileInfo.isDir()) {
-						theAPI->GetBoxByName(response)->AppendText("ForceFolder", dirOrFile);
-					}
-					else if (fileInfo.exists() && fileInfo.isExecutable()) {
-						theAPI->GetBoxByName(response)->AppendText("ForceProcess", dirOrFile.mid(dirOrFile.lastIndexOf("\\") + 1));
-					}
-					else {
-						QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("The value is not an existing directory or executable."), QMessageBox::Ok, 0);
-					}
-				}
+			QString dirOrFile = Message.mid(9).replace("\"", "").trimmed();
+			QFileInfo fileInfo(dirOrFile);
+			if (Message.right(1) == "\\" || !Message.contains(".", Qt::CaseInsensitive)) {
+				pBox->AppendText("ForceFolder", dirOrFile);
 			}
 			else {
-				QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("You typed a wrong box name! Nothing was changed."), QMessageBox::Ok, 0);
+				if (fileInfo.exists() && fileInfo.isDir()) {
+					pBox->AppendText("ForceFolder", dirOrFile);
+				}
+				else if (fileInfo.exists() && fileInfo.isExecutable()) {
+					pBox->AppendText("ForceProcess", dirOrFile.mid(dirOrFile.lastIndexOf("\\") + 1));
+				}
+				else {
+					QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("The value is not an existing directory or executable."), QMessageBox::Ok, 0);
+				}
 			}
-		}
-		else {
-			QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("User canceled this operation."), QMessageBox::Yes, 0);
 		}
 	}
 	else if (Message.left(8) == "AddOpen:")
 	{
-		QString response = QInputDialog::getText(g_GUIParent, tr("Which box you want to add in?"), tr("Type the box name which you are going to set:"));
-		if (!response.isEmpty())
-		{
-			if (theAPI->GetBoxByName(response) != NULL) {
-					theAPI->GetBoxByName(response)->AppendText("OpenFilePath", Message.mid(8).replace("\"", ""));
-			}
-			else {
-				QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("You typed a wrong box name! Nothing was changed."), QMessageBox::Ok, 0);
-			}
-		}
-		else {
-			QMessageBox::warning(g_GUIParent, tr("Sandboxie-Plus Warning"), tr("User canceled this operation."), QMessageBox::Yes, 0);
-		}
+		CSandBoxPtr pBox = SelectBoxForShellAction(g_GUIParent);
+		if (pBox)
+			pBox->AppendText("OpenFilePath", Message.mid(8).replace("\"", ""));
 	}
 	else if (Message.left(4) == "Run:")
 	{
