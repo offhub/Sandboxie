@@ -6,6 +6,7 @@ IF /I "%~3"=="--codeql" (
     echo ERROR: qt_codeql_version is not configured
     exit /b 1
   )
+  setlocal
   set "qt_version=%qt_codeql_version%"
 )
 
