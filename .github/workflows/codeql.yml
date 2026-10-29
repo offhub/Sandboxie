@@ -81,7 +81,7 @@ jobs:
     - name: Install Qt6 x64
       uses: jurplel/install-qt-action@v4
       with:
-         version: ${{ steps.vars.outputs.qt_version }}
+         version: ${{ steps.vars.outputs.qt6_version }}
          arch:  'win64_msvc2022_64'
          tools: 'tools_opensslv3_x64'
          cache: true
