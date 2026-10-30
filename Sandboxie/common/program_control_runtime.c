@@ -158,7 +158,8 @@ static int ProgramControl_RuntimeShouldIgnoreBroadBreakoutProcessRule(
 
 static int ProgramControl_RuntimeCompileBackend(
     POOL *pool,
-    SBIE_RT_RULE *rule)
+    SBIE_RT_RULE *rule,
+    int useRuleExtensions)
 {
     const WCHAR *baseRule;
     int hasWildcard;
@@ -174,6 +175,18 @@ static int ProgramControl_RuntimeCompileBackend(
 
     if (rule->rule_kind == SBIE_RULE_KIND_PROCESS) {
         if (!ProgramControl_RuleLooksLikePath(baseRule)) {
+            // Native hexadecimal tokens also apply without ordinary wildcards.
+            // Compile them here so driver and user-mode matching stay consistent.
+            if (baseRule[0] != L'<') {
+                const WCHAR *ptr;
+                for (ptr = baseRule; *ptr; ++ptr) {
+                    if (_wcsnicmp(ptr, L"__hex", 5) == 0) {
+                        rule->backend_kind = SBIE_RT_BACKEND_IMAGE_PATTERN;
+                        rule->backend_state = Pattern_Create(pool, baseRule, TRUE, 0);
+                        return (rule->backend_state != NULL) ? 1 : 0;
+                    }
+                }
+            }
             rule->backend_kind = hasWildcard ? SBIE_RT_BACKEND_IMAGE_WILDCARD : SBIE_RT_BACKEND_EXACT_STRING;
             return 1;
         }
@@ -185,7 +198,10 @@ static int ProgramControl_RuntimeCompileBackend(
         return (rule->backend_state != NULL) ? 1 : 0;
     }
 
-    rule->backend_kind = SBIE_RT_BACKEND_EXACT_STRING;
+    // Legacy BreakoutFolder literals match only the executable's directory.
+    // Keep ForceFolder and extension-enabled recursive matching unchanged.
+    rule->backend_kind = !useRuleExtensions && _wcsicmp(rule->setting_name, L"BreakoutFolder") == 0
+        ? SBIE_RT_BACKEND_EXACT_FOLDER : SBIE_RT_BACKEND_EXACT_STRING;
     return 1;
 }
 
@@ -193,7 +209,8 @@ static int ProgramControl_RuntimeMatchPatternLower(
     const SBIE_RT_RULESET *ruleset,
     XPATTERN *pattern,
     const WCHAR *text,
-    unsigned long textLen)
+    unsigned long textLen,
+    int *evaluationFailed)
 {
     WCHAR stackText[512];
     size_t bytes;
@@ -213,8 +230,11 @@ static int ProgramControl_RuntimeMatchPatternLower(
         lowerText = stackText;
     else {
         lowerText = (WCHAR *)Pool_Alloc(ruleset->pool, (ULONG)bytes);
-        if (!lowerText)
+        if (!lowerText) {
+            if (evaluationFailed)
+                *evaluationFailed = 1;
             return 0;
+        }
         usedPool = 1;
     }
 
@@ -238,7 +258,8 @@ static int ProgramControl_RuntimeMatchProcessRule(
     const WCHAR *imagePath,
     unsigned long imagePathLen,
     BreakoutMatchImageFn matchImage,
-    void *matchContext)
+    void *matchContext,
+    int *evaluationFailed)
 {
     if (!rule || !rule->normalized.base_rule || !imageName || !*imageName || !imagePath || !*imagePath)
         return 0;
@@ -253,8 +274,10 @@ static int ProgramControl_RuntimeMatchProcessRule(
     case SBIE_RT_BACKEND_EXACT_STRING:
     case SBIE_RT_BACKEND_IMAGE_WILDCARD:
         return ProgramControl_MatchProcessRule(rule->normalized.base_rule, imageName, imagePath, imagePathLen);
+    case SBIE_RT_BACKEND_IMAGE_PATTERN:
+        return ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, imageName, 0, evaluationFailed);
     case SBIE_RT_BACKEND_PATH_PATTERN:
-        return ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, imagePath, imagePathLen);
+        return ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, imagePath, imagePathLen, evaluationFailed);
     default:
         return 0;
     }
@@ -264,7 +287,8 @@ static int ProgramControl_RuntimeMatchFolderRule(
     const SBIE_RT_RULESET *ruleset,
     const SBIE_RT_RULE *rule,
     const WCHAR *path,
-    unsigned long pathLen)
+    unsigned long pathLen,
+    int *evaluationFailed)
 {
     if (!rule || !rule->normalized.base_rule || !path || !*path)
         return 0;
@@ -273,21 +297,31 @@ static int ProgramControl_RuntimeMatchFolderRule(
         pathLen = (unsigned long)wcslen(path);
 
     switch (rule->backend_kind) {
+    case SBIE_RT_BACKEND_EXACT_FOLDER:
+        return wcslen(rule->normalized.base_rule) == pathLen &&
+            _wcsnicmp(rule->normalized.base_rule, path, pathLen) == 0;
     case SBIE_RT_BACKEND_EXACT_STRING:
         return ProgramControl_MatchFolderRuleNormalized(&rule->normalized, path, pathLen);
     case SBIE_RT_BACKEND_PATH_PATTERN:
+    {
+        int fullPathMatched = 0;
+
+        if (_wcsicmp(rule->setting_name, L"BreakoutFolder") == 0 && path[pathLen] == L'\\')
+            fullPathMatched = ProgramControl_RuntimeMatchPatternLower(
+                ruleset, (XPATTERN *)rule->backend_state, path, (unsigned long)wcslen(path), evaluationFailed);
+
         // ForceFolder uses only the caller-supplied directory prefix.
-        if (!ProgramControl_RuntimeMatchPatternLower(
-                ruleset,
-                (XPATTERN *)rule->backend_state,
-                path,
-                (_wcsicmp(rule->setting_name, L"BreakoutFolder") == 0 && path[pathLen] == L'\\')
-                    ? (unsigned long)wcslen(path) : pathLen) &&
-            !ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, path, pathLen))
+        if (!fullPathMatched &&
+            !ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, path, pathLen, evaluationFailed))
             return 0;
+
+        // BreakoutFolder may match a filename, for example C:\Tools\*.exe.
+        // Do not recheck that match against just the directory when Recursive is set:
+        // Recursive=y must not disable it, and the filename must not count as depth.
         if (rule->normalized.has_recursive)
-            return ProgramControl_MatchFolderRuleNormalized(&rule->normalized, path, pathLen);
+            return ProgramControl_MatchFolderRuleNormalizedEx(&rule->normalized, path, pathLen, fullPathMatched);
         return 1;
+    }
     default:
         return 0;
     }
@@ -297,7 +331,8 @@ static int ProgramControl_RuntimeMatchDocumentRule(
     const SBIE_RT_RULESET *ruleset,
     const SBIE_RT_RULE *rule,
     const WCHAR *path,
-    unsigned long pathLen)
+    unsigned long pathLen,
+    int *evaluationFailed)
 {
     if (!rule || !rule->normalized.base_rule || !path || !*path)
         return 0;
@@ -310,7 +345,7 @@ static int ProgramControl_RuntimeMatchDocumentRule(
     case SBIE_RT_BACKEND_IMAGE_WILDCARD:
         return ProgramControl_MatchDocumentRule(rule->normalized.base_rule, path, pathLen);
     case SBIE_RT_BACKEND_PATH_PATTERN:
-        return ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, path, pathLen);
+        return ProgramControl_RuntimeMatchPatternLower(ruleset, (XPATTERN *)rule->backend_state, path, pathLen, evaluationFailed);
     default:
         return 0;
     }
@@ -454,7 +489,8 @@ static int ProgramControl_RuntimeFindBestProcessMatch(
         const SBIE_RT_RULE *rule = &list->rules[i];
         unsigned long level = 2;
 
-        if (!ProgramControl_RuntimeMatchProcessRule(ruleset, rule, imageName, imagePath, 0, matchImage, matchContext))
+        if (!ProgramControl_RuntimeMatchProcessRule(ruleset, rule, imageName, imagePath, 0, matchImage, matchContext,
+                outMatch ? &outMatch->evaluation_failed : NULL))
             continue;
 
         if (!ProgramControl_RuntimeMatchScope(
@@ -494,7 +530,8 @@ static int ProgramControl_RuntimeFindBestFolderMatch(
         if (!ProgramControl_RuntimeMatchScope(rule, imageName, matchImage, matchContext, &level))
             continue;
 
-        if (!ProgramControl_RuntimeMatchFolderRule(ruleset, rule, path, pathLen))
+        if (!ProgramControl_RuntimeMatchFolderRule(ruleset, rule, path, pathLen,
+                outMatch ? &outMatch->evaluation_failed : NULL))
             continue;
 
         ProgramControl_RuntimeUpdateBestMatch(rule, level, &overall, &targeted, outMatch);
@@ -530,7 +567,8 @@ static int ProgramControl_RuntimeFindBestDocumentMatch(
         if (!ProgramControl_RuntimeMatchScope(rule, imageName, matchImage, matchContext, &level))
             continue;
 
-        if (!ProgramControl_RuntimeMatchDocumentRule(ruleset, rule, path, pathLen))
+        if (!ProgramControl_RuntimeMatchDocumentRule(ruleset, rule, path, pathLen,
+                outMatch ? &outMatch->evaluation_failed : NULL))
             continue;
 
         ProgramControl_RuntimeUpdateBestMatch(rule, level, &overall, &targeted, outMatch);
@@ -611,7 +649,8 @@ void ProgramControl_RuntimeFreeRuleset(SBIE_RT_RULESET *ruleset)
 
         for (j = 0; j < list->count; ++j) {
             SBIE_RT_RULE *rule = &list->rules[j];
-            if (rule->backend_kind == SBIE_RT_BACKEND_PATH_PATTERN && rule->backend_state) {
+            if ((rule->backend_kind == SBIE_RT_BACKEND_PATH_PATTERN ||
+                 rule->backend_kind == SBIE_RT_BACKEND_IMAGE_PATTERN) && rule->backend_state) {
                 Pattern_Free((XPATTERN *)rule->backend_state);
                 rule->backend_state = NULL;
             }
@@ -637,9 +676,17 @@ int ProgramControl_RuntimeCompileSetting(
     WCHAR *storage;
     WCHAR *valuePart;
     unsigned long scopeLevel = 2;
+    int alertSetting;
 
     if (!ruleset || !ruleset->pool || !setting || !value || !*value)
         return 0;
+
+    // Alert rules retain their literal text, including commas and pipe suffixes.
+    alertSetting = _wcsicmp(setting, L"AlertProcess") == 0 || _wcsicmp(setting, L"AlertFolder") == 0;
+    if (_wcsicmp(setting, L"AlertProcess") == 0)
+        setting = L"ForceProcess";
+    else if (_wcsicmp(setting, L"AlertFolder") == 0)
+        setting = L"ForceFolder";
 
     if (!ProgramControl_GetRuleKindForSetting(setting, &ruleKind))
         return 0;
@@ -659,7 +706,7 @@ int ProgramControl_RuntimeCompileSetting(
 
     rule.raw_rule = storage;
     valuePart = storage;
-    if (ruleKind != SBIE_RULE_KIND_PROCESS || _wcsicmp(setting, L"BreakoutProcess") == 0) {
+    if (!alertSetting && (ruleKind != SBIE_RULE_KIND_PROCESS || _wcsicmp(setting, L"BreakoutProcess") == 0)) {
         valuePart = ProgramControl_ParseImageScopeInPlace(
             storage,
             &rule.scope_rule,
@@ -672,13 +719,15 @@ int ProgramControl_RuntimeCompileSetting(
     if (!valuePart || !*valuePart)
         return 0;
 
-    if (!ProgramControl_ParseRuleExtensionsInPlace(valuePart, &rule.normalized, useRuleExtensions))
+    if (alertSetting)
+        ProgramControl_InitNormalizedRule(valuePart, &rule.normalized);
+    else if (!ProgramControl_ParseRuleExtensionsInPlace(valuePart, &rule.normalized, useRuleExtensions))
         return 0;
 
     if (ProgramControl_RuntimeShouldIgnoreBroadBreakoutProcessRule(setting, &rule.normalized))
         return 1;
 
-    if (!ProgramControl_RuntimeCompileBackend(ruleset->pool, &rule))
+    if (!ProgramControl_RuntimeCompileBackend(ruleset->pool, &rule, useRuleExtensions))
         return 0;
 
     return ProgramControl_RuntimeAppendRule(ruleset, list, &rule);

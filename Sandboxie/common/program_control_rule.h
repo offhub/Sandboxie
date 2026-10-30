@@ -497,6 +497,20 @@ static __inline int ProgramControl_ParseRecursiveSpec(
     return 0;
 }
 
+static __inline void ProgramControl_InitNormalizedRule(WCHAR *value, SBIE_NORMALIZED_RULE *outRule)
+{
+    outRule->base_rule = value;
+    outRule->target_box = NULL;
+    outRule->has_target_box = 0;
+    outRule->has_recursive = 0;
+    outRule->recursive_min_depth = 0;
+    outRule->recursive_depth = -1;
+    outRule->recursive_anchor_from_last = 1;
+    // -1 is an internal sentinel meaning "no explicit priority set".
+    outRule->has_priority = 0;
+    outRule->priority = -1;
+}
+
 static __inline int ProgramControl_ParseRuleExtensionsInPlace(
     WCHAR *value,
     SBIE_NORMALIZED_RULE *outRule,
@@ -508,16 +522,7 @@ static __inline int ProgramControl_ParseRuleExtensionsInPlace(
     if (!value || !*value || !outRule)
         return 0;
 
-    outRule->base_rule = value;
-    outRule->target_box = NULL;
-    outRule->has_target_box = 0;
-    outRule->has_recursive = 0;
-    outRule->recursive_min_depth = 0;
-    outRule->recursive_depth = -1;
-    outRule->recursive_anchor_from_last = 1;
-    // -1 is an internal sentinel meaning "no explicit priority set".
-    outRule->has_priority = 0;
-    outRule->priority = -1;
+    ProgramControl_InitNormalizedRule(value, outRule);
 
     // When extensions are disabled, keep only the base rule and ignore
     // any metadata suffixes (Priority/Recursive/TargetBox).
@@ -1382,15 +1387,18 @@ static __inline int ProgramControl_FindWildcardAnchorBaseLen(
     return 1;
 }
 
-static __inline int ProgramControl_MatchFolderRuleNormalized(
-    const SBIE_NORMALIZED_RULE *rule, const WCHAR *appPath, unsigned long appDirLen)
+static __inline int ProgramControl_MatchFolderRuleNormalizedEx(
+    const SBIE_NORMALIZED_RULE *rule, const WCHAR *appPath, unsigned long appDirLen,
+    int fullPathMatched)
 {
     size_t baseLen;
+    int directoryMatched;
 
     if (!rule || !rule->base_rule)
         return 0;
 
-    if (!ProgramControl_MatchFolderRule(rule->base_rule, appPath, appDirLen))
+    directoryMatched = ProgramControl_MatchFolderRule(rule->base_rule, appPath, appDirLen);
+    if (!directoryMatched && !fullPathMatched)
         return 0;
 
     if (!rule->has_recursive)
@@ -1407,8 +1415,11 @@ static __inline int ProgramControl_MatchFolderRuleNormalized(
                 &wc_base_len))
             return 1;
 
-        if (wc_base_len >= appDirLen)
-            return 1;
+        if (wc_base_len >= appDirLen) {
+            // A matched filename adds no directory depth; still honor a minimum depth.
+            // Keep the legacy directory-only behavior for existing callers.
+            return directoryMatched || rule->recursive_min_depth == 0;
+        }
 
         {
             const WCHAR *dir_begin = appPath + wc_base_len;
@@ -1467,6 +1478,12 @@ static __inline int ProgramControl_MatchFolderRuleNormalized(
             return 0;
         return 1;
     }
+}
+
+static __inline int ProgramControl_MatchFolderRuleNormalized(
+    const SBIE_NORMALIZED_RULE *rule, const WCHAR *appPath, unsigned long appDirLen)
+{
+    return ProgramControl_MatchFolderRuleNormalizedEx(rule, appPath, appDirLen, 0);
 }
 
 #ifndef PROGRAM_CONTROL_RULE_NO_QUERY_HELPERS

@@ -37,26 +37,36 @@ static BOOLEAN SbieSvc_RuntimeCompileSettingAdjusted(
     size_t suffixOffset;
     WCHAR* compileBase;
     WCHAR* compileSep;
+    const BOOLEAN document_setting = setting && _wcsicmp(setting, L"BreakoutDocument") == 0;
+    const BOOLEAN breakout_process_setting = setting && _wcsicmp(setting, L"BreakoutProcess") == 0;
 
-    if (!ruleset || !setting || !value || !*value)
+    if (!ruleset || !setting || !value)
         return FALSE;
 
-    wcscpy_s(parseBuf, ARRAYSIZE(parseBuf), value);
-    wcscpy_s(compileBuf, ARRAYSIZE(compileBuf), value);
+    // Ignore empty document rules without discarding valid entries in the list.
+    if (!*value)
+        return document_setting;
+
+    if (wcscpy_s(parseBuf, ARRAYSIZE(parseBuf), value) != 0 ||
+        wcscpy_s(compileBuf, ARRAYSIZE(compileBuf), value) != 0)
+        return FALSE;
 
     if (!ProgramControl_GetRuleKindForSetting(setting, &ruleKind))
         return FALSE;
 
-    if (ruleKind != SBIE_RULE_KIND_PROCESS) {
+    if (ruleKind != SBIE_RULE_KIND_PROCESS || breakout_process_setting) {
         parseValue = ProgramControl_ParseImageScopeInPlace(parseBuf, NULL, NULL, NULL, NULL);
         if (!parseValue)
-            return FALSE;
+            return document_setting;
     }
 
     if (!ProgramControl_ParseRuleExtensionsInPlace(parseValue, &rule, useRuleExtensions))
         return FALSE;
 
-    if (adjustRule) {
+    if (document_setting && !*rule.base_rule)
+        return TRUE;
+
+    if (adjustRule || breakout_process_setting) {
         baseOffset = (size_t)(rule.base_rule - parseBuf);
         compileBase = compileBuf + baseOffset;
         compileSep = wcschr(compileBase, L'|');
@@ -66,7 +76,11 @@ static BOOLEAN SbieSvc_RuntimeCompileSettingAdjusted(
             *compileSep = L'\0';
         }
 
-        adjustRule(compileBase, adjustContext);
+        if (breakout_process_setting && *compileBase != L'*' &&
+            ProgramControl_RuleLooksLikePath(compileBase))
+            SbieDll_TranslateNtToDosPath(compileBase);
+        if (adjustRule)
+            adjustRule(compileBase, adjustContext);
 
         if (compileSep) {
             compileSep = compileBase + wcslen(compileBase);
@@ -107,9 +121,9 @@ BOOLEAN SbieSvc_LoadRuntimeRulesetForSetting(
 
         ++index;
         if (!NT_SUCCESS(status)) {
-            if (status == STATUS_BUFFER_TOO_SMALL)
-                continue;
-            break;
+            if (status == STATUS_RESOURCE_NAME_NOT_FOUND)
+                break;
+            return FALSE;
         }
 
         if (!SbieSvc_RuntimeCompileSettingAdjusted(

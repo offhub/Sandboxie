@@ -332,32 +332,30 @@ static bool IsPriorityManagerSetting(const QString& setting)
 
 static QString CanonicalizePriorityManagerTargetBox(CSbieAPI* pAPI, const QString& boxName)
 {
-	QString trimmed = boxName.trimmed();
-	if (trimmed.isEmpty() || !pAPI)
-		return trimmed;
+	if (boxName.isEmpty() || !pAPI)
+		return boxName;
 
 	QMap<QString, CSandBoxPtr> allBoxes = pAPI->GetAllBoxes();
 	for (auto it = allBoxes.constBegin(); it != allBoxes.constEnd(); ++it) {
 		if (!it.value() || !it.value()->IsEnabled())
 			continue;
 		QString existingName = it.value()->GetName();
-		if (existingName.compare(trimmed, Qt::CaseInsensitive) == 0)
+		if (existingName.compare(boxName, Qt::CaseInsensitive) == 0)
 			return existingName;
 	}
-	return trimmed;
+	return boxName;
 }
 
 static bool PriorityManagerTargetBoxExists(CSbieAPI* pAPI, const QString& boxName)
 {
-	QString trimmed = boxName.trimmed();
-	if (trimmed.isEmpty() || !pAPI)
+	if (boxName.isEmpty() || !pAPI)
 		return true;
 
 	QMap<QString, CSandBoxPtr> allBoxes = pAPI->GetAllBoxes();
 	for (auto it = allBoxes.constBegin(); it != allBoxes.constEnd(); ++it) {
 		if (it.value().isNull() || !it.value()->IsEnabled())
 			continue;
-		if (it.value()->GetName().compare(trimmed, Qt::CaseInsensitive) == 0)
+		if (it.value()->GetName().compare(boxName, Qt::CaseInsensitive) == 0)
 			return true;
 	}
 	return false;
@@ -2754,64 +2752,18 @@ public:
 		QString originalRule = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerOriginalRuleRole).toString();
 		int type = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerTypeRole).toInt();
 		bool breakout = pItem->data(kPriorityManagerPriorityColumn, kPriorityManagerBreakoutRole).toBool();
-		RuleExtensionsUi original = ParseRuleExtensionsForUi(originalRule);
-		QString currentBaseRule = pItem->data(kPriorityManagerRuleColumn, Qt::UserRole).toString().trimmed();
-		if (currentBaseRule.isEmpty())
-			currentBaseRule = original.baseRule.trimmed();
-		if (currentBaseRule.isEmpty())
+		RuleExtensionsUi current;
+		current.baseRule = pItem->data(kPriorityManagerRuleColumn, Qt::UserRole).toString().trimmed();
+		if (current.baseRule.isEmpty())
+			current.baseRule = ParseRuleExtensionsForUi(originalRule).baseRule.trimmed();
+		if (current.baseRule.isEmpty())
 			return originalRule;
-
-		bool supportsPriority = RuleTypeSupportsPriority(type);
-		bool supportsRecursive = RuleTypeSupportsRecursive(type);
-		bool supportsTargetBox = RuleTypeSupportsTargetBox(breakout, type);
-		QString currentPriority = pItem->data(kPriorityManagerPriorityColumn, Qt::UserRole).toString().trimmed();
-		QString currentRecursive = pItem->data(kPriorityManagerRecursiveColumn, Qt::UserRole).toString().trimmed();
-		if (!currentRecursive.isEmpty())
-			currentRecursive = NormalizeRecursiveExtensionValue(currentRecursive);
-		QString currentTargetBox = CanonicalizePriorityManagerTargetBox(m_pAPI,
+		current.priority = pItem->data(kPriorityManagerPriorityColumn, Qt::UserRole).toString();
+		current.recursive = pItem->data(kPriorityManagerRecursiveColumn, Qt::UserRole).toString();
+		current.targetBox = CanonicalizePriorityManagerTargetBox(m_pAPI,
 			pItem->data(kPriorityManagerScopeColumn, Qt::UserRole).toString());
-		bool priorityChanged = supportsPriority && currentPriority != original.priority;
-		bool recursiveChanged = supportsRecursive && currentRecursive != original.recursive;
-		bool targetBoxChanged = supportsTargetBox
-			&& currentTargetBox.compare(original.targetBox, Qt::CaseInsensitive) != 0;
-		bool baseRuleChanged = currentBaseRule.compare(original.baseRule.trimmed(), Qt::CaseSensitive) != 0;
-		if (!baseRuleChanged && !priorityChanged && !recursiveChanged && !targetBoxChanged)
-			return originalRule;
-
-		QStringList parts = originalRule.split("|", Qt::KeepEmptyParts);
-		if (!parts.isEmpty())
-			parts.takeFirst();
-		QStringList tokens;
-		for (const QString& token : parts) {
-			QString key = GetRuleKey(token);
-			if ((key.compare("Priority", Qt::CaseInsensitive) == 0 && supportsPriority)
-				|| (key.compare("Recursive", Qt::CaseInsensitive) == 0 && supportsRecursive)
-				|| (key.compare("TargetBox", Qt::CaseInsensitive) == 0 && supportsTargetBox))
-				continue;
-			tokens.append(token);
-		}
-
-		if (supportsTargetBox) {
-			QString targetBox = CanonicalizePriorityManagerTargetBox(m_pAPI,
-				pItem->data(kPriorityManagerScopeColumn, Qt::UserRole).toString());
-			if (!targetBox.isEmpty())
-				tokens.append("TargetBox=" + targetBox);
-		}
-		if (supportsRecursive) {
-			QString recursive = pItem->data(kPriorityManagerRecursiveColumn, Qt::UserRole).toString().trimmed();
-			if (!recursive.isEmpty()) {
-				QString normalized = NormalizeRecursiveExtensionValue(recursive);
-				if (!normalized.isEmpty())
-					tokens.append("Recursive=" + normalized);
-			}
-		}
-		if (supportsPriority) {
-			QString priority = pItem->data(kPriorityManagerPriorityColumn, Qt::UserRole).toString().trimmed();
-			qlonglong numericPriority = -1;
-			if (!priority.isEmpty() && ParseRulePriorityValue(priority, &numericPriority))
-				tokens.append("Priority=" + QString::number(numericPriority));
-		}
-		return BuildRuleWithBaseAndTokens(currentBaseRule, tokens);
+		return BuildRuleWithEditedExtensions(originalRule, current, RuleTypeSupportsPriority(type),
+			RuleTypeSupportsRecursive(type), RuleTypeSupportsTargetBox(breakout, type));
 	}
 
 	void RecomputeConflicts()
@@ -2845,7 +2797,7 @@ public:
 				Qt::UserRole).toString().trimmed();
 			QString recursive = pItem->data(kPriorityManagerRecursiveColumn,
 				Qt::UserRole).toString().trimmed();
-			QString targetBox = pItem->data(kPriorityManagerScopeColumn, Qt::UserRole).toString().trimmed();
+			QString targetBox = pItem->data(kPriorityManagerScopeColumn, Qt::UserRole).toString();
 			bool hasRuleExtension = !priority.isEmpty() || !recursive.isEmpty() || !targetBox.isEmpty();
 			bool extensionsEnabled = false;
 			if (hasRuleExtension && sourceIndex >= 0 && sourceIndex < m_Sources.size()) {

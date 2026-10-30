@@ -8,6 +8,7 @@
 #include "../MiscHelpers/Common/SettingsWidgets.h"
 #include "Helpers/WinAdmin.h"
 #include <QDialogButtonBox>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 #include <limits>
 
@@ -200,15 +201,7 @@ static Qt::CheckState GetInheritedRuleExtensionsCheckState(const QSharedPointer<
 static QString GetRuleKey(const QString& token)
 {
 	int eqPos = token.indexOf('=');
-	return (eqPos >= 0 ? token.left(eqPos) : token).trimmed();
-}
-
-static bool IsKnownRuleExtension(const QString& token)
-{
-	QString key = GetRuleKey(token);
-	return key.compare("TargetBox", Qt::CaseInsensitive) == 0
-		|| key.compare("Priority", Qt::CaseInsensitive) == 0
-		|| key.compare("Recursive", Qt::CaseInsensitive) == 0;
+	return eqPos >= 0 ? token.left(eqPos) : token;
 }
 
 static QString BuildRuleWithBaseAndTokens(const QString& baseRule, const QStringList& tokens)
@@ -216,11 +209,7 @@ static QString BuildRuleWithBaseAndTokens(const QString& baseRule, const QString
 	QStringList out;
 	out.reserve(tokens.size() + 1);
 	out.append(baseRule);
-	for (const QString& token : tokens) {
-		QString trimmed = token.trimmed();
-		if (!trimmed.isEmpty())
-			out.append(trimmed);
-	}
+	out.append(tokens);
 	return out.join("|");
 }
 
@@ -344,13 +333,12 @@ static QString FormatRuleDisplayValue(bool enabled, bool supported, const QStrin
 		return "N/A";
 	if (!enabled)
 		return "-";
-	QString trimmedValue = value.trimmed();
-	if (trimmedValue.isEmpty())
+	if (value.isEmpty())
 		return "-";
 	if (formatZeroAsNo) {
-		return FormatRecursiveDisplayValue(trimmedValue);
+		return FormatRecursiveDisplayValue(value);
 	}
-	return trimmedValue;
+	return value;
 }
 
 static bool GetWildcardAnchor(const QString& baseRule, bool anchorFromLast, QString* pAnchor, QChar* pWildcardChar = nullptr)
@@ -531,9 +519,8 @@ static QString BuildRecursiveTooltip(const QString& baseRule, const QString& rec
 
 static QString CanonicalizeBoxNameCase(const QString& boxName)
 {
-	QString trimmed = boxName.trimmed();
-	if (trimmed.isEmpty())
-		return trimmed;
+	if (boxName.isEmpty())
+		return boxName;
 
 	QMap<QString, CSandBoxPtr> allBoxes = theAPI->GetAllBoxes();
 	for (auto it = allBoxes.constBegin(); it != allBoxes.constEnd(); ++it) {
@@ -541,11 +528,11 @@ static QString CanonicalizeBoxNameCase(const QString& boxName)
 			continue;
 
 		QString existingName = it.value()->GetName();
-		if (existingName.compare(trimmed, Qt::CaseInsensitive) == 0)
+		if (existingName.compare(boxName, Qt::CaseInsensitive) == 0)
 			return existingName;
 	}
 
-	return trimmed;
+	return boxName;
 }
 
 static void RefreshRuleExtensionsDisplayForTree(QTreeWidget* pTree, bool breakoutTree, bool enabled)
@@ -653,33 +640,43 @@ static void RefreshRuleExtensionTooltipsForItem(QTreeWidgetItem* pItem, bool bre
 
 static RuleExtensionsUi ParseRuleExtensionsForUi(const QString& rule)
 {
+	// Match the runtime grammar without activating ignored metadata through trimming.
+	static const QRegularExpression prioritySyntax("\\A[+-]?[0-9]+\\z");
+	static const QRegularExpression recursiveSyntax(
+		"\\A(?:[yn*]|\\+?[0-9]+(?:-(?:\\+?[0-9]+|[yn*]))?)(?:;(?:first|last))?\\z",
+		QRegularExpression::CaseInsensitiveOption);
 	RuleExtensionsUi out;
 	QStringList parts = rule.split("|", Qt::KeepEmptyParts);
 
 	if (!parts.isEmpty())
 		out.baseRule = parts.takeFirst();
 
-	for (const QString& rawToken : parts) {
-		QString token = rawToken.trimmed();
+	for (const QString& token : parts) {
 		if (token.isEmpty())
-			continue;
+			break;
 
 		int eqPos = token.indexOf('=');
-		QString key = (eqPos >= 0) ? token.left(eqPos).trimmed() : token;
-		QString value = (eqPos >= 0) ? token.mid(eqPos + 1).trimmed() : QString();
+		QString key = GetRuleKey(token);
+		QString value = (eqPos >= 0) ? token.mid(eqPos + 1) : QString();
 
 		if (key.compare("TargetBox", Qt::CaseInsensitive) == 0 && !value.isEmpty())
 			out.targetBox = value;
 		else if (key.compare("Priority", Qt::CaseInsensitive) == 0 && !value.isEmpty()) {
 			qlonglong priority = -1;
-			if (ParseRulePriorityValue(value, &priority))
+			if (prioritySyntax.match(value).hasMatch() && ParseRulePriorityValue(value, &priority))
 				out.priority = QString::number(priority);
 		}
 		else if (key.compare("Recursive", Qt::CaseInsensitive) == 0) {
-			if (value.isEmpty())
-				out.recursive = "y";
-			else
-				out.recursive = NormalizeRecursiveExtensionValue(value);
+			if (eqPos < 0) {
+				bool anchorFromLast = true;
+				ParseRecursiveExtensionSpec(out.recursive, nullptr, &anchorFromLast, nullptr);
+				out.recursive = anchorFromLast ? "y" : "y;first";
+			}
+			else if (recursiveSyntax.match(value).hasMatch()) {
+				QString normalized = NormalizeRecursiveExtensionValue(value);
+				if (!normalized.isEmpty())
+					out.recursive = normalized;
+			}
 		}
 	}
 
@@ -749,62 +746,60 @@ static void ApplyRuleExtensionsToItem(QTreeWidgetItem* pItem, bool breakoutTree,
 	}
 }
 
-static QString BuildRuleWithExtensionsFromItem(QTreeWidgetItem* pItem, bool breakoutTree, int type, bool useExtensions)
+static QString BuildRuleWithEditedExtensions(const QString& originalRule, RuleExtensionsUi current,
+	bool supportsPriority, bool supportsRecursive, bool supportsTargetBox)
 {
-	QString baseRule = pItem->data(1, Qt::UserRole).toString().trimmed();
-	if (baseRule.isEmpty())
-		return baseRule;
+	RuleExtensionsUi original = ParseRuleExtensionsForUi(originalRule);
+	qlonglong priority = -1;
+	current.priority = ParseRulePriorityValue(current.priority, &priority) ? QString::number(priority) : QString();
+	current.recursive = NormalizeRecursiveExtensionValue(current.recursive);
+	bool priorityChanged = supportsPriority && current.priority != original.priority;
+	bool recursiveChanged = supportsRecursive && current.recursive != original.recursive;
+	bool targetBoxChanged = supportsTargetBox
+		&& current.targetBox.compare(original.targetBox, Qt::CaseInsensitive) != 0;
+	if (current.baseRule == original.baseRule.trimmed() && !priorityChanged && !recursiveChanged && !targetBoxChanged)
+		return originalRule;
 
-	QString originalRule = pItem->data(1, kRuleOriginalRuleRole).toString().trimmed();
-	if (originalRule.isEmpty())
-		originalRule = baseRule;
+	// Place edited fields before any empty token, which terminates runtime parsing.
+	QStringList tokens;
+	if (targetBoxChanged && !current.targetBox.isEmpty())
+		tokens.append("TargetBox=" + current.targetBox);
+	if (recursiveChanged && !current.recursive.isEmpty())
+		tokens.append("Recursive=" + current.recursive);
+	if (priorityChanged && !current.priority.isEmpty())
+		tokens.append("Priority=" + current.priority);
 
 	QStringList originalParts = originalRule.split("|", Qt::KeepEmptyParts);
-	if (!originalParts.isEmpty())
-		originalParts.takeFirst();
-
-	if (!useExtensions) {
-		QString preservedRule = BuildRuleWithBaseAndTokens(baseRule, originalParts);
-		pItem->setData(1, kRuleOriginalRuleRole, preservedRule);
-		return preservedRule;
+	originalParts.removeFirst();
+	bool active = true;
+	for (const QString& token : originalParts) {
+		if (token.isEmpty())
+			active = false;
+		QString key = GetRuleKey(token);
+		if (active && ((priorityChanged && key.compare("Priority", Qt::CaseInsensitive) == 0)
+			|| (recursiveChanged && key.compare("Recursive", Qt::CaseInsensitive) == 0)
+			|| (targetBoxChanged && key.compare("TargetBox", Qt::CaseInsensitive) == 0)))
+			continue;
+		tokens.append(token);
 	}
+	return BuildRuleWithBaseAndTokens(current.baseRule, tokens);
+}
 
-	QStringList keptTokens;
-	for (const QString& part : originalParts) {
-		if (!IsKnownRuleExtension(part))
-			keptTokens.append(part.trimmed());
-	}
-
-	if (RuleTypeSupportsTargetBox(breakoutTree, type)) {
-		QString targetBox = pItem->data(kRuleTargetBoxColumn, Qt::UserRole).toString().trimmed();
-		if (!targetBox.isEmpty())
-			keptTokens.append("TargetBox=" + targetBox);
-	}
-
-	if (RuleTypeSupportsRecursive(type)) {
-		QString recursive = pItem->data(kRuleRecursiveColumn, Qt::UserRole).toString().trimmed();
-		if (!recursive.isEmpty()) {
-			if (recursive == "-") {
-				// Sentinel for clearing Recursive extension
-			}
-			else {
-				QString normalizedRecursive = NormalizeRecursiveExtensionValue(recursive);
-				if (!normalizedRecursive.isEmpty())
-					keptTokens.append("Recursive=" + normalizedRecursive);
-			}
-		}
-	}
-
-	if (RuleTypeSupportsPriority(type)) {
-		QString priority = pItem->data(kRulePriorityColumn, Qt::UserRole).toString().trimmed();
-		if (!priority.isEmpty() && priority != "-1") {
-			qlonglong value = -1;
-			if (ParseRulePriorityValue(priority, &value))
-				keptTokens.append("Priority=" + QString::number(value));
-		}
-	}
-
-	QString finalRule = BuildRuleWithBaseAndTokens(baseRule, keptTokens);
+static QString BuildRuleWithExtensionsFromItem(QTreeWidgetItem* pItem, bool breakoutTree, int type, bool useExtensions)
+{
+	RuleExtensionsUi current;
+	current.baseRule = pItem->data(1, Qt::UserRole).toString().trimmed();
+	if (current.baseRule.isEmpty())
+		return current.baseRule;
+	current.priority = pItem->data(kRulePriorityColumn, Qt::UserRole).toString();
+	current.recursive = pItem->data(kRuleRecursiveColumn, Qt::UserRole).toString();
+	current.targetBox = pItem->data(kRuleTargetBoxColumn, Qt::UserRole).toString();
+	QString originalRule = pItem->data(1, kRuleOriginalRuleRole).toString();
+	if (originalRule.isEmpty())
+		originalRule = current.baseRule;
+	QString finalRule = BuildRuleWithEditedExtensions(originalRule, current,
+		useExtensions && RuleTypeSupportsPriority(type), useExtensions && RuleTypeSupportsRecursive(type),
+		useExtensions && RuleTypeSupportsTargetBox(breakoutTree, type));
 	pItem->setData(1, kRuleOriginalRuleRole, finalRule);
 	return finalRule;
 }

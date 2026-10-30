@@ -55,7 +55,9 @@ typedef enum _SBIE_RT_BACKEND_KIND
     SBIE_RT_BACKEND_NONE = 0,
     SBIE_RT_BACKEND_EXACT_STRING,
     SBIE_RT_BACKEND_IMAGE_WILDCARD,
-    SBIE_RT_BACKEND_PATH_PATTERN
+    SBIE_RT_BACKEND_PATH_PATTERN,
+    SBIE_RT_BACKEND_EXACT_FOLDER,
+    SBIE_RT_BACKEND_IMAGE_PATTERN
 } SBIE_RT_BACKEND_KIND;
 
 typedef struct _SBIE_RT_RULE
@@ -106,6 +108,8 @@ typedef struct _SBIE_RT_MATCH
     int target_has_priority;
     long target_priority;
     long target_level;
+    // A partial match must not be used as a complete policy decision.
+    int evaluation_failed;
 } SBIE_RT_MATCH;
 
 void ProgramControl_RuntimeInitMatch(SBIE_RT_MATCH *match);

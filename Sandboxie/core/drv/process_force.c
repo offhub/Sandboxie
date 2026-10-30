@@ -74,6 +74,7 @@ typedef struct _FORCE_BOX {
     LIST BreakoutProcess;
     LIST BreakoutDocument;
     BOOLEAN ForceRulesEnabled;
+    BOOLEAN RuntimeEvaluationFailed;
     BOOLEAN ForceCandidateMatched;
     BOOLEAN ForceCandidateProcessed;
     BOOLEAN ForceCandidateHasPriority;
@@ -423,7 +424,7 @@ _FX BOX *Process_GetForcedStartBox(
                 pForcedByChildren,
                 ProcessId);
 
-            if (box && (! Conf_Get_Boolean(NULL, L"AllowForceImmersive", 0, FALSE)) &&
+            if (box && box != (BOX *)-1 && (! Conf_Get_Boolean(NULL, L"AllowForceImmersive", 0, FALSE)) &&
                         Process_IsImmersiveProcess(
                                         ProcessObject, ParentId, SessionId)) {
                 box = NULL;
@@ -1150,6 +1151,7 @@ _FX void Process_AddForceFolders(
     const WCHAR *value;
     FORCE_ENTRY *folder;
     const BOOLEAN breakout_setting = (_wcsicmp(Setting, L"BreakoutFolder") == 0 || _wcsicmp(Setting, L"BreakoutProcess") == 0);
+    const BOOLEAN alert_setting = (_wcsicmp(Setting, L"AlertFolder") == 0 || _wcsicmp(Setting, L"AlertProcess") == 0);
     const BOOLEAN folder_scope_setting =
         (_wcsicmp(Setting, L"ForceFolder") == 0 || _wcsicmp(Setting, L"BreakoutFolder") == 0);
     const BOOLEAN image_wildcard_setting =
@@ -1195,10 +1197,13 @@ _FX void Process_AddForceFolders(
         }
 
         if (!value_part ||
-            !ProgramControl_ParseRuleExtensionsInPlace(value_part, &normalized, use_rule_extensions)) {
+            (!alert_setting && !ProgramControl_ParseRuleExtensionsInPlace(value_part, &normalized, use_rule_extensions))) {
             Mem_Free(value_copy, value_copy_len);
             continue;
         }
+
+        if (alert_setting)
+            ProgramControl_InitNormalizedRule(value_part, &normalized);
 
 #ifdef DRV_BREAKOUT
         // The legacy DRV_BREAKOUT boolean path cannot represent targeted routing.
@@ -1602,6 +1607,16 @@ static BOOLEAN Process_RuntimeGetBreakoutMatches(
             outFolderMatch);
     }
 
+    if ((outProcessMatch && outProcessMatch->evaluation_failed) ||
+        (outFolderMatch && outFolderMatch->evaluation_failed)) {
+        box->RuntimeEvaluationFailed = TRUE;
+        if (outProcessMatch)
+            ProgramControl_RuntimeInitMatch(outProcessMatch);
+        if (outFolderMatch)
+            ProgramControl_RuntimeInitMatch(outFolderMatch);
+        return FALSE;
+    }
+
     return ((outProcessMatch && outProcessMatch->matched) ||
             (outFolderMatch && outFolderMatch->matched)) ? TRUE : FALSE;
 }
@@ -1646,6 +1661,10 @@ static BOOLEAN Process_RuntimeMatchForceProcess(
         NULL);
 
     match = useChildrenList ? &force_children_match : &force_process_match;
+    if (match->evaluation_failed) {
+        box->RuntimeEvaluationFailed = TRUE;
+        return FALSE;
+    }
     if (!match->matched)
         return FALSE;
 
@@ -1696,6 +1715,10 @@ static BOOLEAN Process_RuntimeMatchForceFolder(
         &force_folder_match,
         NULL);
 
+    if (force_folder_match.evaluation_failed) {
+        box->RuntimeEvaluationFailed = TRUE;
+        return FALSE;
+    }
     if (!force_folder_match.matched)
         return FALSE;
 
@@ -1774,7 +1797,7 @@ static BOOLEAN Process_RuntimeMatchAlertFolder(
     return alert_match.matched ? TRUE : FALSE;
 }
 
-static void Process_AddBreakoutEntries(
+static BOOLEAN Process_AddBreakoutEntries(
     LIST *entries, const WCHAR *setting, BOX *box, const WCHAR *section)
 {
     ULONG index;
@@ -1804,7 +1827,7 @@ static void Process_AddBreakoutEntries(
         value_copy_len = (ULONG)((wcslen(value) + 1) * sizeof(WCHAR));
         value_copy = Mem_AllocString(Driver_Pool, value);
         if (!value_copy)
-            continue;
+            return FALSE;
 
         rule = value_copy;
 
@@ -1836,14 +1859,16 @@ static void Process_AddBreakoutEntries(
             value_norm_len = (value_len + 2) * sizeof(WCHAR);
 
             value_norm = Mem_Alloc(Driver_Pool, value_norm_len);
-            if (value_norm) {
-                value_norm[0] = value[0];
-                value_norm[1] = L':';
-                value_norm[2] = L'\\';
-                wcscpy(value_norm + 3, value + 2);
-                value = value_norm;
-                buf_len = value_norm_len;
+            if (!value_norm) {
+                Mem_Free(value_copy, value_copy_len);
+                return FALSE;
             }
+            value_norm[0] = value[0];
+            value_norm[1] = L':';
+            value_norm[2] = L'\\';
+            wcscpy(value_norm + 3, value + 2);
+            value = value_norm;
+            buf_len = value_norm_len;
         }
 
         if (wcschr(value, L'\\') != NULL) {
@@ -1860,14 +1885,14 @@ static void Process_AddBreakoutEntries(
 
         if (!buf) {
             Mem_Free(value_copy, value_copy_len);
-            continue;
+            return FALSE;
         }
 
         entry = Mem_Alloc(Driver_Pool, sizeof(FORCE_ENTRY));
         if (!entry) {
             Mem_Free(buf, buf_len);
             Mem_Free(value_copy, value_copy_len);
-            break;
+            return FALSE;
         }
 
         memzero(entry, sizeof(FORCE_ENTRY));
@@ -1887,7 +1912,7 @@ static void Process_AddBreakoutEntries(
                 Mem_Free(buf, buf_len);
                 Mem_Free(entry, sizeof(FORCE_ENTRY));
                 Mem_Free(value_copy, value_copy_len);
-                break;
+                return FALSE;
             }
 
             wcscpy(entry->scope, scope);
@@ -1906,7 +1931,7 @@ static void Process_AddBreakoutEntries(
                 Mem_Free(buf, buf_len);
                 Mem_Free(entry, sizeof(FORCE_ENTRY));
                 Mem_Free(value_copy, value_copy_len);
-                break;
+                return FALSE;
             }
         } else {
             entry->pat = NULL;
@@ -1921,6 +1946,8 @@ static void Process_AddBreakoutEntries(
         List_Insert_After(entries, NULL, entry);
         Mem_Free(value_copy, value_copy_len);
     }
+
+    return TRUE;
 }
 
 
@@ -1947,6 +1974,7 @@ _FX void Process_CreateForceData(
     index1 = 0;
 
     while (1) {
+        BOOLEAN breakout_rules_complete = TRUE;
 
         section = Conf_Get(NULL, NULL, index1);
         if (! section)
@@ -1972,6 +2000,7 @@ _FX void Process_CreateForceData(
         }
 
         box->RuntimePool = NULL;
+        box->RuntimeEvaluationFailed = FALSE;
         memzero(&box->RuntimeRuleset, sizeof(box->RuntimeRuleset));
         box->AlertRuntimePool = NULL;
         memzero(&box->AlertRuntimeRuleset, sizeof(box->AlertRuntimeRuleset));
@@ -2021,28 +2050,34 @@ _FX void Process_CreateForceData(
         // scan list of AlertFolder settings for the box
         //
 
-        Process_AddForceFolders(&box->AlertFolder, L"AlertFolder", box->box, section);
+        if (box->ForceRulesEnabled)
+            Process_AddForceFolders(&box->AlertFolder, L"AlertFolder", box->box, section);
 
         //
         // scan list of AlertProcess settings for the box
         //
 
-        Process_AddForceFolders(&box->AlertProcess, L"AlertProcess", box->box, section);
+        if (box->ForceRulesEnabled)
+            Process_AddForceFolders(&box->AlertProcess, L"AlertProcess", box->box, section);
 
         //
         // scan list of HostInjectProcess settings for the box
         //
 
-        Process_AddForceProcesses(&box->HostInjectProcess, L"HostInjectProcess", section);
+        if (box->ForceRulesEnabled)
+            Process_AddForceProcesses(&box->HostInjectProcess, L"HostInjectProcess", section);
 
         //
         // scan list of BreakoutFolder / BreakoutProcess settings for the box
         // into precompiled driver-local match lists
         //
 
-        Process_AddBreakoutEntries(&box->BreakoutFolder, L"BreakoutFolder", box->box, section);
-        Process_AddBreakoutEntries(&box->BreakoutProcess, L"BreakoutProcess", box->box, section);
-        Process_AddBreakoutEntries(&box->BreakoutDocument, L"BreakoutDocument", box->box, section);
+        if (!Process_AddBreakoutEntries(&box->BreakoutFolder, L"BreakoutFolder", box->box, section))
+            breakout_rules_complete = FALSE;
+        if (!Process_AddBreakoutEntries(&box->BreakoutProcess, L"BreakoutProcess", box->box, section))
+            breakout_rules_complete = FALSE;
+        if (!Process_AddBreakoutEntries(&box->BreakoutDocument, L"BreakoutDocument", box->box, section))
+            breakout_rules_complete = FALSE;
 
         {
             LIST *runtime_lists[6] = {
@@ -2062,7 +2097,7 @@ _FX void Process_CreateForceData(
                 L"BreakoutDocument"
             };
 
-            box->RuntimePool = Pool_Create();
+            box->RuntimePool = breakout_rules_complete ? Pool_Create() : NULL;
             if (box->RuntimePool) {
                 ProgramControl_RuntimeInitRuleset(&box->RuntimeRuleset, box->RuntimePool);
                 if (!Process_RuntimeCompileLists(
@@ -2085,8 +2120,8 @@ _FX void Process_CreateForceData(
                 &box->AlertFolder
             };
             const WCHAR *alert_settings[2] = {
-                L"ForceProcess",
-                L"ForceFolder"
+                L"AlertProcess",
+                L"AlertFolder"
             };
 
             box->AlertRuntimePool = Pool_Create();
@@ -2221,7 +2256,7 @@ _FX BOX *Process_CheckBoxPath(LIST *boxes, const WCHAR *path)
     box = List_Head(boxes);
     while (box) {
 
-        if (Box_IsBoxedPath(box->box, file, &uni))
+        if (box->ForceRulesEnabled && Box_IsBoxedPath(box->box, file, &uni))
             return box->box;
 
         box = List_Next(box);
@@ -2747,6 +2782,9 @@ _FX BOX *Process_CheckForceRules(
                 FORCE_LEGACY_STAGE_DOCUMENT_FOLDER, 0);
         }
 
+        if (box->RuntimeEvaluationFailed)
+            return (BOX *)-1;
+
         box = List_Next(box);
     }
 
@@ -2780,6 +2818,9 @@ _FX BOX *Process_CheckForceRules(
             &breakout_has_priority,
             &breakout_priority);
 
+        if (candidate->RuntimeEvaluationFailed)
+            return (BOX *)-1;
+
         if (docPath && *docPath) {
             BOOLEAN bd_matched = FALSE;
             BOOLEAN bd_has_priority = FALSE;
@@ -2793,6 +2834,9 @@ _FX BOX *Process_CheckForceRules(
                 &bd_matched,
                 &bd_has_priority,
                 &bd_priority);
+
+            if (candidate->RuntimeEvaluationFailed)
+                return (BOX *)-1;
 
             if (bd_matched) {
                 if (bd_has_priority) {
@@ -2837,6 +2881,9 @@ _FX BOX *Process_CheckForceRules(
                     target_box,
                     BOXNAME_COUNT);
             }
+
+            if (candidate->RuntimeEvaluationFailed)
+                return (BOX *)-1;
         }
 
         if (has_target_override) {
@@ -2852,12 +2899,16 @@ _FX BOX *Process_CheckForceRules(
             }
         }
 
-        if (effective_prioritize_breakout && !has_target_override &&
-            (bd_contributed_priority || Process_IsPrioritizedBreakoutMatch(
-                candidate, name, folder_scope_name, path))) {
-            if (bd_contributed_priority)
-                Process_DfpInsert(PROCESS_TERMINATED, ProcessId);
-            continue;
+        if (effective_prioritize_breakout && !has_target_override) {
+            BOOLEAN breakout_match = bd_contributed_priority || Process_IsPrioritizedBreakoutMatch(
+                candidate, name, folder_scope_name, path);
+            if (candidate->RuntimeEvaluationFailed)
+                return (BOX *)-1;
+            if (breakout_match) {
+                if (bd_contributed_priority)
+                    Process_DfpInsert(PROCESS_TERMINATED, ProcessId);
+                continue;
+            }
         }
 
         if (pForcedByChildren)
@@ -2985,12 +3036,8 @@ static WCHAR* Process_NormalizeBreakoutRulePath(
     }
 
     expnd = Conf_Expand(box->expand_args, rule, setting);
-    if (!expnd) {
-        buf = Mem_AllocString(Driver_Pool, rule);
-        if (buf && out_len)
-            *out_len = (ULONG)((wcslen(buf) + 1) * sizeof(WCHAR));
-        return buf;
-    }
+    if (!expnd)
+        return NULL;
 
     buf_len = (ULONG)((wcslen(expnd) + 1) * sizeof(WCHAR));
     tmp1 = Mem_Alloc(Driver_Pool, buf_len);
@@ -3030,6 +3077,10 @@ static WCHAR* Process_NormalizeBreakoutRulePath(
             Mem_Free(tmp1, buf_len);
             tmp1 = nt_path;
             buf_len = nt_path_len;
+        } else if (status == STATUS_INSUFFICIENT_RESOURCES) {
+            Mem_Free(tmp1, buf_len);
+            Mem_FreeString(expnd);
+            return NULL;
         }
     }
 
@@ -3172,15 +3223,19 @@ static BOOLEAN Process_GetBreakoutDocumentPriority(
         return FALSE;
 
     ProgramControl_RuntimeInitMatch(&breakout_document_match);
-    if (!ProgramControl_RuntimeMatchDocument(
+    ProgramControl_RuntimeMatchDocument(
             &box->RuntimeRuleset,
             scopeName,
             Process_RuntimeMatchImage,
             box->box,
             docPath,
             (ULONG)wcslen(docPath),
-            &breakout_document_match) ||
-        !breakout_document_match.matched)
+            &breakout_document_match);
+    if (breakout_document_match.evaluation_failed) {
+        box->RuntimeEvaluationFailed = TRUE;
+        return FALSE;
+    }
+    if (!breakout_document_match.matched)
         return FALSE;
 
     if (breakout_document_match.has_priority) {
@@ -3229,15 +3284,19 @@ static BOOLEAN Process_GetBreakoutDocumentTarget(
         *outLevel = (ULONG)-1;
 
     ProgramControl_RuntimeInitMatch(&breakout_document_match);
-    if (!ProgramControl_RuntimeMatchDocument(
+    ProgramControl_RuntimeMatchDocument(
             &box->RuntimeRuleset,
             scopeName,
             Process_RuntimeMatchImage,
             box->box,
             docPath,
             (ULONG)wcslen(docPath),
-            &breakout_document_match) ||
-        !breakout_document_match.matched)
+            &breakout_document_match);
+    if (breakout_document_match.evaluation_failed) {
+        box->RuntimeEvaluationFailed = TRUE;
+        return FALSE;
+    }
+    if (!breakout_document_match.matched)
         return FALSE;
 
     {
@@ -3605,6 +3664,21 @@ finish:
 #endif
 
 //---------------------------------------------------------------------------
+// Process_DfpDelete_Locked
+//---------------------------------------------------------------------------
+
+
+// Caller must hold Process_DfpFcpLock exclusive.
+static void Process_DfpDelete_Locked(HANDLE ProcessId)
+{
+    FORCE_PROCESS_2 *proc;
+
+    if(map_take(&Process_MapDfp, ProcessId, &proc, 0))
+        Mem_Free(proc, sizeof(FORCE_PROCESS_2));
+}
+
+
+//---------------------------------------------------------------------------
 // Process_DfpInsert
 //---------------------------------------------------------------------------
 
@@ -3615,16 +3689,12 @@ _FX BOOLEAN Process_DfpInsert(HANDLE ParentId, HANDLE ProcessId)
     KIRQL irql;
     BOOLEAN added;
 
+    KeRaiseIrql(APC_LEVEL, &irql);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
+
+    Process_DfpDelete_Locked(ProcessId);
+
     if (ParentId == PROCESS_TERMINATED) {
-
-        //
-        // called by Session_Api_DisableForce, process list not locked
-        //
-
-        KeRaiseIrql(APC_LEVEL, &irql);
-        ExAcquireResourceExclusiveLite(Process_ListLock, TRUE);
-
-        Process_DfpDelete(ProcessId);
 
         proc = Mem_Alloc(Driver_Pool, sizeof(FORCE_PROCESS_2));
         proc->pid = ProcessId;
@@ -3632,18 +3702,9 @@ _FX BOOLEAN Process_DfpInsert(HANDLE ParentId, HANDLE ProcessId)
 
         map_insert(&Process_MapDfp, ProcessId, proc, 0);
 
-        ExReleaseResourceLite(Process_ListLock);
-        KeLowerIrql(irql);
-
         added = TRUE;
 
     } else {
-
-        //
-        // called by Process_NotifyProcess_Create, process list locked
-        //
-
-        Process_DfpDelete(ProcessId);
 
         added = FALSE;
 
@@ -3660,6 +3721,9 @@ _FX BOOLEAN Process_DfpInsert(HANDLE ParentId, HANDLE ProcessId)
         }
     }
 
+    ExReleaseResourceLite(Process_DfpFcpLock);
+    KeLowerIrql(irql);
+
     return added;
 }
 
@@ -3671,10 +3735,15 @@ _FX BOOLEAN Process_DfpInsert(HANDLE ParentId, HANDLE ProcessId)
 
 _FX void Process_DfpDelete(HANDLE ProcessId)
 {
-    FORCE_PROCESS_2 *proc;
+    KIRQL irql;
 
-    if(map_take(&Process_MapDfp, ProcessId, &proc, 0))
-        Mem_Free(proc, sizeof(FORCE_PROCESS_2));
+    KeRaiseIrql(APC_LEVEL, &irql);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
+
+    Process_DfpDelete_Locked(ProcessId);
+
+    ExReleaseResourceLite(Process_DfpFcpLock);
+    KeLowerIrql(irql);
 }
 
 
@@ -3690,7 +3759,7 @@ _FX BOOLEAN Process_DfpCheck(HANDLE ProcessId, BOOLEAN *silent)
     BOOLEAN found = FALSE;
 
     KeRaiseIrql(APC_LEVEL, &irql);
-    ExAcquireResourceExclusiveLite(Process_ListLock, TRUE);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
 
     proc = map_get(&Process_MapDfp, ProcessId);
     if (proc) {
@@ -3703,10 +3772,25 @@ _FX BOOLEAN Process_DfpCheck(HANDLE ProcessId, BOOLEAN *silent)
         found = TRUE;
     }
 
-    ExReleaseResourceLite(Process_ListLock);
+    ExReleaseResourceLite(Process_DfpFcpLock);
     KeLowerIrql(irql);
 
     return found;
+}
+
+
+//---------------------------------------------------------------------------
+// Process_FcpDelete_Locked
+//---------------------------------------------------------------------------
+
+
+// Caller must hold Process_DfpFcpLock exclusive.
+static void Process_FcpDelete_Locked(HANDLE ProcessId)
+{
+    FORCE_PROCESS_3 *proc;
+
+    if(map_take(&Process_MapFcp, ProcessId, &proc, 0))
+        Mem_Free(proc, sizeof(FORCE_PROCESS_3));
 }
 
 
@@ -3721,13 +3805,14 @@ _FX VOID Process_FcpInsert(HANDLE ProcessId, const WCHAR* boxname)
     KIRQL irql;
 
     //
-    // called by Session_Api_ForceChildren, process list not locked
+    // called by Session_Api_ForceChildren.  Serialized by Process_DfpFcpLock
+    // (see Process_DfpInsert).
     //
 
     KeRaiseIrql(APC_LEVEL, &irql);
-    ExAcquireResourceExclusiveLite(Process_ListLock, TRUE);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
 
-    Process_FcpDelete(ProcessId);
+    Process_FcpDelete_Locked(ProcessId);
 
     proc = Mem_Alloc(Driver_Pool, sizeof(FORCE_PROCESS_3));
     proc->pid = ProcessId;
@@ -3735,10 +3820,8 @@ _FX VOID Process_FcpInsert(HANDLE ProcessId, const WCHAR* boxname)
 
     map_insert(&Process_MapFcp, ProcessId, proc, 0);
 
-    ExReleaseResourceLite(Process_ListLock);
+    ExReleaseResourceLite(Process_DfpFcpLock);
     KeLowerIrql(irql);
-
-
 }
 
 
@@ -3749,10 +3832,15 @@ _FX VOID Process_FcpInsert(HANDLE ProcessId, const WCHAR* boxname)
 
 _FX void Process_FcpDelete(HANDLE ProcessId)
 {
-    FORCE_PROCESS_3 *proc;
+    KIRQL irql;
 
-    if(map_take(&Process_MapFcp, ProcessId, &proc, 0))
-        Mem_Free(proc, sizeof(FORCE_PROCESS_3));
+    KeRaiseIrql(APC_LEVEL, &irql);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
+
+    Process_FcpDelete_Locked(ProcessId);
+
+    ExReleaseResourceLite(Process_DfpFcpLock);
+    KeLowerIrql(irql);
 }
 
 
@@ -3768,7 +3856,7 @@ _FX BOOLEAN Process_FcpCheck(HANDLE ProcessId, WCHAR* boxname)
     BOOLEAN found = FALSE;
 
     KeRaiseIrql(APC_LEVEL, &irql);
-    ExAcquireResourceExclusiveLite(Process_ListLock, TRUE);
+    ExAcquireResourceExclusiveLite(Process_DfpFcpLock, TRUE);
 
     proc = map_get(&Process_MapFcp, ProcessId);
     if (proc) {
@@ -3779,7 +3867,7 @@ _FX BOOLEAN Process_FcpCheck(HANDLE ProcessId, WCHAR* boxname)
         found = TRUE;
     }
 
-    ExReleaseResourceLite(Process_ListLock);
+    ExReleaseResourceLite(Process_DfpFcpLock);
     KeLowerIrql(irql);
 
     return found;
@@ -3793,12 +3881,13 @@ _FX BOOLEAN Process_FcpCheck(HANDLE ProcessId, WCHAR* boxname)
 
 _FX BOOLEAN Process_MatchForceChildrenRule(
     BOX *box, const WCHAR *parent_name, const WCHAR *parent_path,
-    BOOLEAN *outHasPriority, LONG *outPriority)
+    BOOLEAN *outHasPriority, LONG *outPriority, BOOLEAN *evaluationFailed)
 {
     LIST boxes;
     FORCE_BOX *force_box;
     BOOLEAN matched = FALSE;
 
+    *evaluationFailed = FALSE;
     if (outHasPriority)
         *outHasPriority = FALSE;
     if (outPriority)
@@ -3820,6 +3909,7 @@ _FX BOOLEAN Process_MatchForceChildrenRule(
                 TRUE,
                 outHasPriority,
                 outPriority);
+            *evaluationFailed = force_box->RuntimeEvaluationFailed;
             break;
         }
 

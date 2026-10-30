@@ -104,6 +104,12 @@ HASH_MAP Process_MapDfp;
 HASH_MAP Process_MapFcp;
 PERESOURCE Process_ListLock = NULL;
 
+// DRV-18: Process_MapDfp / Process_MapFcp are serialized by their own lock,
+// not by Process_ListLock, because the process-creation notify path holds the
+// list lock only SHARED while it mutates these maps.  Always acquired after
+// Process_ListLock (never before), so there is no lock-order inversion.
+PERESOURCE Process_DfpFcpLock = NULL;
+
 static BOOLEAN Process_NotifyImageInstalled = FALSE;
 static BOOLEAN Process_NotifyProcessInstalled = FALSE;
 
@@ -137,6 +143,9 @@ _FX BOOLEAN Process_Init(void)
 	map_resize(&Process_MapFcp, 128); // prepare some buckets for better performance
 
     if (! Mem_GetLockResource(&Process_ListLock, TRUE))
+        return FALSE;
+
+    if (! Mem_GetLockResource(&Process_DfpFcpLock, TRUE))
         return FALSE;
 
     if (! Process_Low_Init())
@@ -260,8 +269,10 @@ _FX void Process_Unload(BOOLEAN FreeLock)
 
     Process_Low_Unload();
 
-    if (FreeLock)
+    if (FreeLock) {
         Mem_FreeLockResource(&Process_ListLock);
+        Mem_FreeLockResource(&Process_DfpFcpLock);
+    }
 }
 
 
@@ -1272,8 +1283,8 @@ _FX BOOLEAN Process_NotifyProcess_Create(
                     if (parent_proc->forced_by_children)
                         parent_was_forced_by_children = TRUE;
 
-                    if (parent_proc->image_name && !parent_was_forced_by_children)
-                        parent_image_path_copy = Mem_AllocString(Driver_Pool, parent_proc->image_name);
+                    if (parent_proc->image_path && !parent_was_forced_by_children)
+                        parent_image_path_copy = Mem_AllocString(Driver_Pool, parent_proc->image_path);
 
                 } else
                     create_terminated = TRUE;
@@ -1304,6 +1315,7 @@ _FX BOOLEAN Process_NotifyProcess_Create(
 
         if (parent_was_sandboxed && box && parent_image_path_copy
                 && _wcsicmp(nptr1, L"SandMan.exe") != 0) {
+            BOOLEAN evaluation_failed = FALSE;
             const WCHAR *parent_image_name = wcsrchr(parent_image_path_copy, L'\\');
             if (parent_image_name && parent_image_name[1])
                 ++parent_image_name;
@@ -1315,8 +1327,14 @@ _FX BOOLEAN Process_NotifyProcess_Create(
                     parent_image_name,
                     parent_image_path_copy,
                     NULL,
-                    NULL)) {
+                    NULL,
+                    &evaluation_failed)) {
                 parent_was_forced_by_children = TRUE;
+            }
+            if (evaluation_failed) {
+                Box_Free(box);
+                box = NULL;
+                create_terminated = TRUE;
             }
         }
 

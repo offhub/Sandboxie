@@ -1523,15 +1523,7 @@ _FX BOOL Proc_CreateProcessInternalW(
 
     BOOLEAN ignore_breakout = Proc_ShouldIgnoreBreakout();
 
-    BOOLEAN is_breakout_candidate = FALSE;
-    if (!ignore_breakout) {
-        is_breakout_candidate = Proc_IsBreakoutCandidate(lpApplicationName, NULL, TRUE)
-            || (Dll_BoxName && Proc_IsBreakoutCandidate(lpApplicationName, Dll_BoxName, TRUE));
-    }
-
-    // For normal launches, keep existing boxed CWD selection behavior.
-    if (!is_breakout_candidate)
-        lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
+    lpCurrentDirectory = Proc_SelectCurrentDirectory(lpCurrentDirectory);
 
     if (!lpCurrentDirectory)
         lpCurrentDirectory = SaveCurrentDirectory;
@@ -1979,14 +1971,9 @@ _FX BOOL Proc_CreateProcessInternalW(
 
                     const WCHAR* breakout_current_directory = lpCurrentDirectory;
                     WCHAR* breakout_dir = NULL;
-                    BOOLEAN caller_has_explicit_dir = FALSE;
-                    if (SaveCurrentDirectory && ((const WCHAR*)SaveCurrentDirectory)[0] != L'\0')
-                        caller_has_explicit_dir = TRUE;
 
-                    // No explicit caller CWD -> use target EXE directory.
-                    // BreakoutUseTargetDir can force this even with explicit CWD.
-                    BOOLEAN use_target_dir = !caller_has_explicit_dir
-                        || SbieDll_GetSettingsForName_bool(NULL, lpProgram + 1, L"BreakoutUseTargetDir", FALSE);
+                    // Preserve the selected CWD unless the target-directory override is enabled.
+                    BOOLEAN use_target_dir = SbieDll_GetSettingsForName_bool(NULL, lpProgram + 1, L"BreakoutUseTargetDir", FALSE);
 
                     if (use_target_dir || !lpCurrentDirectory || ((const WCHAR*)lpCurrentDirectory)[0] == L'\0') {
                         // lpCurrentDirectory must not be NULL

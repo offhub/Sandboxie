@@ -158,9 +158,18 @@ static bool ParseRecursiveUiSpec(const QString& rawValue, QString* pDepthValue, 
 			bool maxOk = false;
 			int minDepth = left.toInt(&minOk);
 			int maxDepth = right.toInt(&maxOk);
-			if (!minOk || !maxOk || minDepth < 0 || maxDepth < minDepth)
+			bool unlimited = right == "*" || right.compare("y", Qt::CaseInsensitive) == 0;
+			if (unlimited) {
+				maxOk = true;
+				maxDepth = -1;
+			}
+			else if (right.compare("n", Qt::CaseInsensitive) == 0) {
+				maxOk = true;
+				maxDepth = 0;
+			}
+			if (!minOk || !maxOk || minDepth < 0 || (!unlimited && maxDepth < minDepth))
 				return false;
-			normalizedDepth = QString::number(minDepth) + "-" + QString::number(maxDepth);
+			normalizedDepth = QString::number(minDepth) + "-" + (unlimited ? QString("*") : QString::number(maxDepth));
 		}
 		else {
 			bool ok = false;
@@ -554,7 +563,7 @@ public:
 			}
 
 			SetupWideDropdown(pBox);
-			QRegularExpression rx("^(?:-|[yYnN]|[0-9]+(?:\\s*-\\s*[0-9]+)?)(?:\\s*;\\s*(?:[Ff][Ii][Rr][Ss][Tt]|[Ll][Aa][Ss][Tt]))?$");
+			QRegularExpression rx("^(?:-|[*yYnN]|[0-9]+(?:\\s*-\\s*(?:[0-9]+|[*yYnN]))?)(?:\\s*;\\s*(?:[Ff][Ii][Rr][Ss][Tt]|[Ll][Aa][Ss][Tt]))?$");
 			pBox->lineEdit()->setValidator(new QRegularExpressionValidator(rx, pBox));
 			connect(pBox, qOverload<int>(&QComboBox::currentIndexChanged), [pBox](int idx){
 				if (idx < 0)

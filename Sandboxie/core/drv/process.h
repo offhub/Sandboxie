@@ -425,30 +425,34 @@ BOX *Process_GetForcedStartBox(
 
 BOOLEAN Process_MatchForceChildrenRule(
     BOX *box, const WCHAR *parent_name, const WCHAR *parent_path,
-    BOOLEAN *outHasPriority, LONG *outPriority);
+    BOOLEAN *outHasPriority, LONG *outPriority, BOOLEAN *evaluationFailed);
 
 
 #ifdef DRV_BREAKOUT
 BOOLEAN Process_IsBreakoutProcess(BOX *box, const WCHAR *ImagePath);
 #endif
 
-// Manipulation of the List of Disabled Forced Processes:  (Process_List2)
-// Add ProcessId to list if ParentId is already listed
-// Hold Process_ListLock before calling, if ParentId != PROCESS_TERMINATED
+// Manipulation of the Disabled Forced Processes map:  (Process_MapDfp)
+// Add ProcessId if ParentId is listed, or unconditionally when
+// ParentId == PROCESS_TERMINATED.
+// Acquires Process_DfpFcpLock internally. If Process_ListLock is also needed
+// for process lifecycle coordination, acquire it before calling.
 
 BOOLEAN Process_DfpInsert(HANDLE ParentId, HANDLE ProcessId);
 
 
-// Manipulation of the List of Disabled Forced Processes:  (Process_List2)
-// Delete ProcessId from list
-// Hold Process_ListLock before calling
+// Manipulation of the Disabled Forced Processes map:  (Process_MapDfp)
+// Delete ProcessId from the map
+// Acquires Process_DfpFcpLock internally. If Process_ListLock is also needed
+// for process lifecycle coordination, acquire it before calling.
 
 void Process_DfpDelete(HANDLE ProcessId);
 
 
-// Manipulation of the List of Disabled Forced Processes:  (Process_List2)
+// Manipulation of the Disabled Forced Processes map:  (Process_MapDfp)
 // Check if ProcessId is listed
-// Do not hold Process_ListLock before calling
+// Acquires Process_DfpFcpLock internally. If Process_ListLock is also needed
+// for process lifecycle coordination, acquire it before calling.
 
 BOOLEAN Process_DfpCheck(HANDLE ProcessId, BOOLEAN *silent);
 
@@ -546,6 +550,7 @@ extern HASH_MAP Process_Map;
 extern HASH_MAP Process_MapDfp;
 extern HASH_MAP Process_MapFcp;
 extern PERESOURCE Process_ListLock;
+extern PERESOURCE Process_DfpFcpLock;
 
 extern volatile BOOLEAN Process_ReadyToSandbox;
 

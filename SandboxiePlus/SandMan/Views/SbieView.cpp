@@ -446,6 +446,7 @@ void CSbieView::CreateOldMenu()
 
 		m_pMenuPresetsRecovery = NULL;
 		m_pMenuPresetsForce = NULL;
+		m_pMenuPresetsBreakout = NULL;
 		
 
 	// Process Menu
