@@ -179,8 +179,8 @@ static QString PriorityManagerBoxDisplayName(const CSandBoxPtr& pBox)
 
 	QString alias = pBoxPlus->GetText("BoxAlias").trimmed();
 	return alias.isEmpty()
-		? pBoxPlus->GetDisplayName(CSandBoxPlus::eDisplayCompact)
-		: CSandBoxPlus::FormatDisplayName(boxName, alias, 0, CSandBoxPlus::eDisplayCompact);
+		? pBoxPlus->GetDisplayName()
+		: alias;
 }
 
 static void PopulatePriorityManagerSourceScopes(QVector<PriorityManagerSource>& sources,

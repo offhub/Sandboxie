@@ -594,8 +594,8 @@ public:
 				if (!pBoxPlus.isNull()) {
 					QString alias = pBoxPlus->GetText("BoxAlias").trimmed();
 					displayName = alias.isEmpty()
-						? pBoxPlus->GetDisplayName(CSandBoxPlus::eDisplayCompact)
-						: CSandBoxPlus::FormatDisplayName(boxName, alias, 0, CSandBoxPlus::eDisplayCompact);
+						? pBoxPlus->GetDisplayName()
+						: alias;
 				}
 				int index = pBox->count();
 				pBox->addItem(displayName, boxName);
