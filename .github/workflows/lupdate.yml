@@ -32,7 +32,7 @@ jobs:
         working-directory: SandboxiePlus/SandMan
         run: |
           set -e
-          lupdate SandMan.pri ../MiscHelpers/MiscHelpers.pri \
+          /usr/lib/qt6/bin/lupdate SandMan.pri ../MiscHelpers/MiscHelpers.pri \
             -ts sandman_ar.ts \
                 sandman_de.ts \
                 sandman_en.ts \
