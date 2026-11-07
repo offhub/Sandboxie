@@ -21,7 +21,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends qt6-base-dev qt6-tools-dev-tools
+          sudo apt-get install --no-install-recommends qt6-l10n-tools
 
       - name: Checkout repo
         uses: actions/checkout@v7
