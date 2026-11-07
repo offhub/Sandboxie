@@ -17,11 +17,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Install Qt 5 packages
+      - name: Install Qt 6 packages
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends qtbase5-dev qttools5-dev-tools
+          sudo apt-get install --no-install-recommends qt6-base-dev qt6-tools-dev-tools
 
       - name: Checkout repo
         uses: actions/checkout@v7
