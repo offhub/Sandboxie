@@ -21,7 +21,8 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends qt6-l10n-tools
+          sudo apt-get install --no-install-recommends qt6-l10n-tools qt6-tools-dev-tools
+          test -x /usr/lib/qt6/libexec/lprodump
 
       - name: Checkout repo
         uses: actions/checkout@v7
