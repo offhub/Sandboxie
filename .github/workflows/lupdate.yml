@@ -22,7 +22,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
-            qt6-tools-dev-tools \
             qt6-base-dev
 
       - name: Checkout repo
