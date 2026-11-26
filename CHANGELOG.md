@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Fixed
 - fixed incorrect pending-change highlighting and Apply behavior for AI Integration settings
 - fixed INI editor correction suggestions for case-insensitive subsequence matches
+- improved Chromium-based application detection for renamed ELF DLLs and avoided unrelated DLL matches [#5749](https://github.com/sandboxie-plus/Sandboxie/issues/5749)
 
 
 

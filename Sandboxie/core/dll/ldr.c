@@ -70,8 +70,8 @@ typedef union _LDR_DLL_NOTIFICATION_DATA {
 //---------------------------------------------------------------------------
 
 
-static void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BOOL LoadState);
-static void Ldr_CallOneDllCallbackXP(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BOOL LoadState);
+static void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, ULONG ImageSize, BOOL LoadState);
+static void Ldr_CallOneDllCallbackXP(const UCHAR *ImageNameA, ULONG_PTR ImageBase, ULONG ImageSize, BOOL LoadState);
 static void Ldr_CallDllCallbacks(void);
 
 static NTSTATUS Ldr_LdrLoadDll(WCHAR *PathString, ULONG *DllFlags, UNICODE_STRING *ModuleName, HANDLE *ModuleHandle);
@@ -92,7 +92,7 @@ static ULONG_PTR Ldr_NtApphelpCacheControl(
 
 void Ldr_MyDllCallbackA(const CHAR *ImageName, HMODULE ImageBase, BOOL LoadState);
 void Ldr_MyDllCallbackW(const WCHAR *ImageName, HMODULE ImageBase, BOOL LoadState);
-void Ldr_MyDllCallbackNew(const WCHAR *ImageName, HMODULE ImageBase, BOOL LoadState);
+void Ldr_MyDllCallbackNew(const WCHAR *ImageName, HMODULE ImageBase, ULONG ImageSize, BOOL LoadState);
 
 static void *Ldr_GetProcAddr_2(const WCHAR *DllName, const WCHAR *ProcName);
 
@@ -147,7 +147,7 @@ typedef NTSTATUS(*P_NtLoadDriver)(UNICODE_STRING *RegistryPath);
 
 typedef void(*P_LdrDllCallback)(const UCHAR *ImageName, HMODULE ImageBase, BOOL LoadState);
 typedef void(*P_LdrDllCallbackW)(const WCHAR *ImageName, HMODULE ImageBase, BOOL LoadState);
-typedef void(*P_Ldr_CallOneDllCallback)(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BOOL LoadState);
+typedef void(*P_Ldr_CallOneDllCallback)(const UCHAR *ImageNameA, ULONG_PTR ImageBase, ULONG ImageSize, BOOL LoadState);
 
 
 //---------------------------------------------------------------------------
@@ -287,11 +287,11 @@ void CALLBACK Ldr_LdrDllNotification(ULONG NotificationReason, PLDR_DLL_NOTIFICA
 
     if (NotificationReason == 1) {
         status = __sys_LdrLockLoaderLock(0, NULL, &LdrCookie);
-        Ldr_MyDllCallbackNew(NotificationData->Loaded.BaseDllName->Buffer, (HMODULE)NotificationData->Loaded.DllBase, TRUE);
+        Ldr_MyDllCallbackNew(NotificationData->Loaded.BaseDllName->Buffer, (HMODULE)NotificationData->Loaded.DllBase, NotificationData->Loaded.SizeOfImage, TRUE);
         __sys_LdrUnlockLoaderLock(0, LdrCookie);
     }
     else if (NotificationReason == 2) {
-        Ldr_MyDllCallbackNew(NotificationData->Unloaded.BaseDllName->Buffer,  (HMODULE)NotificationData->Loaded.DllBase, FALSE);
+        Ldr_MyDllCallbackNew(NotificationData->Unloaded.BaseDllName->Buffer, (HMODULE)NotificationData->Unloaded.DllBase, NotificationData->Unloaded.SizeOfImage, FALSE);
     }
 }
 
@@ -568,7 +568,7 @@ _FX BOOLEAN SbieDll_RegisterDllCallback(void *Callback)
 // Ldr_CallOneDllCallback
 //---------------------------------------------------------------------------
 
-_FX void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BOOL LoadState)
+_FX void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, ULONG ImageSize, BOOL LoadState)
 {
     ULONG i;
 
@@ -577,7 +577,13 @@ _FX void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BO
         if (!callback)
             break;
         __try {
-            ((P_LdrDllCallback)callback)(ImageNameA, (HMODULE)ImageBase, LoadState);
+            if (callback == (ULONG_PTR)Ldr_MyDllCallbackA) {
+                WCHAR ImageNameW[128];
+                Sbie_snwprintf(ImageNameW, ARRAYSIZE(ImageNameW), L"%S", ImageNameA);
+                Ldr_MyDllCallbackNew(ImageNameW, (HMODULE)ImageBase, ImageSize, LoadState);
+            }
+            else
+                ((P_LdrDllCallback)callback)(ImageNameA, (HMODULE)ImageBase, LoadState);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
         }
@@ -585,7 +591,7 @@ _FX void Ldr_CallOneDllCallback(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BO
 }
 
 
-_FX void Ldr_CallOneDllCallbackXP(const UCHAR *ImageNameA, ULONG_PTR ImageBase, BOOL LoadState)
+_FX void Ldr_CallOneDllCallbackXP(const UCHAR *ImageNameA, ULONG_PTR ImageBase, ULONG ImageSize, BOOL LoadState)
 {
     ULONG i;
 
@@ -602,7 +608,10 @@ _FX void Ldr_CallOneDllCallbackXP(const UCHAR *ImageNameA, ULONG_PTR ImageBase, 
             break;
 
         __try {
-            ((P_LdrDllCallbackW)callback)(ImageNameW, (HMODULE)ImageBase, LoadState);
+            if (callback == (ULONG_PTR)Ldr_MyDllCallbackW)
+                Ldr_MyDllCallbackNew(ImageNameW, (HMODULE)ImageBase, ImageSize, LoadState);
+            else
+                ((P_LdrDllCallbackW)callback)(ImageNameW, (HMODULE)ImageBase, LoadState);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
         }
@@ -700,7 +709,7 @@ _FX void Ldr_CallDllCallbacks(void)
             if (!found) {
 
                 __my_Ldr_CallOneDllCallback(pOld->Path + pOld->NameOffset,
-                    pOld->ImageBaseAddress, FALSE);
+                    pOld->ImageBaseAddress, pOld->ImageSize, FALSE);
             }
         }
     }
@@ -746,7 +755,7 @@ _FX void Ldr_CallDllCallbacks(void)
             RtlFreeUnicodeString(&uni);
 
             __my_Ldr_CallOneDllCallback(pNew->Path + pNew->NameOffset,
-                pNew->ImageBaseAddress, TRUE);
+                pNew->ImageBaseAddress, pNew->ImageSize, TRUE);
 
             if (OldState)
                 Ldr_SetDdagState_W8(pNew->ImageBaseAddress, OldState);
@@ -1021,25 +1030,125 @@ BOOL Ldr_CheckFirefoxDll(const WCHAR* dll_path)
     return _wcsicmp(dll_path, L"mozglue.dll") == 0;
 }
 
-BOOL Ldr_CheckChromeDll(const WCHAR* dll_path)
+static BOOL Ldr_HasChromeExports(HMODULE ImageBase, ULONG mappedSize)
+{
+    static const struct {
+        const char *name;
+        SIZE_T length;
+    } signatures[] = {
+        { "SignalChromeElf", sizeof("SignalChromeElf") },
+        { "SignalInitializeCrashReporting", sizeof("SignalInitializeCrashReporting") },
+        { "GetUserDataDirectoryThunk", sizeof("GetUserDataDirectoryThunk") },
+        { "GetInstallDetailsPayload", sizeof("GetInstallDetailsPayload") }
+    };
+    const UCHAR *base = (const UCHAR *)ImageBase;
+    ULONG_PTR address = (ULONG_PTR)base;
+    BOOL found = FALSE;
+
+    if (!base || mappedSize < sizeof(IMAGE_DOS_HEADER) ||
+        address > (ULONG_PTR)-1 - mappedSize)
+        return FALSE;
+
+    __try {
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
+        const IMAGE_NT_HEADERS *nt;
+        const IMAGE_OPTIONAL_HEADER *optional;
+        const IMAGE_DATA_DIRECTORY *directory;
+        const IMAGE_EXPORT_DIRECTORY *exports;
+        const DWORD *names, *functions;
+        const WORD *ordinals;
+        ULONG imageSize, offset, i, j, matches = 0;
+
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < (LONG)sizeof(*dos))
+            __leave;
+        offset = (ULONG)dos->e_lfanew;
+        if (offset > mappedSize || sizeof(*nt) > mappedSize - offset)
+            __leave;
+        nt = (const IMAGE_NT_HEADERS *)(base + offset);
+        if (nt->Signature != IMAGE_NT_SIGNATURE ||
+            nt->FileHeader.SizeOfOptionalHeader <
+                FIELD_OFFSET(IMAGE_OPTIONAL_HEADER, DataDirectory) + sizeof(IMAGE_DATA_DIRECTORY))
+            __leave;
+        optional = &nt->OptionalHeader;
+        if (optional->Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC ||
+            optional->NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT)
+            __leave;
+        imageSize = optional->SizeOfImage;
+        if (imageSize > mappedSize ||
+            offset > imageSize || sizeof(*nt) > imageSize - offset ||
+            optional->SizeOfHeaders > imageSize ||
+            offset > optional->SizeOfHeaders ||
+            (ULONG)FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader) + nt->FileHeader.SizeOfOptionalHeader >
+                optional->SizeOfHeaders - offset)
+            __leave;
+        directory = &optional->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!directory->VirtualAddress || directory->Size < sizeof(*exports) ||
+            directory->VirtualAddress > imageSize ||
+            directory->Size > imageSize - directory->VirtualAddress)
+            __leave;
+        exports = (const IMAGE_EXPORT_DIRECTORY *)(base + directory->VirtualAddress);
+        if (!exports->AddressOfNames || !exports->AddressOfNameOrdinals || !exports->AddressOfFunctions ||
+            exports->AddressOfNames > imageSize ||
+            exports->NumberOfNames > (imageSize - exports->AddressOfNames) / sizeof(*names) ||
+            exports->AddressOfNameOrdinals > imageSize ||
+            exports->NumberOfNames > (imageSize - exports->AddressOfNameOrdinals) / sizeof(*ordinals) ||
+            exports->AddressOfFunctions > imageSize ||
+            exports->NumberOfFunctions > (imageSize - exports->AddressOfFunctions) / sizeof(*functions))
+            __leave;
+        names = (const DWORD *)(base + exports->AddressOfNames);
+        ordinals = (const WORD *)(base + exports->AddressOfNameOrdinals);
+        functions = (const DWORD *)(base + exports->AddressOfFunctions);
+
+        for (i = 0; i < exports->NumberOfNames; ++i) {
+            if (!names[i] || names[i] >= imageSize || ordinals[i] >= exports->NumberOfFunctions)
+                __leave;
+            for (j = 0; j < ARRAYSIZE(signatures); ++j) {
+                if (!(matches & (1u << j)) && signatures[j].length <= imageSize - names[i] &&
+                    memcmp(base + names[i], signatures[j].name, signatures[j].length) == 0) {
+                    if (!functions[ordinals[i]] || functions[ordinals[i]] >= imageSize)
+                        __leave;
+                    if (matches) {
+                        found = TRUE;
+                        __leave;
+                    }
+                    matches |= 1u << j;
+                }
+            }
+        }
+    }
+    __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ||
+              GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR ||
+              GetExceptionCode() == EXCEPTION_DATATYPE_MISALIGNMENT ?
+              EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        found = FALSE;
+    }
+    return found;
+}
+
+BOOL Ldr_CheckChromeDll(const WCHAR* dll_path, HMODULE ImageBase, ULONG ImageSize)
 {
     if (_wcsicmp(dll_path, L"chrome_elf.dll") == 0)
         return TRUE;
 
     //
-    // Some Chromium based browsers like Microsoft Edge or Vivaldi rename the dll
-    // from chrome_elf.dll to msedge_elf.dll
+    // Some Chromium-based applications rename chrome_elf.dll.
+    // Check for a matching executable basename first, then validate
+    // characteristic exports for differently named ELF DLLs.
     //
 
     SIZE_T dll_len = wcslen(dll_path);
     SIZE_T exe_len = wcslen(Dll_ImageName);
-    if ((dll_len - 8) == (exe_len - 4))
-        return _wcsnicmp(Dll_ImageName, dll_path, exe_len - 4) == 0;
+    if (dll_len <= 8 || _wcsicmp(dll_path + dll_len - 8, L"_elf.dll") != 0)
+        return FALSE;
 
-    return FALSE;
+    if (exe_len > 4 && dll_len == exe_len + 4 &&
+        _wcsnicmp(Dll_ImageName, dll_path, exe_len - 4) == 0)
+        return TRUE;
+
+    return Ldr_HasChromeExports(ImageBase, ImageSize);
 }
 
-_FX void Ldr_DetectImageType(const CHAR *ImageName)
+_FX void Ldr_DetectImageType(const WCHAR *ImageName, HMODULE ImageBase, ULONG ImageSize)
 {
     //
     // Electron apps can have arbitrary names, but need to be treated like the Chrome browser
@@ -1051,7 +1160,7 @@ _FX void Ldr_DetectImageType(const CHAR *ImageName)
         if (Ldr_CheckFirefoxDll(ImageName)) {
             Dll_ImageType = DLL_IMAGE_MOZILLA_FIREFOX;
         }
-        else if (Ldr_CheckChromeDll(ImageName)) {
+        else if (Ldr_CheckChromeDll(ImageName, ImageBase, ImageSize)) {
             Dll_ImageType = DLL_IMAGE_GOOGLE_CHROME;
         }
 
@@ -1082,17 +1191,17 @@ _FX void Ldr_MyDllCallbackA(const CHAR *ImageName, HMODULE ImageBase, BOOL LoadS
     WCHAR ImageNameW[128];
     Sbie_snwprintf(ImageNameW, ARRAYSIZE(ImageNameW), L"%S", ImageName);
 
-    Ldr_MyDllCallbackNew(ImageNameW, ImageBase, LoadState);
+    Ldr_MyDllCallbackNew(ImageNameW, ImageBase, 0, LoadState);
 }
 
 
 _FX void Ldr_MyDllCallbackW(const WCHAR *ImageName, HMODULE ImageBase, BOOL LoadState) // Windows XP
 {
-    Ldr_MyDllCallbackNew(ImageName, ImageBase, LoadState);
+    Ldr_MyDllCallbackNew(ImageName, ImageBase, 0, LoadState);
 }
 
 
-_FX void Ldr_MyDllCallbackNew(const WCHAR *ImageName, HMODULE ImageBase, BOOL LoadState) // Windows 8.1 and later
+_FX void Ldr_MyDllCallbackNew(const WCHAR *ImageName, HMODULE ImageBase, ULONG ImageSize, BOOL LoadState) // Windows 8.1 and later
 {
     WCHAR text[4096];
     if(LoadState)
@@ -1138,7 +1247,7 @@ _FX void Ldr_MyDllCallbackNew(const WCHAR *ImageName, HMODULE ImageBase, BOOL Lo
         SbieDll_UnHookModule(ImageBase);
 
     if (LoadState)
-        Ldr_DetectImageType(ImageName);
+        Ldr_DetectImageType(ImageName, ImageBase, ImageSize);
 }
 
 
